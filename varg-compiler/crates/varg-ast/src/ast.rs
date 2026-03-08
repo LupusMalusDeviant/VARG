@@ -1,0 +1,230 @@
+#[derive(Debug, PartialEq, Clone)]
+pub struct Program {
+    pub no_std: bool,
+    pub items: Vec<Item>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Item {
+    Agent(AgentDef),
+    Contract(ContractDef),
+    Struct(StructDef),
+    Import(String),
+}
+
+// ---- Annotations ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct Annotation {
+    pub name: String,
+    pub values: Vec<String>, // Support multiple arguments: @[CliCommand("name", "desc")] 
+}
+
+// ---- Agent, Contract, Struct ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct AgentDef {
+    pub name: String,
+    pub is_system: bool,
+    pub is_public: bool,
+    pub target_annotation: Option<String>, // legacy @target
+    pub annotations: Vec<Annotation>,
+    pub methods: Vec<MethodDecl>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ContractDef {
+    pub name: String,
+    pub is_public: bool,
+    pub target_annotation: Option<String>,
+    pub methods: Vec<MethodDecl>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct StructDef {
+    pub name: String,
+    pub is_public: bool,
+    pub type_params: Vec<String>,
+    pub fields: Vec<FieldDecl>,
+}
+
+// ---- Methods and Fields ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct FieldDecl {
+    pub name: String,
+    pub ty: TypeNode,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MethodDecl {
+    pub name: String,
+    pub is_public: bool,
+    pub annotations: Vec<Annotation>,
+    pub type_params: Vec<String>,
+    pub args: Vec<FieldDecl>,
+    pub return_ty: Option<TypeNode>,
+    pub body: Option<Block>, // Contracts only have declarations (None)
+}
+
+// ---- Execution Blocks, Statements & Expressions ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct Block {
+    pub statements: Vec<Statement>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Statement {
+    Let { name: String, ty: Option<TypeNode>, value: Expression }, // ty is Option because of 'var'
+    Assign { name: String, value: Expression },
+    Expr(Expression),
+    UnsafeBlock(Block),           // OCAP: Unsafe Code Marker
+    Return(Option<Expression>),
+    
+    // Phase 9: Control Flow
+    If { condition: Expression, then_block: Block, else_block: Option<Block> },
+    While { condition: Expression, body: Block },
+    For { init: Box<Statement>, condition: Expression, update: Box<Statement>, body: Block },
+    Foreach { item_name: String, collection: Expression, body: Block },
+    Print(Expression),
+    
+    // Phase 12: Error Handling
+    TryCatch { try_block: Block, catch_var: String, catch_block: Block },
+    Throw(Expression),
+    
+    // Phase 20: Streaming
+    Stream(Expression),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Expression {
+    Int(i64),
+    String(String),
+    Bool(bool),
+    Identifier(String),
+    BinaryOp {
+        left: Box<Expression>,
+        operator: BinaryOperator,
+        right: Box<Expression>,
+    },
+    MethodCall {
+        caller: Box<Expression>,
+        method_name: String,
+        args: Vec<Expression>,
+    },
+    PropertyAccess {
+        caller: Box<Expression>,
+        property_name: String,
+    },
+    IndexAccess {
+        caller: Box<Expression>,
+        index: Box<Expression>,
+    },
+    Linq(LinqQuery), // Phase 9: LINQ
+    ArrayLiteral(Vec<Expression>), // Phase 10: [1, 2, 3]
+    MapLiteral(Vec<(Expression, Expression)>), // Phase 10: {"key": value}
+    PromptLiteral(String), // Phase 20: prompt """ ... """
+    Query(SurrealQueryNode), // Phase 15: Native Database Query Expression
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct LinqQuery {
+    pub from_var: String,
+    pub in_collection: Box<Expression>,
+    pub where_clause: Option<Box<Expression>>,
+    pub orderby_clause: Option<Box<Expression>>,
+    pub descending: bool,
+    pub select_clause: Box<Expression>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum BinaryOperator {
+    Add, Sub, Mul, Div, Eq, NotEq, Lt, Gt, LtEq, GtEq, CosineSim
+}
+
+// ---- AI-OS Native Types ----
+#[derive(Debug, PartialEq, Clone)]
+pub enum TypeNode {
+    Int,
+    String,
+    Bool,
+    Void,
+    Ulong,
+    Prompt,
+    Context,
+    Tensor,
+    Embedding, // Embeddings represent float vectors mapped natively
+    Result(Box<TypeNode>, Box<TypeNode>), // e.g., Result<string, Error>
+    Error, // New
+    
+    // Complex / Varg-Min Types
+    TypeMapShort, // New
+    Array(Box<TypeNode>), // e.g., string[]
+    Map(Box<TypeNode>, Box<TypeNode>), // e.g., map<string, int>
+    
+    // Phase 23: Generics!
+    TypeVar(String),                 // An unbound generic type like T or K
+    Generic(String, Vec<TypeNode>),  // Standard User-Generics Box<int>
+    List(Box<TypeNode>),             // Standard Library List<T>
+    Custom(String), // References to Agent or Struct names
+}
+
+// ---- SurrealDB AST Node ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct SurrealQueryNode {
+    pub raw_query: String, // To be expanded with proper SurrealDB AST later
+}
+
+// ---- TDD AST Verification ----
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dummy_agent_ast() {
+        // Constructing an AST manually without parsing:
+        // system agent VramManager {
+        //     public void Allocate(ulong size) {
+        //         unsafe { return; }
+        //     }
+        // }
+        let ast = Program {
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "VramManager".to_string(),
+                    is_system: true,
+                    is_public: false,
+                    target_annotation: None,
+                    annotations: vec![],
+                    methods: vec![
+                        MethodDecl {
+                            name: "Allocate".to_string(),
+                            is_public: true,
+                            annotations: vec![],
+                            args: vec![
+                                FieldDecl {
+                                    name: "size".to_string(),
+                                    ty: TypeNode::Ulong,
+                                }
+                            ],
+                            return_ty: Some(TypeNode::Void),
+                            body: Some(Block {
+                                statements: vec![
+                                    Statement::UnsafeBlock(Block {
+                                        statements: vec![Statement::Return(None)]
+                                    })
+                                ],
+                            }),
+                        }
+                    ],
+                })
+            ],
+        };
+
+        // If the compiler builds this without lifetime/borrowing errors, our Box usage and nesting is sound!
+        assert_eq!(ast.items.len(), 1);
+        if let Item::Agent(ref agent) = ast.items[0] {
+            assert!(agent.is_system);
+            assert_eq!(agent.name, "VramManager");
+        } else {
+            panic!("Expected Agent");
+        }
+    }
+}

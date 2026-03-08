@@ -1,0 +1,7 @@
+[package]
+name = "varg-playground"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+varg-os-types = { path = "../varg-os-types" }

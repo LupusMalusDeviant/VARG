@@ -1,0 +1,30 @@
+# Rust Build-Artefakte
+/varg-compiler/target/
+/varg-compiler/.vargc_cache/
+
+# VS Code Extension Build
+/varg-vscode/*.vsix
+/varg-vscode/node_modules/
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/settings.json
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Env/Secrets
+.env
+*.key
+*.pem
+
+# Claude Agent Memory (project-specific, not shared)
+.claude/

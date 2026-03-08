@@ -1,0 +1,34 @@
+{
+  "name": "varg-vscode",
+  "displayName": "Varg Language Support",
+  "description": "Official syntax highlighting for the Varg operating system language (.varg)",
+  "version": "1.0.0",
+  "publisher": "varg-labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/varg-labs/varg-vscode"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "varg",
+        "aliases": ["Varg", "varg"],
+        "extensions": [".varg"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "varg",
+        "scopeName": "source.varg",
+        "path": "./syntaxes/varg.tmLanguage.json"
+      }
+    ]
+  }
+}

@@ -1,0 +1,116 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Varg",
+    "scopeName": "source.varg",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#prompt_literal"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#types"
+        },
+        {
+            "include": "#annotations"
+        },
+        {
+            "include": "#vargmin"
+        },
+        {
+            "include": "#numbers"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.varg",
+                    "match": "//.*$"
+                },
+                {
+                    "name": "comment.block.varg",
+                    "begin": "/\\*",
+                    "end": "\\*/"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.varg",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.varg",
+                            "match": "\\\\."
+                        }
+                    ]
+                }
+            ]
+        },
+        "prompt_literal": {
+            "name": "string.quoted.triple.varg",
+            "begin": "prompt\\s+\"\"\"",
+            "end": "\"\"\"",
+            "patterns": [
+                {
+                    "name": "variable.other.varg",
+                    "match": "\\$\\{[^}]+\\}"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.varg",
+                    "match": "\\b(if|else|while|for|foreach|in|try|catch|throw|return|from|where|select|orderby|descending|import)\\b"
+                },
+                {
+                    "name": "keyword.other.varg",
+                    "match": "\\b(public|private|system|agent|contract|struct|unsafe|var|fetch|query|encrypt|decrypt|to_json|from_json|llm_infer|llm_chat|stream|context_from|time_now|file_read|file_write|str_replace|str_trim|str_split)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "support.type.varg",
+                    "match": "\\b(int|string|bool|void|Tensor|Prompt|Context|Result|Error|map)\\b"
+                }
+            ]
+        },
+        "annotations": {
+            "patterns": [
+                {
+                    "name": "entity.name.function.decorator.varg",
+                    "match": "@\\[(?:[a-zA-Z_][a-zA-Z0-9_]*)(?:\\([^)]*\\))?\\]"
+                }
+            ]
+        },
+        "vargmin": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.vargmin.varg",
+                    "match": "(\\+A|-A|\\+M|\\+V|\\?|~|F)"
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.varg",
+                    "match": "\\b\\d+(\\.\\d+)?\\b"
+                }
+            ]
+        }
+    }
+}

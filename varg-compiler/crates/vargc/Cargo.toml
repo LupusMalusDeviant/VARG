@@ -1,0 +1,11 @@
+[package]
+name = "vargc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+varg-ast = { path = "../varg-ast" }
+varg-lexer = { path = "../varg-lexer" }
+varg-parser = { path = "../varg-parser" }
+varg-typechecker = { path = "../varg-typechecker" }
+varg-codegen = { path = "../varg-codegen" }
