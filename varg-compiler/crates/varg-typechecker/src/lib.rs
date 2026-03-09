@@ -9,10 +9,33 @@ pub enum TypeError {
     IllegalOsCall { reason: String }, // OCAP Violation
 }
 
+impl TypeError {
+    /// Human-readable error message for formatted output
+    pub fn message(&self) -> String {
+        match self {
+            TypeError::TypeMismatch { expected, found } => {
+                format!("type mismatch: expected `{}`, found `{}`", expected, found)
+            }
+            TypeError::UndeclaredVariable(name) => {
+                format!("use of undeclared variable `{}`", name)
+            }
+            TypeError::IllegalOsCall { reason } => {
+                reason.clone()
+            }
+        }
+    }
+}
+
 pub struct TypeChecker {
     // Very simple symbol table for this MVP, tracking variables and their types in current scope
     env: HashMap<String, TypeNode>,
-    
+
+    // Registered enum definitions (name → variants)
+    enum_defs: HashMap<String, Vec<EnumVariant>>,
+
+    // Registered type aliases (name → resolved type)
+    type_aliases: HashMap<String, TypeNode>,
+
     // OCAP state
     in_unsafe_block: bool,
 }
@@ -27,6 +50,8 @@ impl TypeChecker {
     pub fn new() -> Self {
         Self {
             env: HashMap::new(),
+            enum_defs: HashMap::new(),
+            type_aliases: HashMap::new(),
             in_unsafe_block: false,
         }
     }
@@ -47,12 +72,22 @@ impl TypeChecker {
                 }
                 Ok(())
             },
-            Item::Contract(contract) => {
+            Item::Contract(_contract) => {
                 // Contracts are interfaces, no bodies to check right now
                 Ok(())
             },
             Item::Struct(_s) => {
                 // Struct property definitions are syntactically valid by parser.
+                Ok(())
+            },
+            Item::Enum(e) => {
+                // Register the enum definition for later use
+                self.enum_defs.insert(e.name.clone(), e.variants.clone());
+                Ok(())
+            },
+            Item::TypeAlias { name, target } => {
+                // Register the type alias for later resolution
+                self.type_aliases.insert(name.clone(), target.clone());
                 Ok(())
             }
         }
@@ -192,6 +227,7 @@ impl TypeChecker {
         match expr {
             Expression::Int(_) => Ok(TypeNode::Int),
             Expression::String(_) => Ok(TypeNode::String),
+            Expression::Null => Ok(TypeNode::Nullable(Box::new(TypeNode::Custom("Dynamic".to_string())))),
             Expression::PromptLiteral(_) => Ok(TypeNode::Prompt),
             Expression::Bool(_) => Ok(TypeNode::Bool),
             Expression::Identifier(name) => {
@@ -393,6 +429,18 @@ impl TypeChecker {
             (TypeNode::Map(k1, v1), TypeNode::Map(k2, v2)) => {
                 self.types_match(k1, k2) && self.types_match(v1, v2)
             },
+            // Nullable: null can be assigned to any nullable type, and T matches T?
+            (TypeNode::Nullable(inner), TypeNode::Nullable(actual_inner)) => {
+                self.types_match(inner, actual_inner)
+            },
+            (TypeNode::Nullable(_), actual) if *actual == TypeNode::Nullable(Box::new(TypeNode::Custom("Dynamic".to_string()))) => {
+                // null literal (which is Nullable(Dynamic)) can be assigned to any Nullable type
+                true
+            },
+            (TypeNode::Nullable(inner), actual) => {
+                // A non-null value can be assigned to a nullable variable: string? x = "hello"
+                self.types_match(inner, actual)
+            },
             (TypeNode::TypeVar(_), _) => {
                 // MVP Generic Substitution: A TypeVar (e.g. T) natively accepts the instanced type
                 true
@@ -423,6 +471,8 @@ mod tests {
                     name: "StealData".to_string(),
                     is_public: true,
                     annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
                     body: Some(Block {
@@ -460,6 +510,8 @@ mod tests {
                     name: "Read".to_string(),
                     is_public: true,
                     annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
                     body: Some(Block {
@@ -495,6 +547,8 @@ mod tests {
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
                     body: Some(Block {
@@ -529,6 +583,8 @@ mod tests {
                     name: "Scrape".to_string(),
                     is_public: true,
                     annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
                     body: Some(Block {
@@ -572,10 +628,12 @@ mod tests {
                 methods: vec![MethodDecl {
                     name: "RunCmd".to_string(),
                     is_public: true,
-                    annotations: vec![Annotation { 
-                        name: "CliCommand".to_string(), 
-                        values: vec!["run".to_string(), "Runs it".to_string()] 
+                    annotations: vec![Annotation {
+                        name: "CliCommand".to_string(),
+                        values: vec!["run".to_string(), "Runs it".to_string()]
                     }],
+                    type_params: vec![],
+                    constraints: vec![],
                     args: vec![FieldDecl {
                         name: "complex_arg".to_string(),
                         ty: TypeNode::Prompt, // Not allowed for CLI input directly
@@ -596,5 +654,639 @@ mod tests {
         } else {
             panic!("Expected TypeMismatch error for invalid CLI args!");
         }
+    }
+
+    // ---- Plan 08: Extended TypeChecker Coverage ----
+
+    #[test]
+    fn test_undeclared_variable() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Expr(Expression::Identifier("nonexistent".to_string()))
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert_eq!(result, Err(TypeError::UndeclaredVariable("nonexistent".to_string())));
+    }
+
+    #[test]
+    fn test_assign_to_undeclared() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Assign {
+                                name: "missing".to_string(),
+                                value: Expression::Int(42),
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert_eq!(result, Err(TypeError::UndeclaredVariable("missing".to_string())));
+    }
+
+    #[test]
+    fn test_while_non_bool_condition() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::While {
+                                condition: Expression::Int(42), // Not a bool!
+                                body: Block { statements: vec![] },
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert_eq!(result, Err(TypeError::TypeMismatch { expected: "Bool".to_string(), found: "Int".to_string() }));
+    }
+
+    #[test]
+    fn test_if_non_bool_condition() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::If {
+                                condition: Expression::String("not bool".to_string()),
+                                then_block: Block { statements: vec![] },
+                                else_block: None,
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert_eq!(result, Err(TypeError::TypeMismatch { expected: "Bool".to_string(), found: "String".to_string() }));
+    }
+
+    #[test]
+    fn test_var_type_inference() {
+        // var x = 42; → x should be Int
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let { name: "x".to_string(), ty: None, value: Expression::Int(42) },
+                            // Now assign a string to x → should fail
+                            Statement::Assign { name: "x".to_string(), value: Expression::String("oops".to_string()) },
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err()); // Int inferred, can't assign String
+    }
+
+    #[test]
+    fn test_ocap_llm_infer_violation() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "llm_infer".to_string(),
+                                args: vec![Expression::String("hello".to_string())],
+                            })
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        if let Err(TypeError::IllegalOsCall { reason }) = result {
+            assert!(reason.contains("LLM inference"));
+        } else { panic!("Expected IllegalOsCall"); }
+    }
+
+    #[test]
+    fn test_ocap_file_read_violation() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "file_read".to_string(),
+                                args: vec![Expression::String("/etc/passwd".to_string())],
+                            })
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        if let Err(TypeError::IllegalOsCall { reason }) = result {
+            assert!(reason.contains("file_read"));
+        } else { panic!("Expected IllegalOsCall"); }
+    }
+
+    #[test]
+    fn test_ocap_file_write_violation() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "file_write".to_string(),
+                                args: vec![
+                                    Expression::String("/tmp/test".to_string()),
+                                    Expression::String("data".to_string()),
+                                ],
+                            })
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        if let Err(TypeError::IllegalOsCall { reason }) = result {
+            assert!(reason.contains("file_write"));
+        } else { panic!("Expected IllegalOsCall"); }
+    }
+
+    #[test]
+    fn test_array_literal_type_inference() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "items".to_string(),
+                                ty: Some(TypeNode::Array(Box::new(TypeNode::Int))),
+                                value: Expression::ArrayLiteral(vec![
+                                    Expression::Int(1),
+                                    Expression::Int(2),
+                                    Expression::Int(3),
+                                ]),
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_map_literal_type_inference() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "config".to_string(),
+                                ty: Some(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String))),
+                                value: Expression::MapLiteral(vec![
+                                    (Expression::String("key".to_string()), Expression::String("val".to_string())),
+                                ]),
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_alias_registration() {
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::TypeAlias { name: "UserId".to_string(), target: TypeNode::String },
+            ]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+        assert!(checker.type_aliases.contains_key("UserId"));
+        assert_eq!(checker.type_aliases["UserId"], TypeNode::String);
+    }
+
+    #[test]
+    fn test_valid_unsafe_file_read() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: true,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Read".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::UnsafeBlock(Block {
+                                statements: vec![
+                                    Statement::Expr(Expression::MethodCall {
+                                        caller: Box::new(Expression::Identifier("self".to_string())),
+                                        method_name: "file_read".to_string(),
+                                        args: vec![Expression::String("/tmp/data".to_string())],
+                                    })
+                                ]
+                            })
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_method_args_registered_in_scope() {
+        // Method args should be usable in the body
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Echo".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![FieldDecl { name: "msg".to_string(), ty: TypeNode::String }],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Return(Some(Expression::Identifier("msg".to_string())))
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_try_catch_registers_error_var() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::TryCatch {
+                                try_block: Block {
+                                    statements: vec![Statement::Throw(Expression::String("oops".to_string()))]
+                                },
+                                catch_var: "err".to_string(),
+                                catch_block: Block {
+                                    statements: vec![
+                                        Statement::Print(Expression::Identifier("err".to_string()))
+                                    ]
+                                },
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ---- Plan 07: Type System Tests ----
+
+    #[test]
+    fn test_nullable_null_assignment() {
+        // string? name = null; → OK
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "name".to_string(),
+                                ty: Some(TypeNode::Nullable(Box::new(TypeNode::String))),
+                                value: Expression::Null,
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_nullable_value_assignment() {
+        // string? name = "hello"; → OK (non-null value can be assigned to nullable)
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "name".to_string(),
+                                ty: Some(TypeNode::Nullable(Box::new(TypeNode::String))),
+                                value: Expression::String("hello".to_string()),
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_non_nullable_null_assignment_fails() {
+        // string name = null; → ERROR (can't assign null to non-nullable)
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "name".to_string(),
+                                ty: Some(TypeNode::String),
+                                value: Expression::Null,
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_enum_registration() {
+        // enum Status { Active, Inactive } → registered in checker
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Enum(EnumDef {
+                    name: "Status".to_string(),
+                    is_public: true,
+                    variants: vec![
+                        EnumVariant { name: "Active".to_string(), fields: vec![] },
+                        EnumVariant { name: "Inactive".to_string(), fields: vec![] },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "Test".to_string(),
+                    is_system: false,
+                    is_public: false,
+                    target_annotation: None,
+                    annotations: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true,
+                        annotations: vec![],
+                        type_params: vec![],
+                        constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![] })
+                    }]
+                })
+            ]
+        };
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+        assert!(checker.enum_defs.contains_key("Status"));
+        assert_eq!(checker.enum_defs["Status"].len(), 2);
     }
 }

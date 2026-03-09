@@ -3,9 +3,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 
-use varg_parser::Parser;
+use varg_parser::{Parser, ParseError};
 use varg_typechecker::TypeChecker;
 use varg_codegen::RustGenerator;
+
+use codespan_reporting::diagnostic::{Diagnostic, Label};
+use codespan_reporting::files::SimpleFiles;
+use codespan_reporting::term;
+use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -52,15 +57,71 @@ fn print_usage() {
     println!("  vargc emit-rs <file.varg> - Translates to Rust source code (.rs) but does not compile");
 }
 
+fn report_parse_error(filename: &str, source: &str, err: &ParseError) {
+    let mut files = SimpleFiles::new();
+    let file_id = files.add(filename, source);
+    let writer = StandardStream::stderr(ColorChoice::Auto);
+    let config = term::Config::default();
+
+    let diagnostic = match err {
+        ParseError::UnexpectedToken { expected, found, span } => {
+            let found_str = match found {
+                Some(t) => format!("{:?}", t),
+                None => "nothing".to_string(),
+            };
+            Diagnostic::error()
+                .with_message(format!("unexpected token: expected {}", expected))
+                .with_labels(vec![
+                    Label::primary(file_id, span.clone())
+                        .with_message(format!("found `{}` here", found_str)),
+                ])
+                .with_notes(vec![format!("expected: {}", expected)])
+        }
+        ParseError::UnexpectedEof => {
+            Diagnostic::error()
+                .with_message("unexpected end of file")
+                .with_labels(vec![
+                    Label::primary(file_id, source.len()..source.len())
+                        .with_message("file ends here"),
+                ])
+        }
+    };
+
+    term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap_or_else(|_| {
+        eprintln!("Syntax Error in {}: {:?}", filename, err);
+    });
+}
+
+fn report_semantic_error(filename: &str, source: &str, err: &varg_typechecker::TypeError) {
+    let mut files = SimpleFiles::new();
+    let file_id = files.add(filename, source);
+    let writer = StandardStream::stderr(ColorChoice::Auto);
+    let config = term::Config::default();
+
+    let diagnostic = Diagnostic::error()
+        .with_message(err.message())
+        .with_labels(vec![
+            Label::primary(file_id, 0..0)
+                .with_message("in this file"),
+        ]);
+
+    term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap_or_else(|_| {
+        eprintln!("Semantic Error: {:?}", err);
+    });
+}
+
 fn parse_and_generate(input_path: &str) -> (String, varg_ast::ast::Program) {
     let mut loaded = std::collections::HashSet::new();
-    let mut merged_ast = varg_ast::ast::Program { items: Vec::new() };
-    
+    let mut merged_ast = varg_ast::ast::Program { no_std: false, items: Vec::new() };
+
     parse_recursive(input_path, &mut merged_ast, &mut loaded);
+
+    // Read the source again for error reporting
+    let source_for_errors = fs::read_to_string(input_path).unwrap_or_default();
 
     let mut checker = TypeChecker::new();
     if let Err(err) = checker.check_program(&merged_ast) {
-        eprintln!("Semantic Error: {:?}", err);
+        report_semantic_error(input_path, &source_for_errors, &err);
         exit(1);
     }
 
@@ -82,7 +143,7 @@ fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mu
 
     let mut parser = Parser::new(&source);
     let ast = parser.parse_program().unwrap_or_else(|err| {
-        eprintln!("Syntax Error in {}: {:?}", path, err);
+        report_parse_error(path, &source, &err);
         exit(1);
     });
 

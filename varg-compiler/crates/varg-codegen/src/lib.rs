@@ -211,6 +211,25 @@ impl RustGenerator {
     fn gen_item(&self, item: &Item) -> String {
         match item {
             Item::Import(_) => String::new(), // Merged by vargc beforehand
+            Item::TypeAlias { name, target } => {
+                format!("type {} = {};\n", name, self.gen_type(target))
+            },
+            Item::Enum(e) => {
+                let vis = if e.is_public { "pub " } else { "" };
+                let mut out = format!("#[derive(Debug, Clone, PartialEq)]\n{}enum {} {{\n", vis, e.name);
+                for variant in &e.variants {
+                    if variant.fields.is_empty() {
+                        out.push_str(&format!("    {},\n", variant.name));
+                    } else {
+                        let fields: Vec<String> = variant.fields.iter()
+                            .map(|(name, ty)| format!("{}: {}", name, self.gen_type(ty)))
+                            .collect();
+                        out.push_str(&format!("    {} {{ {} }},\n", variant.name, fields.join(", ")));
+                    }
+                }
+                out.push_str("}\n");
+                out
+            },
             Item::Struct(s) => {
                 let vis = if s.is_public { "pub " } else { "" };
                 let type_params = if s.type_params.is_empty() { "".to_string() } else { format!("<{}>", s.type_params.join(", ")) };
@@ -279,7 +298,15 @@ impl RustGenerator {
         };
 
         let type_params = if method.type_params.is_empty() { "".to_string() } else { format!("<{}>", method.type_params.join(", ")) };
-        format!("{}fn {}{}({}){}", vis, method.name, type_params, arg_str, ret_str)
+        let where_clause = if method.constraints.is_empty() {
+            "".to_string()
+        } else {
+            let constraints: Vec<String> = method.constraints.iter()
+                .map(|c| format!("{}: {}", c.type_param, c.bound))
+                .collect();
+            format!(" where {}", constraints.join(", "))
+        };
+        format!("{}fn {}{}({}){}{}", vis, method.name, type_params, arg_str, ret_str, where_clause)
     }
 
     fn gen_type(&self, ty: &TypeNode) -> String {
@@ -296,6 +323,7 @@ impl RustGenerator {
             TypeNode::Tensor => "Tensor".to_string(),
             TypeNode::Embedding => "Embedding".to_string(),
             
+            TypeNode::Nullable(inner) => format!("Option<{}>", self.gen_type(inner)),
             TypeNode::Result(ok, err) => format!("std::result::Result<{}, {}>", self.gen_type(ok), self.gen_type(err)),
             TypeNode::Error => "String".to_string(),
             TypeNode::TypeMapShort => "std::collections::HashMap<String, String>".to_string(),
@@ -415,6 +443,7 @@ impl RustGenerator {
 
     fn gen_expression(&self, expr: &Expression) -> String {
         match expr {
+            Expression::Null => "None".to_string(),
             Expression::Int(i) => i.to_string(),
             Expression::String(s) => format!("{:?}.to_string()", s),
             Expression::PromptLiteral(s) => {
@@ -580,6 +609,8 @@ mod tests {
                     name: "Recall".to_string(),
                     is_public: true,
                     annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::String),
                     body: Some(Block {
@@ -603,5 +634,519 @@ mod tests {
         assert!(code.contains("pub fn Recall(&mut self) -> String"));
         assert!(code.contains("let mut mem = \"Data\".to_string();"));
         assert!(code.contains("return mem;"));
+    }
+
+    // ---- Plan 08: Extended CodeGen Coverage ----
+
+    #[test]
+    fn test_codegen_contract_trait() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Contract(ContractDef {
+                name: "Searchable".to_string(),
+                is_public: true,
+                target_annotation: None,
+                methods: vec![
+                    MethodDecl {
+                        name: "Find".to_string(),
+                        is_public: true,
+                        annotations: vec![],
+                        type_params: vec![],
+                        constraints: vec![],
+                        args: vec![FieldDecl { name: "query".to_string(), ty: TypeNode::String }],
+                        return_ty: Some(TypeNode::String),
+                        body: None,
+                    },
+                ],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("pub trait Searchable"));
+        assert!(code.contains("fn Find(&mut self, query: String) -> String;"));
+    }
+
+    #[test]
+    fn test_codegen_struct() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Struct(StructDef {
+                name: "UserProfile".to_string(),
+                is_public: true,
+                type_params: vec![],
+                fields: vec![
+                    FieldDecl { name: "name".to_string(), ty: TypeNode::String },
+                    FieldDecl { name: "age".to_string(), ty: TypeNode::Int },
+                    FieldDecl { name: "active".to_string(), ty: TypeNode::Bool },
+                ],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("pub struct UserProfile"));
+        assert!(code.contains("pub name: String,"));
+        assert!(code.contains("pub age: i64,"));
+        assert!(code.contains("pub active: bool,"));
+    }
+
+    #[test]
+    fn test_codegen_if_else() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::If {
+                                condition: Expression::Bool(true),
+                                then_block: Block {
+                                    statements: vec![Statement::Print(Expression::String("yes".to_string()))]
+                                },
+                                else_block: Some(Block {
+                                    statements: vec![Statement::Print(Expression::String("no".to_string()))]
+                                }),
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("if true {"));
+        assert!(code.contains("} else {"));
+    }
+
+    #[test]
+    fn test_codegen_while_loop() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::While {
+                                condition: Expression::Bool(true),
+                                body: Block {
+                                    statements: vec![Statement::Return(None)]
+                                },
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("while true {"));
+        assert!(code.contains("return;"));
+    }
+
+    #[test]
+    fn test_codegen_foreach() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Foreach {
+                                item_name: "item".to_string(),
+                                collection: Expression::Identifier("items".to_string()),
+                                body: Block {
+                                    statements: vec![Statement::Print(Expression::Identifier("item".to_string()))]
+                                },
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("for mut item in items {"));
+    }
+
+    #[test]
+    fn test_codegen_try_catch() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::TryCatch {
+                                try_block: Block {
+                                    statements: vec![Statement::Throw(Expression::String("error".to_string()))]
+                                },
+                                catch_var: "err".to_string(),
+                                catch_block: Block {
+                                    statements: vec![Statement::Print(Expression::Identifier("err".to_string()))]
+                                },
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("'varg_try:"));
+        assert!(code.contains("if let Err(mut err)"));
+        assert!(code.contains("break 'varg_try Err("));
+    }
+
+    #[test]
+    fn test_codegen_print() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Print(Expression::String("hello world".to_string()))
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("println!(\"{:?}\","));
+    }
+
+    #[test]
+    fn test_codegen_binary_ops() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "sum".to_string(),
+                                ty: None,
+                                value: Expression::BinaryOp {
+                                    left: Box::new(Expression::Int(1)),
+                                    operator: BinaryOperator::Add,
+                                    right: Box::new(Expression::Int(2)),
+                                },
+                            },
+                            Statement::Let {
+                                name: "eq".to_string(),
+                                ty: None,
+                                value: Expression::BinaryOp {
+                                    left: Box::new(Expression::Int(1)),
+                                    operator: BinaryOperator::Eq,
+                                    right: Box::new(Expression::Int(1)),
+                                },
+                            },
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("1 + 2"));
+        assert!(code.contains("1 == 1"));
+    }
+
+    #[test]
+    fn test_codegen_array_literal() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "arr".to_string(),
+                                ty: None,
+                                value: Expression::ArrayLiteral(vec![
+                                    Expression::Int(1),
+                                    Expression::Int(2),
+                                    Expression::Int(3),
+                                ]),
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("vec![1, 2, 3]"));
+    }
+
+    #[test]
+    fn test_codegen_unsafe_block() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: true,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::UnsafeBlock(Block {
+                                statements: vec![Statement::Return(None)]
+                            })
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("unsafe {"));
+        assert!(code.contains("return;"));
+    }
+
+    #[test]
+    fn test_codegen_method_with_where_clause() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Sort".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec!["T".to_string()],
+                    constraints: vec![GenericConstraint {
+                        type_param: "T".to_string(),
+                        bound: "Comparable".to_string(),
+                    }],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![] })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("fn Sort<T>"));
+        assert!(code.contains("where T: Comparable"));
+    }
+
+    #[test]
+    fn test_codegen_all_type_mappings() {
+        // Test that all Varg types map to correct Rust types
+        let gen = RustGenerator::new();
+        assert_eq!(gen.gen_type(&TypeNode::Int), "i64");
+        assert_eq!(gen.gen_type(&TypeNode::Ulong), "u64");
+        assert_eq!(gen.gen_type(&TypeNode::String), "String");
+        assert_eq!(gen.gen_type(&TypeNode::Bool), "bool");
+        assert_eq!(gen.gen_type(&TypeNode::Void), "()");
+        assert_eq!(gen.gen_type(&TypeNode::Prompt), "Prompt");
+        assert_eq!(gen.gen_type(&TypeNode::Context), "Context");
+        assert_eq!(gen.gen_type(&TypeNode::Tensor), "Tensor");
+        assert_eq!(gen.gen_type(&TypeNode::Embedding), "Embedding");
+        assert_eq!(gen.gen_type(&TypeNode::Error), "String");
+        assert_eq!(gen.gen_type(&TypeNode::Array(Box::new(TypeNode::Int))), "Vec<i64>");
+        assert_eq!(gen.gen_type(&TypeNode::List(Box::new(TypeNode::String))), "Vec<String>");
+        assert_eq!(gen.gen_type(&TypeNode::Nullable(Box::new(TypeNode::Bool))), "Option<bool>");
+        assert_eq!(gen.gen_type(&TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Int))), "std::collections::HashMap<String, i64>");
+        assert_eq!(gen.gen_type(&TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error))), "std::result::Result<String, String>");
+        assert_eq!(gen.gen_type(&TypeNode::TypeVar("T".to_string())), "T");
+    }
+
+    #[test]
+    fn test_codegen_struct_with_generics() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Struct(StructDef {
+                name: "Container".to_string(),
+                is_public: true,
+                type_params: vec!["T".to_string()],
+                fields: vec![
+                    FieldDecl { name: "value".to_string(), ty: TypeNode::TypeVar("T".to_string()) },
+                ],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("pub struct Container<T>"));
+        assert!(code.contains("pub value: T,"));
+    }
+
+    // ---- Plan 07 Tests ----
+
+    #[test]
+    fn test_codegen_enum() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Enum(EnumDef {
+                name: "Status".to_string(),
+                is_public: true,
+                variants: vec![
+                    EnumVariant { name: "Active".to_string(), fields: vec![] },
+                    EnumVariant { name: "Suspended".to_string(), fields: vec![
+                        ("reason".to_string(), TypeNode::String),
+                    ]},
+                ],
+            })]
+        };
+
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+
+        assert!(code.contains("pub enum Status"));
+        assert!(code.contains("Active,"));
+        assert!(code.contains("Suspended { reason: String }"));
+    }
+
+    #[test]
+    fn test_codegen_type_alias() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::TypeAlias {
+                name: "UserId".to_string(),
+                target: TypeNode::String,
+            }]
+        };
+
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+
+        assert!(code.contains("type UserId = String;"));
+    }
+
+    #[test]
+    fn test_codegen_nullable_type() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![FieldDecl {
+                        name: "name".to_string(),
+                        ty: TypeNode::Nullable(Box::new(TypeNode::String)),
+                    }],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "x".to_string(),
+                            ty: None,
+                            value: Expression::Null,
+                        }
+                    ]})
+                }]
+            })]
+        };
+
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+
+        assert!(code.contains("name: Option<String>"));
+        assert!(code.contains("let mut x = None;"));
     }
 }

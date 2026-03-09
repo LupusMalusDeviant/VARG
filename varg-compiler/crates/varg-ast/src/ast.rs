@@ -9,6 +9,8 @@ pub enum Item {
     Agent(AgentDef),
     Contract(ContractDef),
     Struct(StructDef),
+    Enum(EnumDef),
+    TypeAlias { name: String, target: TypeNode },
     Import(String),
 }
 
@@ -46,6 +48,27 @@ pub struct StructDef {
     pub fields: Vec<FieldDecl>,
 }
 
+// ---- Enum Types (Plan 07) ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct EnumDef {
+    pub name: String,
+    pub is_public: bool,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<(String, TypeNode)>, // Optional associated data: Suspended(string reason)
+}
+
+// ---- Generic Constraints (Plan 07) ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct GenericConstraint {
+    pub type_param: String,  // T
+    pub bound: String,       // Comparable (Contract name)
+}
+
 // ---- Methods and Fields ----
 #[derive(Debug, PartialEq, Clone)]
 pub struct FieldDecl {
@@ -59,6 +82,7 @@ pub struct MethodDecl {
     pub is_public: bool,
     pub annotations: Vec<Annotation>,
     pub type_params: Vec<String>,
+    pub constraints: Vec<GenericConstraint>,
     pub args: Vec<FieldDecl>,
     pub return_ty: Option<TypeNode>,
     pub body: Option<Block>, // Contracts only have declarations (None)
@@ -98,6 +122,7 @@ pub enum Expression {
     Int(i64),
     String(String),
     Bool(bool),
+    Null,
     Identifier(String),
     BinaryOp {
         left: Box<Expression>,
@@ -159,6 +184,9 @@ pub enum TypeNode {
     Array(Box<TypeNode>), // e.g., string[]
     Map(Box<TypeNode>, Box<TypeNode>), // e.g., map<string, int>
     
+    // Plan 07: Nullable Types
+    Nullable(Box<TypeNode>),         // string? → Option<String>
+
     // Phase 23: Generics!
     TypeVar(String),                 // An unbound generic type like T or K
     Generic(String, Vec<TypeNode>),  // Standard User-Generics Box<int>
@@ -186,6 +214,7 @@ mod tests {
         //     }
         // }
         let ast = Program {
+            no_std: false,
             items: vec![
                 Item::Agent(AgentDef {
                     name: "VramManager".to_string(),
@@ -198,6 +227,8 @@ mod tests {
                             name: "Allocate".to_string(),
                             is_public: true,
                             annotations: vec![],
+                            type_params: vec![],
+                            constraints: vec![],
                             args: vec![
                                 FieldDecl {
                                     name: "size".to_string(),

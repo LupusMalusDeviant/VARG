@@ -1,28 +1,43 @@
 use varg_ast::Token;
 use varg_ast::ast::*;
 use varg_lexer::Lexer;
+use std::ops::Range;
 
 pub struct Parser {
-    tokens: Vec<Token>,
+    tokens: Vec<(Token, Range<usize>)>,
     pos: usize,
+    source_len: usize,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum ParseError {
-    UnexpectedToken { expected: String, found: Option<Token> },
+    UnexpectedToken { expected: String, found: Option<Token>, span: Range<usize> },
     UnexpectedEof,
+}
+
+impl ParseError {
+    /// Returns the source span where this error occurred (if available)
+    pub fn span(&self) -> Option<Range<usize>> {
+        match self {
+            ParseError::UnexpectedToken { span, .. } => Some(span.clone()),
+            ParseError::UnexpectedEof => None,
+        }
+    }
 }
 
 impl Parser {
     pub fn new(source: &str) -> Self {
         let lexer = Lexer::new(source);
-        let tokens: Vec<Token> = lexer.filter_map(|(res, _)| res.ok()).collect();
-        Self { tokens, pos: 0 }
+        let tokens: Vec<(Token, Range<usize>)> = lexer
+            .filter_map(|(res, span)| res.ok().map(|tok| (tok, span)))
+            .collect();
+        let source_len = source.len();
+        Self { tokens, pos: 0, source_len }
     }
 
     fn advance(&mut self) -> Option<Token> {
         if self.pos < self.tokens.len() {
-            let tok = self.tokens[self.pos].clone();
+            let tok = self.tokens[self.pos].0.clone();
             self.pos += 1;
             Some(tok)
         } else {
@@ -30,12 +45,30 @@ impl Parser {
         }
     }
 
-    fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.pos)
+    /// Returns the byte span of the last consumed token
+    fn last_span(&self) -> Range<usize> {
+        if self.pos > 0 && self.pos <= self.tokens.len() {
+            self.tokens[self.pos - 1].1.clone()
+        } else {
+            self.source_len..self.source_len
+        }
     }
-    
+
+    /// Returns the byte span of the current (peeked) token
+    fn current_span(&self) -> Range<usize> {
+        if self.pos < self.tokens.len() {
+            self.tokens[self.pos].1.clone()
+        } else {
+            self.source_len..self.source_len
+        }
+    }
+
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.pos).map(|(tok, _)| tok)
+    }
+
     fn peek_n(&self, offset: usize) -> Option<&Token> {
-        self.tokens.get(self.pos + offset)
+        self.tokens.get(self.pos + offset).map(|(tok, _)| tok)
     }
 
     fn is_variable_declaration_start(&mut self) -> bool {
@@ -49,22 +82,26 @@ impl Parser {
     }
 
     fn consume(&mut self, expected: Token) -> Result<(), ParseError> {
+        let span = self.current_span();
         match self.advance() {
             Some(t) if t == expected => Ok(()),
             Some(t) => Err(ParseError::UnexpectedToken {
                 expected: format!("{:?}", expected),
                 found: Some(t),
+                span,
             }),
             None => Err(ParseError::UnexpectedEof),
         }
     }
 
     fn parse_identifier(&mut self) -> Result<String, ParseError> {
+        let span = self.current_span();
         match self.advance() {
             Some(Token::Identifier(name)) => Ok(name),
             Some(t) => Err(ParseError::UnexpectedToken {
                 expected: "Identifier".to_string(),
                 found: Some(t),
+                span,
             }),
             None => Err(ParseError::UnexpectedEof),
         }
@@ -87,6 +124,7 @@ impl Parser {
                             return Err(ParseError::UnexpectedToken {
                                 expected: "String Literal".to_string(),
                                 found: self.advance(),
+                                span: self.current_span(),
                             });
                         }
                         if self.peek() == Some(&Token::Comma) {
@@ -182,6 +220,24 @@ impl Parser {
                     methods,
                 }))
             },
+            Some(Token::Enum) => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                let variants = self.parse_enum_variants()?;
+                Ok(Item::Enum(EnumDef {
+                    name,
+                    is_public,
+                    variants,
+                }))
+            },
+            Some(Token::Type) => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                self.consume(Token::Assign)?;
+                let target = self.parse_type()?;
+                self.consume(Token::Semicolon)?;
+                Ok(Item::TypeAlias { name, target })
+            },
             Some(Token::Struct) => {
                 self.advance();
                 let name = self.parse_identifier()?;
@@ -209,11 +265,47 @@ impl Parser {
                 }))
             }
             Some(t) => Err(ParseError::UnexpectedToken {
-                expected: "Agent, Contract, or Struct".to_string(),
+                expected: "Agent, Contract, Struct, Enum, or Type".to_string(),
                 found: Some(t.clone()),
+                span: self.current_span(),
             }),
             None => Err(ParseError::UnexpectedEof),
         }
+    }
+
+    fn parse_enum_variants(&mut self) -> Result<Vec<EnumVariant>, ParseError> {
+        self.consume(Token::LBrace)?;
+        let mut variants = Vec::new();
+        while let Some(tok) = self.peek() {
+            if *tok == Token::RBrace {
+                break;
+            }
+            let variant_name = self.parse_identifier()?;
+            let mut fields = Vec::new();
+            if self.peek() == Some(&Token::LParen) {
+                self.advance();
+                if self.peek() != Some(&Token::RParen) {
+                    loop {
+                        let field_ty = self.parse_type()?;
+                        let field_name = self.parse_identifier()?;
+                        fields.push((field_name, field_ty));
+                        if self.peek() == Some(&Token::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.consume(Token::RParen)?;
+            }
+            // Consume optional comma between variants
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
+            variants.push(EnumVariant { name: variant_name, fields });
+        }
+        self.consume(Token::RBrace)?;
+        Ok(variants)
     }
 
     fn parse_struct_fields_block(&mut self) -> Result<Vec<FieldDecl>, ParseError> {
@@ -246,6 +338,16 @@ impl Parser {
     }
 
     pub fn parse_type(&mut self) -> Result<TypeNode, ParseError> {
+        let base_type = self.parse_base_type()?;
+        // Check for nullable suffix: string? → Nullable(String)
+        if self.peek() == Some(&Token::QuestionMark) {
+            self.advance();
+            return Ok(TypeNode::Nullable(Box::new(base_type)));
+        }
+        Ok(base_type)
+    }
+
+    fn parse_base_type(&mut self) -> Result<TypeNode, ParseError> {
         match self.advance() {
             Some(Token::TypeInt) | Some(Token::TypeIntShort) => Ok(TypeNode::Int),
             Some(Token::TypeString) | Some(Token::TypeStringShort) => Ok(TypeNode::String),
@@ -300,6 +402,7 @@ impl Parser {
             Some(t) => Err(ParseError::UnexpectedToken {
                 expected: "A Type".to_string(),
                 found: Some(t),
+                span: self.last_span(),
             }),
             None => Err(ParseError::UnexpectedEof),
         }
@@ -372,6 +475,23 @@ impl Parser {
             }
             self.consume(Token::RParen)?;
 
+            // Parse optional generic constraints: where T : Comparable, V : Serializable
+            let mut constraints = Vec::new();
+            if self.peek() == Some(&Token::Where) {
+                self.advance();
+                loop {
+                    let type_param = self.parse_identifier()?;
+                    self.consume(Token::Colon)?;
+                    let bound = self.parse_identifier()?;
+                    constraints.push(GenericConstraint { type_param, bound });
+                    if self.peek() == Some(&Token::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+
             // Either a block {} or a semicolon ; (if inside a contract)
             let body = if let Some(Token::Semicolon) = self.peek() {
                 self.advance();
@@ -385,6 +505,7 @@ impl Parser {
                 is_public,
                 annotations,
                 type_params,
+                constraints,
                 args,
                 return_ty: Some(return_ty),
                 body,
@@ -448,7 +569,7 @@ impl Parser {
                                 self.consume(Token::Semicolon)?;
                                 statements.push(Statement::Assign { name: var_name, value });
                             } else {
-                                return Err(ParseError::UnexpectedToken { expected: "Valid L-Value".to_string(), found: Some(Token::Assign) });
+                                return Err(ParseError::UnexpectedToken { expected: "Valid L-Value".to_string(), found: Some(Token::Assign), span: self.current_span() });
                             }
                         },
                         _ => {
@@ -508,7 +629,10 @@ impl Parser {
                             let value = self.parse_expression()?;
                             Statement::Let { name, ty, value }
                         },
-                        _ => return Err(ParseError::UnexpectedToken { expected: "For Loop Init Statement".to_string(), found: self.advance() }),
+                        _ => {
+                            let span = self.current_span();
+                            return Err(ParseError::UnexpectedToken { expected: "For Loop Init Statement".to_string(), found: self.advance(), span });
+                        },
                     };
                     self.consume(Token::Semicolon)?;
 
@@ -565,7 +689,8 @@ impl Parser {
                         statements.push(Statement::Expr(expr));
                         if self.peek() == Some(&Token::Semicolon) { self.advance(); }
                     } else {
-                        return Err(ParseError::UnexpectedToken { expected: "Query String".to_string(), found: self.advance() });
+                        let span = self.current_span();
+                        return Err(ParseError::UnexpectedToken { expected: "Query String".to_string(), found: self.advance(), span });
                     }
                 },
 
@@ -601,6 +726,7 @@ impl Parser {
 
     fn parse_expression(&mut self) -> Result<Expression, ParseError> {
         let mut left = match self.advance() {
+            Some(Token::Null) => Expression::Null,
             Some(Token::IntLiteral(val)) => Expression::Int(val),
             Some(Token::StringLiteral(val)) => Expression::String(val.trim_matches('"').to_string()),
             Some(Token::PromptLiteralToken(val)) => {
@@ -683,6 +809,7 @@ impl Parser {
                     return Err(ParseError::UnexpectedToken {
                         expected: "Query String".to_string(),
                         found: self.advance(),
+                        span: self.last_span(),
                     });
                 }
             },
@@ -693,6 +820,7 @@ impl Parser {
                     return Err(ParseError::UnexpectedToken {
                         expected: "Query String".to_string(),
                         found: self.advance(),
+                        span: self.last_span(),
                     });
                 }
             },
@@ -714,13 +842,15 @@ impl Parser {
                 } else {
                     return Err(ParseError::UnexpectedToken {
                         expected: "( for F fetch caller".to_string(),
-                        found: self.peek().cloned()
+                        found: self.peek().cloned(),
+                        span: self.last_span(),
                     });
                 }
             },
             Some(t) => return Err(ParseError::UnexpectedToken {
                 expected: "Expression Literal/Identifier/From".to_string(),
                 found: Some(t),
+                span: self.last_span(),
             }),
             None => return Err(ParseError::UnexpectedEof),
         };
@@ -804,7 +934,7 @@ impl Parser {
                             args,
                         };
                     } else {
-                        return Err(ParseError::UnexpectedToken { expected: "Identifier before call".to_string(), found: Some(Token::LParen) });
+                        return Err(ParseError::UnexpectedToken { expected: "Identifier before call".to_string(), found: Some(Token::LParen), span: self.last_span() });
                     }
                 },
                 _ => break,
@@ -982,6 +1112,601 @@ mod tests {
                     assert_eq!(*expr, Expression::Identifier("err".to_string()));
                 } else { panic!("Expected Print"); }
             } else { panic!("Expected TryCatch"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 08: Extended Parser Coverage ----
+
+    #[test]
+    fn test_parse_empty_agent() {
+        let source = "agent Empty { }";
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.name, "Empty");
+            assert!(a.methods.is_empty());
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_import() {
+        let source = r#"import "std/crypto";"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Import(path) = &program.items[0] {
+            assert_eq!(path, "std/crypto");
+        } else { panic!("Expected Import"); }
+    }
+
+    #[test]
+    fn test_parse_while_loop() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    int count = 0;
+                    while count < 10 {
+                        count = count + 1;
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::While { condition, body: loop_body } = &body.statements[1] {
+                assert!(matches!(condition, Expression::BinaryOp { operator: BinaryOperator::Lt, .. }));
+                assert_eq!(loop_body.statements.len(), 1);
+            } else { panic!("Expected While"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_if_else() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    if true {
+                        print "yes";
+                    } else {
+                        print "no";
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::If { condition, then_block, else_block } = &body.statements[0] {
+                assert_eq!(*condition, Expression::Bool(true));
+                assert_eq!(then_block.statements.len(), 1);
+                assert!(else_block.is_some());
+                assert_eq!(else_block.as_ref().unwrap().statements.len(), 1);
+            } else { panic!("Expected If"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_foreach() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    foreach item in items {
+                        print item;
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Foreach { item_name, collection, .. } = &body.statements[0] {
+                assert_eq!(item_name, "item");
+                assert_eq!(*collection, Expression::Identifier("items".to_string()));
+            } else { panic!("Expected Foreach"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_method_call_with_args() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    var result = self.Process("data", 42);
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::MethodCall { caller, method_name, args } = value {
+                    assert_eq!(method_name, "Process");
+                    assert_eq!(args.len(), 2);
+                    assert!(matches!(&**caller, Expression::Identifier(n) if n == "self"));
+                } else { panic!("Expected MethodCall"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_property_access() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    var name = obj.name;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::PropertyAccess { caller, property_name } = value {
+                    assert_eq!(property_name, "name");
+                    assert!(matches!(&**caller, Expression::Identifier(n) if n == "obj"));
+                } else { panic!("Expected PropertyAccess"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_array_literal() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    var items = [1, 2, 3];
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::ArrayLiteral(elements) = value {
+                    assert_eq!(elements.len(), 3);
+                    assert_eq!(elements[0], Expression::Int(1));
+                    assert_eq!(elements[1], Expression::Int(2));
+                    assert_eq!(elements[2], Expression::Int(3));
+                } else { panic!("Expected ArrayLiteral"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_map_literal() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    var config = {"host": "localhost", "port": 8080};
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::MapLiteral(entries) = value {
+                    assert_eq!(entries.len(), 2);
+                } else { panic!("Expected MapLiteral"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_index_access() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    var val = items[0];
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::IndexAccess { caller, index } = value {
+                    assert!(matches!(&**caller, Expression::Identifier(n) if n == "items"));
+                    assert_eq!(**index, Expression::Int(0));
+                } else { panic!("Expected IndexAccess"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_binary_ops() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    var sum = 1 + 2;
+                    var diff = 10 - 5;
+                    var eq = 1 == 1;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // sum
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::Add, .. }));
+            } else { panic!("Expected Let"); }
+            // diff
+            if let Statement::Let { value, .. } = &body.statements[1] {
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::Sub, .. }));
+            } else { panic!("Expected Let"); }
+            // eq
+            if let Statement::Let { value, .. } = &body.statements[2] {
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::Eq, .. }));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_print_statement() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    print "hello";
+                    print 42;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            assert_eq!(body.statements.len(), 2);
+            if let Statement::Print(expr) = &body.statements[0] {
+                assert_eq!(*expr, Expression::String("hello".to_string()));
+            } else { panic!("Expected Print"); }
+            if let Statement::Print(expr) = &body.statements[1] {
+                assert_eq!(*expr, Expression::Int(42));
+            } else { panic!("Expected Print"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_stream_statement() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    stream "streaming output";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Stream(expr) = &body.statements[0] {
+                assert_eq!(*expr, Expression::String("streaming output".to_string()));
+            } else { panic!("Expected Stream"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_multiple_methods() {
+        let source = r#"
+            agent MultiAgent {
+                public void First() { return; }
+                public string Second(int count) { return "done"; }
+                private void Third() { }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.methods.len(), 3);
+            assert_eq!(a.methods[0].name, "First");
+            assert!(a.methods[0].is_public);
+            assert_eq!(a.methods[1].name, "Second");
+            assert_eq!(a.methods[1].return_ty, Some(TypeNode::String));
+            assert_eq!(a.methods[1].args.len(), 1);
+            assert_eq!(a.methods[2].name, "Third");
+            assert!(!a.methods[2].is_public);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_var_type_inference() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    var name = "hello";
+                    var count = 42;
+                    var flag = true;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            assert_eq!(body.statements.len(), 3);
+            // var declarations have ty = None
+            for stmt in &body.statements {
+                if let Statement::Let { ty, .. } = stmt {
+                    assert_eq!(*ty, None);
+                } else { panic!("Expected Let"); }
+            }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_error_unexpected_eof() {
+        let source = "agent Broken {";
+        let mut parser = Parser::new(source);
+        let result = parser.parse_program();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_query_expression() {
+        let source = r#"
+            agent DbAgent {
+                public void Run() {
+                    unsafe {
+                        var result = query "SELECT * FROM users";
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::UnsafeBlock(ub) = &body.statements[0] {
+                if let Statement::Let { value, .. } = &ub.statements[0] {
+                    if let Expression::Query(q) = value {
+                        assert_eq!(q.raw_query, "SELECT * FROM users");
+                    } else { panic!("Expected Query"); }
+                } else { panic!("Expected Let"); }
+            } else { panic!("Expected Unsafe"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_return_with_value() {
+        let source = r#"
+            agent TestAgent {
+                public int Add(int x, int y) {
+                    return x + y;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let method = &a.methods[0];
+            assert_eq!(method.name, "Add");
+            assert_eq!(method.args.len(), 2);
+            assert_eq!(method.return_ty, Some(TypeNode::Int));
+            let body = method.body.as_ref().unwrap();
+            if let Statement::Return(Some(expr)) = &body.statements[0] {
+                assert!(matches!(expr, Expression::BinaryOp { operator: BinaryOperator::Add, .. }));
+            } else { panic!("Expected Return with value"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_no_std() {
+        let source = r#"
+            #![no_std]
+            agent Bare { }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert!(program.no_std);
+        assert_eq!(program.items.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_linq_query() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    var result = from item in items where item > 5 select item;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::Linq(q) = value {
+                    assert_eq!(q.from_var, "item");
+                    assert!(q.where_clause.is_some());
+                    assert!(!q.descending);
+                } else { panic!("Expected Linq"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_generic_method() {
+        let source = r#"
+            agent TestAgent {
+                public void Process<T>(List<T> items) {
+                    return;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let method = &a.methods[0];
+            assert_eq!(method.type_params, vec!["T".to_string()]);
+            assert_eq!(method.args.len(), 1);
+            assert_eq!(method.args[0].ty, TypeNode::List(Box::new(TypeNode::TypeVar("T".to_string()))));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_struct_with_generics() {
+        let source = r#"
+            public struct Container<T> {
+                public T value;
+                public int count;
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Struct(s) = &program.items[0] {
+            assert_eq!(s.name, "Container");
+            assert_eq!(s.type_params, vec!["T".to_string()]);
+            assert_eq!(s.fields.len(), 2);
+        } else { panic!("Expected Struct"); }
+    }
+
+    #[test]
+    fn test_parse_assign_statement() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    int count = 0;
+                    count = 42;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Assign { name, value } = &body.statements[1] {
+                assert_eq!(name, "count");
+                assert_eq!(*value, Expression::Int(42));
+            } else { panic!("Expected Assign"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 07: Type System Tests ----
+
+    #[test]
+    fn test_parse_enum_simple() {
+        let source = r#"
+            public enum Status {
+                Active,
+                Inactive,
+                Pending,
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+
+        if let Item::Enum(e) = &program.items[0] {
+            assert_eq!(e.name, "Status");
+            assert!(e.is_public);
+            assert_eq!(e.variants.len(), 3);
+            assert_eq!(e.variants[0].name, "Active");
+            assert_eq!(e.variants[1].name, "Inactive");
+            assert_eq!(e.variants[2].name, "Pending");
+            assert!(e.variants[0].fields.is_empty());
+        } else { panic!("Expected Enum"); }
+    }
+
+    #[test]
+    fn test_parse_enum_with_fields() {
+        let source = r#"
+            enum ApiResponse {
+                Ok(string value),
+                Err(string message, int code),
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+
+        if let Item::Enum(e) = &program.items[0] {
+            assert_eq!(e.name, "ApiResponse");
+            assert!(!e.is_public);
+            assert_eq!(e.variants.len(), 2);
+            assert_eq!(e.variants[0].name, "Ok");
+            assert_eq!(e.variants[0].fields.len(), 1);
+            assert_eq!(e.variants[0].fields[0].0, "value");
+            assert_eq!(e.variants[0].fields[0].1, TypeNode::String);
+            assert_eq!(e.variants[1].name, "Err");
+            assert_eq!(e.variants[1].fields.len(), 2);
+        } else { panic!("Expected Enum"); }
+    }
+
+    #[test]
+    fn test_parse_type_alias() {
+        let source = r#"
+            type UserId = string;
+            type Score = int;
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+
+        if let Item::TypeAlias { name, target } = &program.items[0] {
+            assert_eq!(name, "UserId");
+            assert_eq!(*target, TypeNode::String);
+        } else { panic!("Expected TypeAlias"); }
+
+        if let Item::TypeAlias { name, target } = &program.items[1] {
+            assert_eq!(name, "Score");
+            assert_eq!(*target, TypeNode::Int);
+        } else { panic!("Expected TypeAlias"); }
+    }
+
+    #[test]
+    fn test_parse_nullable_type() {
+        let source = r#"
+            agent TestAgent {
+                public void Run() {
+                    string? name = null;
+                    int? count = 42;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { name, ty, value } = &body.statements[0] {
+                assert_eq!(name, "name");
+                assert_eq!(*ty, Some(TypeNode::Nullable(Box::new(TypeNode::String))));
+                assert_eq!(*value, Expression::Null);
+            } else { panic!("Expected Let"); }
+
+            if let Statement::Let { name, ty, value } = &body.statements[1] {
+                assert_eq!(name, "count");
+                assert_eq!(*ty, Some(TypeNode::Nullable(Box::new(TypeNode::Int))));
+                assert_eq!(*value, Expression::Int(42));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_where_clause() {
+        let source = r#"
+            agent SortAgent {
+                public void Sort<T>(List<T> items) where T : Comparable {
+                    return;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+
+        if let Item::Agent(a) = &program.items[0] {
+            let m = &a.methods[0];
+            assert_eq!(m.name, "Sort");
+            assert_eq!(m.type_params, vec!["T".to_string()]);
+            assert_eq!(m.constraints.len(), 1);
+            assert_eq!(m.constraints[0].type_param, "T");
+            assert_eq!(m.constraints[0].bound, "Comparable");
         } else { panic!("Expected Agent"); }
     }
 }

@@ -28,7 +28,13 @@ pub enum Token {
     
     // ---- Streaming (Phase 20) ----
     #[token("stream")] Stream,
-    
+
+    // ---- Type System Extensions (Plan 07) ----
+    #[token("enum")] Enum,
+    #[token("type")] Type,
+    #[token("null")] Null,
+    #[token("match")] Match,
+
     // ---- Control Flow / Loops ----
     #[token("while")] While,
     #[token("for")] For,

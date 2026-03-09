@@ -16,3 +16,4 @@ resolver = "2"
 
 [workspace.dependencies]
 logos = "0.14"
+codespan-reporting = "0.11"
