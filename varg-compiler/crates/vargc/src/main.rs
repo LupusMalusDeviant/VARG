@@ -355,9 +355,10 @@ fn {handler_name}(body: String) -> String {{
         fs::create_dir(&cache_dir).unwrap();
     }
 
-    // Determine absolute path to varg-os-types so the generated cargo project can find it
+    // Determine absolute paths to varg crates so the generated cargo project can find them
     let current_dir = env::current_dir().unwrap();
     let varg_os_types_path = current_dir.join("crates").join("varg-os-types");
+    let varg_runtime_path = current_dir.join("crates").join("varg-runtime");
 
     let cargo_toml = format!(r#"
 [package]
@@ -367,14 +368,12 @@ edition = "2021"
 
 [dependencies]
 varg-os-types = {{ path = "{}" }}
-aes-gcm = "0.10.3"
-pbkdf2 = "0.12.2"
-sha2 = "0.10.8"
-rand = "0.8.5"
-base64 = "0.22.1"
+varg-runtime = {{ path = "{}" }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
-"#, varg_name, varg_os_types_path.display().to_string().replace("\\", "/"));
+"#, varg_name,
+    varg_os_types_path.display().to_string().replace("\\", "/"),
+    varg_runtime_path.display().to_string().replace("\\", "/"));
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml).unwrap();

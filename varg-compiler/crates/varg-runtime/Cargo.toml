@@ -1,0 +1,16 @@
+[package]
+name = "varg-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Runtime helpers for compiled Varg programs (networking, DB, LLM, crypto, vector math)"
+
+[dependencies]
+varg-os-types = { path = "../varg-os-types" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["blocking"] }
+aes-gcm = "0.10.3"
+pbkdf2 = "0.12.2"
+sha2 = "0.10.8"
+rand = "0.8.5"
+base64 = "0.22.1"
