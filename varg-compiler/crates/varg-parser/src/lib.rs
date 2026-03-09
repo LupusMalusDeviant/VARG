@@ -537,17 +537,68 @@ impl Parser {
                 Token::Var | Token::TypeInt | Token::TypeString | Token::TypeBool | Token::Prompt | Token::Tensor | Token::Context | Token::TypeIntShort | Token::TypeStringShort | Token::TypeBoolShort | Token::TypeMapShort | Token::NetworkAccess | Token::FileAccess | Token::DbAccess | Token::LlmAccess | Token::SystemAccess => {
                     let ty = if *tok == Token::Var {
                         self.advance(); // consume 'var'
+                        // Plan 06: Check for tuple destructuring: var (a, b) = ...
+                        if self.peek() == Some(&Token::LParen) {
+                            self.advance(); // consume (
+                            let mut names = Vec::new();
+                            if self.peek() != Some(&Token::RParen) {
+                                loop {
+                                    names.push(self.parse_identifier()?);
+                                    if self.peek() == Some(&Token::Comma) {
+                                        self.advance();
+                                    } else { break; }
+                                }
+                            }
+                            self.consume(Token::RParen)?;
+                            self.consume(Token::Assign)?;
+                            let value = self.parse_expression()?;
+                            if let Some(Token::Semicolon) = self.peek() { self.advance(); }
+                            statements.push(Statement::LetDestructure {
+                                pattern: DestructurePattern::Tuple(names),
+                                value,
+                            });
+                            continue;
+                        }
+                        // Plan 06: Check for struct destructuring: var { name, age } = ...
+                        if self.peek() == Some(&Token::LBrace) {
+                            self.advance(); // consume {
+                            let mut fields = Vec::new();
+                            if self.peek() != Some(&Token::RBrace) {
+                                loop {
+                                    let field_name = self.parse_identifier()?;
+                                    let alias = if self.peek() == Some(&Token::Colon) {
+                                        self.advance();
+                                        Some(self.parse_identifier()?)
+                                    } else {
+                                        None
+                                    };
+                                    fields.push((field_name, alias));
+                                    if self.peek() == Some(&Token::Comma) {
+                                        self.advance();
+                                    } else { break; }
+                                }
+                            }
+                            self.consume(Token::RBrace)?;
+                            self.consume(Token::Assign)?;
+                            let value = self.parse_expression()?;
+                            if let Some(Token::Semicolon) = self.peek() { self.advance(); }
+                            statements.push(Statement::LetDestructure {
+                                pattern: DestructurePattern::Struct(fields),
+                                value,
+                            });
+                            continue;
+                        }
                         None
                     } else {
                         Some(self.parse_type()?)
                     };
                     let name = self.parse_identifier()?;
                     self.consume(Token::Assign)?;
-                    
+
                     // Here we need to NOT eat the { as a block if it's an assignment.
                     // `parse_expression` naturally handles `LBrace` as a MapLiteral now.
                     let value = self.parse_expression()?;
-                    
+
                     if let Some(Token::Semicolon) = self.peek() {
                         self.advance();
                     }
@@ -800,6 +851,44 @@ impl Parser {
         }
     }
 
+    /// Try to parse lambda parameters after LParen has been consumed.
+    /// Expects: type1 name1, type2 name2, ... ) =>
+    /// Returns Ok(params) if this is a lambda (consumes through `=>`).
+    /// Returns Err(()) if not a lambda — caller must restore self.pos.
+    fn try_parse_lambda_params(&mut self) -> Result<Vec<FieldDecl>, ()> {
+        let mut params = Vec::new();
+
+        // Empty params: () =>
+        if self.peek() == Some(&Token::RParen) {
+            self.advance(); // consume )
+            if self.peek() == Some(&Token::FatArrow) {
+                self.advance(); // consume =>
+                return Ok(params);
+            }
+            return Err(());
+        }
+
+        // Try parsing typed params: (int a, string b, ...)
+        loop {
+            let ty = self.parse_type().map_err(|_| ())?;
+            let name = self.parse_identifier().map_err(|_| ())?;
+            params.push(FieldDecl { name, ty });
+
+            match self.peek() {
+                Some(Token::Comma) => { self.advance(); }
+                Some(Token::RParen) => {
+                    self.advance(); // consume )
+                    if self.peek() == Some(&Token::FatArrow) {
+                        self.advance(); // consume =>
+                        return Ok(params);
+                    }
+                    return Err(());
+                }
+                _ => return Err(()),
+            }
+        }
+    }
+
     fn parse_expression(&mut self) -> Result<Expression, ParseError> {
         let mut left = match self.advance() {
             Some(Token::Null) => Expression::Null,
@@ -898,6 +987,29 @@ impl Parser {
                         found: self.advance(),
                         span: self.last_span(),
                     });
+                }
+            },
+            // Plan 06: Lambda expressions or parenthesized grouping
+            Some(Token::LParen) => {
+                let saved_pos = self.pos;
+                match self.try_parse_lambda_params() {
+                    Ok(params) => {
+                        // Successfully parsed lambda params and =>
+                        if self.peek() == Some(&Token::LBrace) {
+                            let body = self.parse_block()?;
+                            Expression::Lambda { params, return_ty: None, body: Box::new(LambdaBody::Block(body)) }
+                        } else {
+                            let expr = self.parse_expression()?;
+                            Expression::Lambda { params, return_ty: None, body: Box::new(LambdaBody::Expression(expr)) }
+                        }
+                    }
+                    Err(_) => {
+                        // Not a lambda — parse as parenthesized expression
+                        self.pos = saved_pos;
+                        let expr = self.parse_expression()?;
+                        self.consume(Token::RParen)?;
+                        expr
+                    }
                 }
             },
             // OCAP capability tokens as expressions (for token passing)
@@ -1921,6 +2033,158 @@ mod tests {
                 assert!(matches!(&arms[1].pattern, Pattern::Literal(Expression::String(s)) if s == "quit"));
                 assert!(matches!(&arms[2].pattern, Pattern::Wildcard));
             } else { panic!("Expected Match statement"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Plan 06: Lambda Parsing from Source =====
+
+    #[test]
+    fn test_parse_lambda_expression_body() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var add = (int a, int b) => a + b;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value: Expression::Lambda { params, body: lambda_body, .. }, .. } = &body.statements[0] {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].name, "a");
+                assert_eq!(params[0].ty, TypeNode::Int);
+                assert_eq!(params[1].name, "b");
+                assert_eq!(params[1].ty, TypeNode::Int);
+                assert!(matches!(lambda_body.as_ref(), LambdaBody::Expression(_)));
+            } else { panic!("Expected Let with Lambda expression"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_lambda_block_body() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var process = (string input) => {
+                    return input;
+                };
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value: Expression::Lambda { params, body: lambda_body, .. }, .. } = &body.statements[0] {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "input");
+                assert_eq!(params[0].ty, TypeNode::String);
+                assert!(matches!(lambda_body.as_ref(), LambdaBody::Block(_)));
+            } else { panic!("Expected Let with Lambda block body"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_lambda_empty_params() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var greet = () => 42;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value: Expression::Lambda { params, .. }, .. } = &body.statements[0] {
+                assert_eq!(params.len(), 0);
+            } else { panic!("Expected Let with Lambda"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_parenthesized_expression() {
+        // Ensure (a + b) is NOT parsed as a lambda
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var x = (42);
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value: Expression::Int(42), .. } = &body.statements[0] {
+                // Parenthesized expression correctly parsed as Int(42)
+            } else { panic!("Expected Let with Int(42), got: {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Plan 06: Destructuring Parsing =====
+
+    #[test]
+    fn test_parse_tuple_destructuring() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var (name, age) = GetPerson();
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::LetDestructure { pattern: DestructurePattern::Tuple(names), .. } = &body.statements[0] {
+                assert_eq!(names, &vec!["name".to_string(), "age".to_string()]);
+            } else { panic!("Expected LetDestructure Tuple, got: {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_struct_destructuring() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var { name, age } = person;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::LetDestructure { pattern: DestructurePattern::Struct(fields), .. } = &body.statements[0] {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0], ("name".to_string(), None));
+                assert_eq!(fields[1], ("age".to_string(), None));
+            } else { panic!("Expected LetDestructure Struct, got: {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_struct_destructuring_with_alias() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var { name: n, age: a } = person;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::LetDestructure { pattern: DestructurePattern::Struct(fields), .. } = &body.statements[0] {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0], ("name".to_string(), Some("n".to_string())));
+                assert_eq!(fields[1], ("age".to_string(), Some("a".to_string())));
+            } else { panic!("Expected LetDestructure Struct with aliases"); }
         } else { panic!("Expected Agent"); }
     }
 }

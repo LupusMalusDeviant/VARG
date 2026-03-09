@@ -256,6 +256,22 @@ impl TypeChecker {
                 Statement::Throw(expr) => {
                     self.infer_expression_type(expr)?;
                 },
+                Statement::LetDestructure { pattern, value } => {
+                    let _val_ty = self.infer_expression_type(value)?;
+                    match pattern {
+                        DestructurePattern::Tuple(names) => {
+                            for name in names {
+                                self.env.insert(name.clone(), TypeNode::Custom("Dynamic".to_string()));
+                            }
+                        }
+                        DestructurePattern::Struct(fields) => {
+                            for (name, alias) in fields {
+                                let var_name = alias.as_ref().unwrap_or(name);
+                                self.env.insert(var_name.clone(), TypeNode::Custom("Dynamic".to_string()));
+                            }
+                        }
+                    }
+                },
                 Statement::Match { subject, arms } => {
                     // Type-check the subject expression
                     let _subject_ty = self.infer_expression_type(subject)?;
@@ -1667,5 +1683,62 @@ mod tests {
         };
         let ty = checker.infer_expression_type(&lambda_expr).unwrap();
         assert_eq!(ty, TypeNode::Func(vec![TypeNode::String], Box::new(TypeNode::Int)));
+    }
+
+    // ===== Plan 06: Destructuring Type-Checking =====
+
+    #[test]
+    fn test_destructure_tuple_binds_variables() {
+        let mut checker = TypeChecker::new();
+        let block = Block {
+            statements: vec![
+                Statement::LetDestructure {
+                    pattern: DestructurePattern::Tuple(vec!["x".to_string(), "y".to_string()]),
+                    value: Expression::Identifier("some_tuple".to_string()),
+                },
+            ],
+        };
+        // Register "some_tuple" so it doesn't fail on undeclared
+        checker.env.insert("some_tuple".to_string(), TypeNode::Custom("Pair".to_string()));
+        checker.check_block(&block).unwrap();
+        // After destructuring, x and y should be in scope
+        assert!(checker.env.contains_key("x"));
+        assert!(checker.env.contains_key("y"));
+    }
+
+    #[test]
+    fn test_destructure_struct_binds_variables() {
+        let mut checker = TypeChecker::new();
+        let block = Block {
+            statements: vec![
+                Statement::LetDestructure {
+                    pattern: DestructurePattern::Struct(vec![
+                        ("name".to_string(), None),
+                        ("age".to_string(), Some("a".to_string())),
+                    ]),
+                    value: Expression::Identifier("person".to_string()),
+                },
+            ],
+        };
+        checker.env.insert("person".to_string(), TypeNode::Custom("Person".to_string()));
+        checker.check_block(&block).unwrap();
+        // "name" bound directly, "age" bound via alias "a"
+        assert!(checker.env.contains_key("name"));
+        assert!(checker.env.contains_key("a"));
+    }
+
+    #[test]
+    fn test_destructure_tuple_value_must_be_valid() {
+        let mut checker = TypeChecker::new();
+        let block = Block {
+            statements: vec![
+                Statement::LetDestructure {
+                    pattern: DestructurePattern::Tuple(vec!["x".to_string()]),
+                    value: Expression::Identifier("nonexistent".to_string()),
+                },
+            ],
+        };
+        // Should fail because "nonexistent" is not declared
+        assert!(checker.check_block(&block).is_err());
     }
 }

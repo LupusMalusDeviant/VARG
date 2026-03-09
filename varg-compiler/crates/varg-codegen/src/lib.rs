@@ -449,6 +449,23 @@ impl RustGenerator {
                 Statement::Throw(expr) => {
                     out.push_str(&format!("{}break 'varg_try Err(format!(\"{{}}\", {}));\n", indent, self.gen_expression(expr)));
                 },
+                Statement::LetDestructure { pattern, value } => {
+                    let val_str = self.gen_expression(value);
+                    match pattern {
+                        DestructurePattern::Tuple(names) => {
+                            out.push_str(&format!("{}let ({}) = {};\n", indent, names.join(", "), val_str));
+                        }
+                        DestructurePattern::Struct(fields) => {
+                            let field_strs: Vec<String> = fields.iter().map(|(name, alias)| {
+                                match alias {
+                                    Some(a) => format!("{}: {}", name, a),
+                                    None => name.clone(),
+                                }
+                            }).collect();
+                            out.push_str(&format!("{}let {{ {} }} = {};\n", indent, field_strs.join(", "), val_str));
+                        }
+                    }
+                },
                 Statement::Match { subject, arms } => {
                     out.push_str(&format!("{}match {} {{\n", indent, self.gen_expression(subject)));
                     for arm in arms {
@@ -1357,5 +1374,98 @@ mod tests {
         let gen = RustGenerator::new();
         let func_ty = TypeNode::Func(vec![TypeNode::Int, TypeNode::String], Box::new(TypeNode::Bool));
         assert_eq!(gen.gen_type(&func_ty), "Box<dyn Fn(i64, String) -> bool>");
+    }
+
+    // ===== Plan 06: Destructuring CodeGen =====
+
+    #[test]
+    fn test_codegen_tuple_destructuring() {
+        let program = Program {
+            no_std: true,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::LetDestructure {
+                            pattern: DestructurePattern::Tuple(vec!["x".to_string(), "y".to_string()]),
+                            value: Expression::Identifier("pair".to_string()),
+                        },
+                    ]}),
+                }],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("let (x, y) = pair;"));
+    }
+
+    #[test]
+    fn test_codegen_struct_destructuring() {
+        let program = Program {
+            no_std: true,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::LetDestructure {
+                            pattern: DestructurePattern::Struct(vec![
+                                ("name".to_string(), None),
+                                ("age".to_string(), Some("a".to_string())),
+                            ]),
+                            value: Expression::Identifier("person".to_string()),
+                        },
+                    ]}),
+                }],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("let { name, age: a } = person;"));
+    }
+
+    #[test]
+    fn test_codegen_lambda_with_block_body() {
+        let program = Program {
+            no_std: true,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "process".to_string(),
+                            ty: None,
+                            value: Expression::Lambda {
+                                params: vec![FieldDecl { name: "s".to_string(), ty: TypeNode::String }],
+                                return_ty: None,
+                                body: Box::new(LambdaBody::Block(Block {
+                                    statements: vec![
+                                        Statement::Return(Some(Expression::Identifier("s".to_string()))),
+                                    ],
+                                })),
+                            },
+                        },
+                    ]}),
+                }],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("|s: String|"));
+        assert!(code.contains("return s;"));
     }
 }

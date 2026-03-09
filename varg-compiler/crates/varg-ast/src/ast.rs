@@ -118,6 +118,9 @@ pub enum Statement {
 
     // Plan 06: Pattern Matching
     Match { subject: Expression, arms: Vec<MatchArm> },
+
+    // Plan 06: Destructuring
+    LetDestructure { pattern: DestructurePattern, value: Expression },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -203,6 +206,13 @@ pub enum Pattern {
     Literal(Expression),           // 200, "hello", true
     Variant(String, Vec<String>),  // Ok(value), Err(e)
     Wildcard,                      // _
+}
+
+// ---- Destructuring (Plan 06) ----
+#[derive(Debug, PartialEq, Clone)]
+pub enum DestructurePattern {
+    Tuple(Vec<String>),                    // (a, b, c)
+    Struct(Vec<(String, Option<String>)>), // { name, age: a }
 }
 
 // ---- AI-OS Native Types ----
