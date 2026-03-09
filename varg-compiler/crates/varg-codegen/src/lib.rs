@@ -1246,6 +1246,246 @@ mod tests {
         assert!(code.contains("let { name, age: a } = person;"));
     }
 
+    // ===== Stabilization: Missing CodeGen Tests =====
+
+    #[test]
+    fn test_codegen_for_loop() {
+        let program = Program {
+            no_std: true,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::For {
+                            init: Box::new(Statement::Let { name: "i".to_string(), ty: None, value: Expression::Int(0) }),
+                            condition: Expression::BinaryOp {
+                                left: Box::new(Expression::Identifier("i".to_string())),
+                                operator: BinaryOperator::Lt,
+                                right: Box::new(Expression::Int(10)),
+                            },
+                            update: Box::new(Statement::Assign {
+                                name: "i".to_string(),
+                                value: Expression::BinaryOp {
+                                    left: Box::new(Expression::Identifier("i".to_string())),
+                                    operator: BinaryOperator::Add,
+                                    right: Box::new(Expression::Int(1)),
+                                },
+                            }),
+                            body: Block { statements: vec![
+                                Statement::Print(Expression::Identifier("i".to_string())),
+                            ] },
+                        }
+                    ]}),
+                }],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("let mut i = 0;"));
+        assert!(code.contains("while i < 10 {"));
+        assert!(code.contains("i = i + 1;"));
+    }
+
+    #[test]
+    fn test_codegen_property_access() {
+        let gen = RustGenerator::new();
+        let expr = Expression::PropertyAccess {
+            caller: Box::new(Expression::Identifier("obj".to_string())),
+            property_name: "name".to_string(),
+        };
+        assert_eq!(gen.gen_expression(&expr), "obj.name");
+    }
+
+    #[test]
+    fn test_codegen_index_access_int() {
+        let gen = RustGenerator::new();
+        let expr = Expression::IndexAccess {
+            caller: Box::new(Expression::Identifier("arr".to_string())),
+            index: Box::new(Expression::Int(0)),
+        };
+        assert_eq!(gen.gen_expression(&expr), "arr[0 as usize].clone()");
+    }
+
+    #[test]
+    fn test_codegen_index_access_string() {
+        let gen = RustGenerator::new();
+        let expr = Expression::IndexAccess {
+            caller: Box::new(Expression::Identifier("map".to_string())),
+            index: Box::new(Expression::Identifier("key".to_string())),
+        };
+        assert_eq!(gen.gen_expression(&expr), "map.get(&key).unwrap().clone()");
+    }
+
+    #[test]
+    fn test_codegen_map_literal() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MapLiteral(vec![
+            (Expression::String("a".to_string()), Expression::Int(1)),
+            (Expression::String("b".to_string()), Expression::Int(2)),
+        ]);
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("HashMap::from("));
+        assert!(code.contains("(\"a\".to_string(), 1)"));
+        assert!(code.contains("(\"b\".to_string(), 2)"));
+    }
+
+    #[test]
+    fn test_codegen_linq_query() {
+        let gen = RustGenerator::new();
+        let expr = Expression::Linq(LinqQuery {
+            from_var: "x".to_string(),
+            in_collection: Box::new(Expression::Identifier("items".to_string())),
+            where_clause: Some(Box::new(Expression::BinaryOp {
+                left: Box::new(Expression::Identifier("x".to_string())),
+                operator: BinaryOperator::Gt,
+                right: Box::new(Expression::Int(5)),
+            })),
+            orderby_clause: None,
+            descending: false,
+            select_clause: Box::new(Expression::Identifier("x".to_string())),
+        });
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("items.clone().into_iter()"));
+        assert!(code.contains(".filter(|x| x > 5)"));
+        assert!(code.contains(".map(|x| x).collect::<Vec<_>>()"));
+    }
+
+    #[test]
+    fn test_codegen_linq_with_orderby_desc() {
+        let gen = RustGenerator::new();
+        let expr = Expression::Linq(LinqQuery {
+            from_var: "n".to_string(),
+            in_collection: Box::new(Expression::Identifier("nums".to_string())),
+            where_clause: None,
+            orderby_clause: Some(Box::new(Expression::Identifier("n".to_string()))),
+            descending: true,
+            select_clause: Box::new(Expression::Identifier("n".to_string())),
+        });
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("sort_by_key(|n| n)"));
+        assert!(code.contains("if true { _ltmp.reverse(); }"));
+    }
+
+    #[test]
+    fn test_codegen_query_expression() {
+        let gen = RustGenerator::new();
+        let expr = Expression::Query(SurrealQueryNode {
+            raw_query: "SELECT * FROM users WHERE age > 18".to_string(),
+        });
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_query("));
+        assert!(code.contains("SELECT * FROM users WHERE age > 18"));
+    }
+
+    #[test]
+    fn test_codegen_prompt_literal_interpolation() {
+        let gen = RustGenerator::new();
+        let expr = Expression::PromptLiteral("Hello ${name}, you have ${count} items".to_string());
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("Prompt { text: format!"));
+        assert!(code.contains("name"));
+        assert!(code.contains("count"));
+    }
+
+    #[test]
+    fn test_codegen_prompt_literal_plain() {
+        let gen = RustGenerator::new();
+        let expr = Expression::PromptLiteral("Hello world".to_string());
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("Prompt { text: format!"));
+        assert!(code.contains("Hello world"));
+    }
+
+    #[test]
+    fn test_codegen_stream_statement() {
+        let program = Program {
+            no_std: true,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Stream(Expression::MethodCall {
+                            caller: Box::new(Expression::Identifier("self".to_string())),
+                            method_name: "llm_chat".to_string(),
+                            args: vec![
+                                Expression::Identifier("ctx".to_string()),
+                                Expression::String("hi".to_string()),
+                            ],
+                        }),
+                    ]}),
+                }],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("__varg_llm_chat_stream("));
+    }
+
+    #[test]
+    fn test_codegen_throw_statement() {
+        let program = Program {
+            no_std: true,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::TryCatch {
+                            try_block: Block { statements: vec![
+                                Statement::Throw(Expression::String("something went wrong".to_string())),
+                            ]},
+                            catch_var: "err".to_string(),
+                            catch_block: Block { statements: vec![
+                                Statement::Print(Expression::Identifier("err".to_string())),
+                            ]},
+                        }
+                    ]}),
+                }],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("break 'varg_try Err("));
+        assert!(code.contains("something went wrong"));
+        assert!(code.contains("if let Err(mut err) = _varg_try_res"));
+    }
+
+    #[test]
+    fn test_codegen_array_literal_direct() {
+        let gen = RustGenerator::new();
+        let expr = Expression::ArrayLiteral(vec![
+            Expression::Int(1), Expression::Int(2), Expression::Int(3),
+        ]);
+        assert_eq!(gen.gen_expression(&expr), "vec![1, 2, 3]");
+    }
+
+    #[test]
+    fn test_codegen_cosine_similarity_operator() {
+        let gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::Identifier("a".to_string())),
+            operator: BinaryOperator::CosineSim,
+            right: Box::new(Expression::Identifier("b".to_string())),
+        };
+        assert_eq!(gen.gen_expression(&expr), "__varg_cosine_sim(&a, &b)");
+    }
+
+    // ===== Plan 06: Destructuring CodeGen =====
+
     #[test]
     fn test_codegen_lambda_with_block_body() {
         let program = Program {

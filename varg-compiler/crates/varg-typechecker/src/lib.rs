@@ -139,6 +139,16 @@ impl TypeChecker {
             }
         }
 
+        // Validate generic constraints: each constraint must reference a declared type param
+        for constraint in &method.constraints {
+            if !method.type_params.contains(&constraint.type_param) {
+                return Err(TypeError::TypeMismatch {
+                    expected: format!("declared type parameter for constraint `where {}: {}`", constraint.type_param, constraint.bound),
+                    found: format!("undeclared type parameter `{}`", constraint.type_param),
+                });
+            }
+        }
+
         // Clear environment for new method scope
         self.env.clear();
         self.in_unsafe_block = false;
@@ -225,9 +235,14 @@ impl TypeChecker {
                     self.check_block(body)?;
                 },
                 Statement::Foreach { item_name, collection, body } => {
-                     let _coll_ty = self.infer_expression_type(collection)?;
-                     // register item in scope dynamically for MVP
-                     self.env.insert(item_name.clone(), TypeNode::Custom("Dynamic".to_string()));
+                     let coll_ty = self.infer_expression_type(collection)?;
+                     // Extract inner type from Array/List, fall back to Dynamic
+                     let item_ty = match &coll_ty {
+                         TypeNode::Array(inner) => *inner.clone(),
+                         TypeNode::List(inner) => *inner.clone(),
+                         _ => TypeNode::Custom("Dynamic".to_string()),
+                     };
+                     self.env.insert(item_name.clone(), item_ty);
                      self.check_block(body)?;
                 },
                 Statement::Stream(expr) => {
@@ -274,14 +289,18 @@ impl TypeChecker {
                 },
                 Statement::Match { subject, arms } => {
                     // Type-check the subject expression
-                    let _subject_ty = self.infer_expression_type(subject)?;
+                    let subject_ty = self.infer_expression_type(subject)?;
                     // Check each arm's body
                     for arm in arms {
-                        // For Variant patterns with bindings, register bound variables
                         let saved_env = self.env.clone();
-                        if let Pattern::Variant(_, bindings) = &arm.pattern {
-                            for binding in bindings {
-                                self.env.insert(binding.clone(), TypeNode::Custom("Dynamic".to_string()));
+                        // For Variant patterns with bindings, try to narrow types from enum definition
+                        if let Pattern::Variant(variant_name, bindings) = &arm.pattern {
+                            // Try to look up field types from enum definition
+                            let field_types = self.resolve_variant_field_types(&subject_ty, variant_name);
+                            for (i, binding) in bindings.iter().enumerate() {
+                                let ty = field_types.get(i).cloned()
+                                    .unwrap_or_else(|| TypeNode::Custom("Dynamic".to_string()));
+                                self.env.insert(binding.clone(), ty);
                             }
                         }
                         self.check_block(&arm.body)?;
@@ -291,6 +310,25 @@ impl TypeChecker {
             }
         }
         Ok(())
+    }
+
+    /// Resolve field types for a variant from an enum definition.
+    /// Returns the field types in order, or empty vec if not found.
+    fn resolve_variant_field_types(&self, subject_ty: &TypeNode, variant_name: &str) -> Vec<TypeNode> {
+        // Try to find the enum name from the subject type
+        let enum_name = match subject_ty {
+            TypeNode::Custom(name) => name.as_str(),
+            _ => return Vec::new(),
+        };
+        // Look up the enum definition
+        if let Some(variants) = self.enum_defs.get(enum_name) {
+            for variant in variants {
+                if variant.name == variant_name {
+                    return variant.fields.iter().map(|(_, ty)| ty.clone()).collect();
+                }
+            }
+        }
+        Vec::new()
     }
 
     fn infer_expression_type(&mut self, expr: &Expression) -> Result<TypeNode, TypeError> {
@@ -1740,5 +1778,131 @@ mod tests {
         };
         // Should fail because "nonexistent" is not declared
         assert!(checker.check_block(&block).is_err());
+    }
+
+    // ===== Stabilization: TypeChecker Improvements =====
+
+    #[test]
+    fn test_match_variant_type_narrowing() {
+        // When matching an enum, variant bindings should get their declared field types
+        let mut checker = TypeChecker::new();
+        // Register enum with a variant that has a String field
+        checker.enum_defs.insert("Result".to_string(), vec![
+            EnumVariant { name: "Ok".to_string(), fields: vec![("value".to_string(), TypeNode::String)] },
+            EnumVariant { name: "Err".to_string(), fields: vec![("msg".to_string(), TypeNode::String)] },
+        ]);
+        // Register the subject variable as the enum type
+        checker.env.insert("res".to_string(), TypeNode::Custom("Result".to_string()));
+
+        let block = Block {
+            statements: vec![
+                Statement::Match {
+                    subject: Expression::Identifier("res".to_string()),
+                    arms: vec![
+                        MatchArm {
+                            pattern: Pattern::Variant("Ok".to_string(), vec!["val".to_string()]),
+                            body: Block { statements: vec![
+                                // val should be usable (bound as String from the enum variant)
+                                Statement::Print(Expression::Identifier("val".to_string())),
+                            ]},
+                        },
+                        MatchArm {
+                            pattern: Pattern::Wildcard,
+                            body: Block { statements: vec![] },
+                        },
+                    ],
+                },
+            ],
+        };
+        // Should succeed — val is narrowed to String from the enum definition
+        assert!(checker.check_block(&block).is_ok());
+    }
+
+    #[test]
+    fn test_foreach_infers_item_type_from_array() {
+        let mut checker = TypeChecker::new();
+        // Register a variable as Array<Int>
+        checker.env.insert("nums".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+
+        let block = Block {
+            statements: vec![
+                Statement::Foreach {
+                    item_name: "n".to_string(),
+                    collection: Expression::Identifier("nums".to_string()),
+                    body: Block { statements: vec![
+                        // Use n in a context that requires Int (comparison with Int)
+                        Statement::Let {
+                            name: "doubled".to_string(),
+                            ty: Some(TypeNode::Int),
+                            value: Expression::BinaryOp {
+                                left: Box::new(Expression::Identifier("n".to_string())),
+                                operator: BinaryOperator::Mul,
+                                right: Box::new(Expression::Int(2)),
+                            },
+                        },
+                    ]},
+                },
+            ],
+        };
+        assert!(checker.check_block(&block).is_ok());
+    }
+
+    #[test]
+    fn test_generic_constraint_undeclared_type_param_fails() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Sort".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec!["T".to_string()],
+                    constraints: vec![
+                        GenericConstraint { type_param: "U".to_string(), bound: "Comparable".to_string() },
+                    ],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![] }),
+                }],
+            })],
+        };
+        // Should fail because "U" is not in type_params
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generic_constraint_valid_type_param_passes() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Sort".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec!["T".to_string()],
+                    constraints: vec![
+                        GenericConstraint { type_param: "T".to_string(), bound: "Comparable".to_string() },
+                    ],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![] }),
+                }],
+            })],
+        };
+        // Should succeed because "T" is in type_params
+        assert!(checker.check_program(&program).is_ok());
     }
 }

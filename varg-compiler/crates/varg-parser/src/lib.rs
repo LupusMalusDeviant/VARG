@@ -67,10 +67,6 @@ impl Parser {
         self.tokens.get(self.pos).map(|(tok, _)| tok)
     }
 
-    fn peek_n(&self, offset: usize) -> Option<&Token> {
-        self.tokens.get(self.pos + offset).map(|(tok, _)| tok)
-    }
-
     fn is_variable_declaration_start(&mut self) -> bool {
         let saved_pos = self.pos;
         let is_decl = match self.parse_type() {
@@ -889,7 +885,24 @@ impl Parser {
         }
     }
 
+    /// Returns (left_bp, right_bp) for a binary operator token, or None if not an operator.
+    fn token_binding_power(tok: &Token) -> Option<(u8, u8)> {
+        match tok {
+            Token::Tilde                              => Some((1, 2)),   // cosine_sim: lowest
+            Token::Equals | Token::NotEquals           => Some((3, 4)),  // == !=
+            Token::LessThan | Token::GreaterThan |
+            Token::LessOrEqual | Token::GreaterOrEqual => Some((5, 6)),  // < > <= >=
+            Token::Plus | Token::Minus                 => Some((7, 8)),  // + -
+            Token::Multiply | Token::Divide            => Some((9, 10)), // * /
+            _ => None,
+        }
+    }
+
     fn parse_expression(&mut self) -> Result<Expression, ParseError> {
+        self.parse_expression_bp(0)
+    }
+
+    fn parse_expression_bp(&mut self, min_bp: u8) -> Result<Expression, ParseError> {
         let mut left = match self.advance() {
             Some(Token::Null) => Expression::Null,
             Some(Token::IntLiteral(val)) => Expression::Int(val),
@@ -1049,26 +1062,37 @@ impl Parser {
             None => return Err(ParseError::UnexpectedEof),
         };
 
-        // Simplified peek for binary ops and property access `.`
+        // Pratt parser loop: binary ops (precedence climbing) + postfix (. [] call)
         while let Some(tok) = self.peek() {
+            // Check for binary operator with precedence
+            if let Some((l_bp, r_bp)) = Self::token_binding_power(tok) {
+                if l_bp < min_bp {
+                    break;
+                }
+                let op = match self.advance().unwrap() {
+                    Token::Plus => BinaryOperator::Add,
+                    Token::Minus => BinaryOperator::Sub,
+                    Token::Multiply => BinaryOperator::Mul,
+                    Token::Divide => BinaryOperator::Div,
+                    Token::Equals => BinaryOperator::Eq,
+                    Token::NotEquals => BinaryOperator::NotEq,
+                    Token::LessThan => BinaryOperator::Lt,
+                    Token::GreaterThan => BinaryOperator::Gt,
+                    Token::LessOrEqual => BinaryOperator::LtEq,
+                    Token::GreaterOrEqual => BinaryOperator::GtEq,
+                    Token::Tilde => BinaryOperator::CosineSim,
+                    _ => unreachable!(),
+                };
+                let right = self.parse_expression_bp(r_bp)?;
+                left = Expression::BinaryOp {
+                    left: Box::new(left),
+                    operator: op,
+                    right: Box::new(right),
+                };
+                continue;
+            }
+
             match tok {
-                Token::GreaterThan | Token::Equals | Token::LessThan | Token::Plus | Token::Minus | Token::Tilde => {
-                    let op = match self.advance().unwrap() {
-                        Token::GreaterThan => BinaryOperator::Gt,
-                        Token::Equals => BinaryOperator::Eq,
-                        Token::LessThan => BinaryOperator::Lt,
-                        Token::Plus => BinaryOperator::Add,
-                        Token::Minus => BinaryOperator::Sub,
-                        Token::Tilde => BinaryOperator::CosineSim,
-                        _ => unreachable!(),
-                    };
-                    let right = self.parse_expression()?; // right-associative mock
-                    left = Expression::BinaryOp {
-                        left: Box::new(left),
-                        operator: op,
-                        right: Box::new(right),
-                    };
-                },
                 Token::Dot => {
                     self.advance(); // consume dot
                     let prop = self.parse_identifier()?;
@@ -2185,6 +2209,145 @@ mod tests {
                 assert_eq!(fields[0], ("name".to_string(), Some("n".to_string())));
                 assert_eq!(fields[1], ("age".to_string(), Some("a".to_string())));
             } else { panic!("Expected LetDestructure Struct with aliases"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Stabilization: Operator Precedence Tests =====
+
+    #[test]
+    fn test_precedence_mul_over_add() {
+        // 1 + 2 * 3  should parse as  1 + (2 * 3)
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 1 + 2 * 3;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                // Outer should be Add, right should be Mul
+                if let Expression::BinaryOp { operator: BinaryOperator::Add, right, .. } = value {
+                    if let Expression::BinaryOp { operator: BinaryOperator::Mul, .. } = right.as_ref() {
+                        // correct!
+                    } else { panic!("Expected right side to be Mul, got {:?}", right); }
+                } else { panic!("Expected Add at top level, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_precedence_comparison_lower_than_arithmetic() {
+        // a + 1 == b * 2  should parse as  (a + 1) == (b * 2)
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = a + 1 == b * 2;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::BinaryOp { operator: BinaryOperator::Eq, left, right } = value {
+                    assert!(matches!(left.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Add, .. }));
+                    assert!(matches!(right.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Mul, .. }));
+                } else { panic!("Expected Eq at top level, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_precedence_left_associative() {
+        // 1 - 2 - 3  should parse as  (1 - 2) - 3
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 1 - 2 - 3;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                // Outer Sub, left should be Sub(1,2), right should be 3
+                if let Expression::BinaryOp { operator: BinaryOperator::Sub, left, right } = value {
+                    assert!(matches!(left.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Sub, .. }));
+                    assert_eq!(**right, Expression::Int(3));
+                } else { panic!("Expected Sub at top level, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_mul_div_operators() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 10 * 5 / 2;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                // (10 * 5) / 2 — left-associative
+                if let Expression::BinaryOp { operator: BinaryOperator::Div, left, right } = value {
+                    assert!(matches!(left.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Mul, .. }));
+                    assert_eq!(**right, Expression::Int(2));
+                } else { panic!("Expected Div at top level, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_not_equals_operator() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = a != b;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::NotEq, .. }));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_lteq_gteq_operators() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = a <= b;
+                    var y = a >= b;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::LtEq, .. }));
+            } else { panic!("Expected Let"); }
+            if let Statement::Let { value, .. } = &body.statements[1] {
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::GtEq, .. }));
+            } else { panic!("Expected Let"); }
         } else { panic!("Expected Agent"); }
     }
 }
