@@ -335,6 +335,19 @@ impl RustGenerator {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.gen_type(a)).collect();
                 format!("{}<{}>", name, arg_strs.join(", "))
             },
+            TypeNode::Capability(cap) => {
+                match cap {
+                    CapabilityType::NetworkAccess => "NetworkAccess".to_string(),
+                    CapabilityType::FileAccess => "FileAccess".to_string(),
+                    CapabilityType::DbAccess => "DbAccess".to_string(),
+                    CapabilityType::LlmAccess => "LlmAccess".to_string(),
+                    CapabilityType::SystemAccess => "SystemAccess".to_string(),
+                }
+            },
+            TypeNode::Func(params, ret) => {
+                let param_strs: Vec<String> = params.iter().map(|p| self.gen_type(p)).collect();
+                format!("Box<dyn Fn({}) -> {}>", param_strs.join(", "), self.gen_type(ret))
+            },
             TypeNode::Custom(name) => {
                 if name == "Dynamic" {
                     "String".to_string() // MVP Fallback for empty []
@@ -435,10 +448,34 @@ impl RustGenerator {
                 },
                 Statement::Throw(expr) => {
                     out.push_str(&format!("{}break 'varg_try Err(format!(\"{{}}\", {}));\n", indent, self.gen_expression(expr)));
-                }
+                },
+                Statement::Match { subject, arms } => {
+                    out.push_str(&format!("{}match {} {{\n", indent, self.gen_expression(subject)));
+                    for arm in arms {
+                        let pattern_str = self.gen_pattern(&arm.pattern);
+                        out.push_str(&format!("{}    {} => {{\n", indent, pattern_str));
+                        out.push_str(&self.gen_block(&arm.body, indent_level + 2));
+                        out.push_str(&format!("{}    }},\n", indent));
+                    }
+                    out.push_str(&format!("{}}}\n", indent));
+                },
             }
         }
         out
+    }
+
+    fn gen_pattern(&self, pattern: &Pattern) -> String {
+        match pattern {
+            Pattern::Wildcard => "_".to_string(),
+            Pattern::Literal(expr) => self.gen_expression(expr),
+            Pattern::Variant(name, bindings) => {
+                if bindings.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}({})", name, bindings.join(", "))
+                }
+            },
+        }
     }
 
     fn gen_expression(&self, expr: &Expression) -> String {
@@ -582,6 +619,18 @@ impl RustGenerator {
                 rust_query.push_str(&format!(".map(|{}| {}).collect::<Vec<_>>()", q.from_var, self.gen_expression(&q.select_clause)));
                 
                 rust_query
+            },
+            Expression::Lambda { params, return_ty: _, body } => {
+                let param_strs: Vec<String> = params.iter()
+                    .map(|p| format!("{}: {}", p.name, self.gen_type(&p.ty)))
+                    .collect();
+                let body_str = match body.as_ref() {
+                    LambdaBody::Expression(expr) => self.gen_expression(expr),
+                    LambdaBody::Block(block) => {
+                        format!("{{\n{}}}", self.gen_block(block, 1))
+                    },
+                };
+                format!("|{}| {}", param_strs.join(", "), body_str)
             },
             Expression::Query(q) => {
                 // Native embedded DB call
@@ -1148,5 +1197,165 @@ mod tests {
 
         assert!(code.contains("name: Option<String>"));
         assert!(code.contains("let mut x = None;"));
+    }
+
+    // ---- Plan 03: OCAP Capability Codegen Tests ----
+
+    #[test]
+    fn test_codegen_capability_type_mapping() {
+        let gen = RustGenerator::new();
+        assert_eq!(gen.gen_type(&TypeNode::Capability(CapabilityType::NetworkAccess)), "NetworkAccess");
+        assert_eq!(gen.gen_type(&TypeNode::Capability(CapabilityType::FileAccess)), "FileAccess");
+        assert_eq!(gen.gen_type(&TypeNode::Capability(CapabilityType::DbAccess)), "DbAccess");
+        assert_eq!(gen.gen_type(&TypeNode::Capability(CapabilityType::LlmAccess)), "LlmAccess");
+        assert_eq!(gen.gen_type(&TypeNode::Capability(CapabilityType::SystemAccess)), "SystemAccess");
+    }
+
+    #[test]
+    fn test_codegen_method_with_capability_param() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "ApiAgent".to_string(),
+                is_system: false,
+                is_public: true,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Fetch".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![
+                        FieldDecl { name: "url".to_string(), ty: TypeNode::String },
+                        FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess) },
+                    ],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block { statements: vec![
+                        Statement::Return(Some(Expression::String("ok".to_string())))
+                    ]})
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("url: String, net: NetworkAccess"));
+    }
+
+    // ---- Plan 06: Match Codegen Tests ----
+
+    #[test]
+    fn test_codegen_match_statement() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let { name: "x".to_string(), ty: None, value: Expression::Int(1) },
+                            Statement::Match {
+                                subject: Expression::Identifier("x".to_string()),
+                                arms: vec![
+                                    MatchArm {
+                                        pattern: Pattern::Literal(Expression::Int(1)),
+                                        body: Block { statements: vec![Statement::Print(Expression::String("one".to_string()))] },
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern::Literal(Expression::Int(2)),
+                                        body: Block { statements: vec![Statement::Print(Expression::String("two".to_string()))] },
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern::Wildcard,
+                                        body: Block { statements: vec![Statement::Print(Expression::String("other".to_string()))] },
+                                    },
+                                ],
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("match x {"));
+        assert!(code.contains("1 => {"));
+        assert!(code.contains("2 => {"));
+        assert!(code.contains("_ => {"));
+    }
+
+    #[test]
+    fn test_codegen_match_variant_pattern() {
+        let gen = RustGenerator::new();
+        assert_eq!(gen.gen_pattern(&Pattern::Wildcard), "_");
+        assert_eq!(gen.gen_pattern(&Pattern::Literal(Expression::Int(42))), "42");
+        assert_eq!(gen.gen_pattern(&Pattern::Variant("None".to_string(), vec![])), "None");
+        assert_eq!(gen.gen_pattern(&Pattern::Variant("Some".to_string(), vec!["val".to_string()])), "Some(val)");
+    }
+
+    // ---- Plan 06: Lambda Codegen Tests ----
+
+    #[test]
+    fn test_codegen_lambda_expression() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "double".to_string(),
+                                ty: None,
+                                value: Expression::Lambda {
+                                    params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::Int }],
+                                    return_ty: Some(Box::new(TypeNode::Int)),
+                                    body: Box::new(LambdaBody::Expression(
+                                        Expression::BinaryOp {
+                                            left: Box::new(Expression::Identifier("x".to_string())),
+                                            operator: BinaryOperator::Mul,
+                                            right: Box::new(Expression::Int(2)),
+                                        }
+                                    )),
+                                },
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("|x: i64| x * 2"));
+    }
+
+    #[test]
+    fn test_codegen_func_type_mapping() {
+        let gen = RustGenerator::new();
+        let func_ty = TypeNode::Func(vec![TypeNode::Int, TypeNode::String], Box::new(TypeNode::Bool));
+        assert_eq!(gen.gen_type(&func_ty), "Box<dyn Fn(i64, String) -> bool>");
     }
 }

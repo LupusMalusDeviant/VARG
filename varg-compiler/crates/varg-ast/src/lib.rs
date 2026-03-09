@@ -35,6 +35,17 @@ pub enum Token {
     #[token("null")] Null,
     #[token("match")] Match,
 
+    // ---- OCAP Capability Tokens (Plan 03) ----
+    #[token("NetworkAccess")] NetworkAccess,
+    #[token("FileAccess")] FileAccess,
+    #[token("DbAccess")] DbAccess,
+    #[token("LlmAccess")] LlmAccess,
+    #[token("SystemAccess")] SystemAccess,
+
+    // ---- Plan 06: Closures & Pattern Matching ----
+    #[token("=>")] FatArrow,
+    #[token("_", priority = 3)] Underscore,
+
     // ---- Control Flow / Loops ----
     #[token("while")] While,
     #[token("for")] For,

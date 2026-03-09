@@ -31,13 +31,16 @@ pub struct TypeChecker {
     env: HashMap<String, TypeNode>,
 
     // Registered enum definitions (name → variants)
-    enum_defs: HashMap<String, Vec<EnumVariant>>,
+    pub enum_defs: HashMap<String, Vec<EnumVariant>>,
 
     // Registered type aliases (name → resolved type)
-    type_aliases: HashMap<String, TypeNode>,
+    pub type_aliases: HashMap<String, TypeNode>,
 
     // OCAP state
     in_unsafe_block: bool,
+
+    // Plan 03: Capability tokens available in current method scope
+    available_capabilities: Vec<CapabilityType>,
 }
 
 impl Default for TypeChecker {
@@ -53,6 +56,33 @@ impl TypeChecker {
             enum_defs: HashMap::new(),
             type_aliases: HashMap::new(),
             in_unsafe_block: false,
+            available_capabilities: Vec::new(),
+        }
+    }
+
+    /// Check if the current scope has a specific capability token
+    fn has_capability(&self, cap: &CapabilityType) -> bool {
+        self.available_capabilities.contains(cap)
+    }
+
+    /// Check if an operation is authorized (via unsafe or capability token)
+    fn check_ocap(&self, required_cap: &CapabilityType, operation: &str) -> Result<(), TypeError> {
+        if self.in_unsafe_block || self.has_capability(required_cap) {
+            Ok(())
+        } else {
+            let cap_name = match required_cap {
+                CapabilityType::NetworkAccess => "NetworkAccess",
+                CapabilityType::FileAccess => "FileAccess",
+                CapabilityType::DbAccess => "DbAccess",
+                CapabilityType::LlmAccess => "LlmAccess",
+                CapabilityType::SystemAccess => "SystemAccess",
+            };
+            Err(TypeError::IllegalOsCall {
+                reason: format!(
+                    "`{}` requires a `{}` capability token or an `unsafe` block.",
+                    operation, cap_name
+                ),
+            })
         }
     }
 
@@ -112,6 +142,14 @@ impl TypeChecker {
         // Clear environment for new method scope
         self.env.clear();
         self.in_unsafe_block = false;
+
+        // Plan 03: Extract capability tokens from method parameters
+        self.available_capabilities.clear();
+        for arg in &method.args {
+            if let TypeNode::Capability(cap) = &arg.ty {
+                self.available_capabilities.push(cap.clone());
+            }
+        }
 
         // Register arguments in the environment
         for arg in &method.args {
@@ -217,7 +255,23 @@ impl TypeChecker {
                 },
                 Statement::Throw(expr) => {
                     self.infer_expression_type(expr)?;
-                }
+                },
+                Statement::Match { subject, arms } => {
+                    // Type-check the subject expression
+                    let _subject_ty = self.infer_expression_type(subject)?;
+                    // Check each arm's body
+                    for arm in arms {
+                        // For Variant patterns with bindings, register bound variables
+                        let saved_env = self.env.clone();
+                        if let Pattern::Variant(_, bindings) = &arm.pattern {
+                            for binding in bindings {
+                                self.env.insert(binding.clone(), TypeNode::Custom("Dynamic".to_string()));
+                            }
+                        }
+                        self.check_block(&arm.body)?;
+                        self.env = saved_env;
+                    }
+                },
             }
         }
         Ok(())
@@ -247,31 +301,19 @@ impl TypeChecker {
             },
             Expression::MethodCall { method_name, args, .. } => {
                 if method_name == "fetch" {
-                    if !self.in_unsafe_block {
-                        return Err(TypeError::IllegalOsCall { 
-                            reason: "Network API call `fetch` attempted outside of an `unsafe` block. varg requires explicit kernel escalation.".to_string() 
-                        });
-                    }
+                    self.check_ocap(&CapabilityType::NetworkAccess, "fetch")?;
                     if args.len() < 1 || args.len() > 4 {
                         return Err(TypeError::TypeMismatch { expected: "1 to 4 arguments (url, [method], [headers], [body])".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::String)
                 } else if method_name == "llm_infer" {
-                    if !self.in_unsafe_block {
-                        return Err(TypeError::IllegalOsCall { 
-                            reason: "LLM inference attempted outside of an `unsafe` block. varg requires explicit kernel escalation.".to_string() 
-                        });
-                    }
+                    self.check_ocap(&CapabilityType::LlmAccess, "llm_infer")?;
                     if args.len() < 1 || args.len() > 2 {
                         return Err(TypeError::TypeMismatch { expected: "1 or 2 arguments (prompt, [model])".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::String)
                 } else if method_name == "llm_chat" {
-                    if !self.in_unsafe_block {
-                        return Err(TypeError::IllegalOsCall { 
-                            reason: "LLM chat attempted outside of an `unsafe` block. varg requires explicit kernel escalation.".to_string() 
-                        });
-                    }
+                    self.check_ocap(&CapabilityType::LlmAccess, "llm_chat")?;
                     if args.len() < 2 || args.len() > 3 {
                         return Err(TypeError::TypeMismatch { expected: "2 or 3 arguments (context, prompt, [model])".to_string(), found: format!("{} arguments", args.len()) });
                     }
@@ -282,21 +324,13 @@ impl TypeChecker {
                     }
                     Ok(TypeNode::String)
                 } else if method_name == "file_read" {
-                    if !self.in_unsafe_block {
-                        return Err(TypeError::IllegalOsCall { 
-                            reason: "File I/O `file_read` attempted outside of an `unsafe` block.".to_string() 
-                        });
-                    }
+                    self.check_ocap(&CapabilityType::FileAccess, "file_read")?;
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::String)
                 } else if method_name == "file_write" {
-                    if !self.in_unsafe_block {
-                        return Err(TypeError::IllegalOsCall { 
-                            reason: "File I/O `file_write` attempted outside of an `unsafe` block.".to_string() 
-                        });
-                    }
+                    self.check_ocap(&CapabilityType::FileAccess, "file_write")?;
                     if args.len() != 2 {
                         return Err(TypeError::TypeMismatch { expected: "2 arguments (path, data)".to_string(), found: format!("{} arguments", args.len()) });
                     }
@@ -389,12 +423,28 @@ impl TypeChecker {
                 };
                 Ok(TypeNode::Map(Box::new(key_ty), Box::new(val_ty)))
             },
-            Expression::Query(_) => {
-                if !self.in_unsafe_block {
-                    return Err(TypeError::IllegalOsCall { 
-                        reason: "Native memory query attempted outside of an `unsafe` block. varg requires explicit kernel escalation.".to_string() 
-                    });
+            Expression::Lambda { params, return_ty, body } => {
+                // Register lambda params in scope temporarily
+                let saved_env = self.env.clone();
+                for param in params {
+                    self.env.insert(param.name.clone(), param.ty.clone());
                 }
+                match body.as_ref() {
+                    LambdaBody::Expression(expr) => {
+                        let _body_ty = self.infer_expression_type(expr)?;
+                    },
+                    LambdaBody::Block(block) => {
+                        self.check_block(block)?;
+                    },
+                }
+                self.env = saved_env;
+                // Infer Func type from params and return type
+                let param_types: Vec<TypeNode> = params.iter().map(|p| p.ty.clone()).collect();
+                let ret = return_ty.as_ref().map(|t| *t.clone()).unwrap_or(TypeNode::Void);
+                Ok(TypeNode::Func(param_types, Box::new(ret)))
+            },
+            Expression::Query(_) => {
+                self.check_ocap(&CapabilityType::DbAccess, "query")?;
                 // Memory queries return JSON Strings
                 Ok(TypeNode::String)
             }
@@ -489,7 +539,7 @@ mod tests {
         
         assert!(result.is_err());
         if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("outside of an `unsafe` block"));
+            assert!(reason.contains("query") || reason.contains("unsafe"));
         } else {
             panic!("Expected IllegalOsCall error!");
         }
@@ -609,7 +659,7 @@ mod tests {
         
         assert!(result.is_err());
         if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("Network API call `fetch` attempted outside of an `unsafe` block"));
+            assert!(reason.contains("fetch") && reason.contains("NetworkAccess"));
         } else {
             panic!("Expected IllegalOsCall error for fetch!");
         }
@@ -860,7 +910,7 @@ mod tests {
         let result = checker.check_program(&program);
         assert!(result.is_err());
         if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("LLM inference"));
+            assert!(reason.contains("llm_infer") && reason.contains("LlmAccess"));
         } else { panic!("Expected IllegalOsCall"); }
     }
 
@@ -898,7 +948,7 @@ mod tests {
         let result = checker.check_program(&program);
         assert!(result.is_err());
         if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("file_read"));
+            assert!(reason.contains("file_read") && reason.contains("FileAccess"));
         } else { panic!("Expected IllegalOsCall"); }
     }
 
@@ -939,7 +989,7 @@ mod tests {
         let result = checker.check_program(&program);
         assert!(result.is_err());
         if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("file_write"));
+            assert!(reason.contains("file_write") && reason.contains("FileAccess"));
         } else { panic!("Expected IllegalOsCall"); }
     }
 
@@ -1288,5 +1338,334 @@ mod tests {
         assert!(checker.check_program(&program).is_ok());
         assert!(checker.enum_defs.contains_key("Status"));
         assert_eq!(checker.enum_defs["Status"].len(), 2);
+    }
+
+    // ---- Plan 03: OCAP Capability Token Tests ----
+
+    #[test]
+    fn test_ocap_capability_token_grants_fetch() {
+        // Method with NetworkAccess token should be able to call fetch without unsafe
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "ApiClient".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "GetData".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess) }],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Return(Some(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "fetch".to_string(),
+                                args: vec![Expression::String("https://api.example.com".to_string())],
+                            }))
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_ocap_capability_token_grants_file_read() {
+        // FileAccess token should grant file_read permission
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "FileReader".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "ReadConfig".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess) }],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Return(Some(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "file_read".to_string(),
+                                args: vec![Expression::String("config.json".to_string())],
+                            }))
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_ocap_wrong_capability_still_denied() {
+        // FileAccess token should NOT grant fetch (needs NetworkAccess)
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess) }],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "fetch".to_string(),
+                                args: vec![Expression::String("https://evil.com".to_string())],
+                            })
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        if let Err(TypeError::IllegalOsCall { reason }) = result {
+            assert!(reason.contains("NetworkAccess"));
+        } else { panic!("Expected IllegalOsCall"); }
+    }
+
+    #[test]
+    fn test_ocap_llm_access_token_grants_llm_infer() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "AiAgent".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Think".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![FieldDecl { name: "llm".to_string(), ty: TypeNode::Capability(CapabilityType::LlmAccess) }],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Return(Some(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "llm_infer".to_string(),
+                                args: vec![Expression::String("What is 2+2?".to_string())],
+                            }))
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_ocap_db_access_token_grants_query() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "DbReader".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "ReadAll".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![FieldDecl { name: "db".to_string(), ty: TypeNode::Capability(CapabilityType::DbAccess) }],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Return(Some(Expression::Query(SurrealQueryNode { raw_query: "SELECT * FROM users".to_string() })))
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ---- Plan 06: Match Statement Tests ----
+
+    #[test]
+    fn test_match_statement_valid() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let { name: "x".to_string(), ty: None, value: Expression::Int(42) },
+                            Statement::Match {
+                                subject: Expression::Identifier("x".to_string()),
+                                arms: vec![
+                                    MatchArm {
+                                        pattern: Pattern::Literal(Expression::Int(1)),
+                                        body: Block { statements: vec![Statement::Print(Expression::String("one".to_string()))] },
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern::Wildcard,
+                                        body: Block { statements: vec![Statement::Print(Expression::String("other".to_string()))] },
+                                    },
+                                ],
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_match_variant_with_bindings() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let { name: "val".to_string(), ty: None, value: Expression::Int(10) },
+                            Statement::Match {
+                                subject: Expression::Identifier("val".to_string()),
+                                arms: vec![
+                                    MatchArm {
+                                        pattern: Pattern::Variant("Some".to_string(), vec!["inner".to_string()]),
+                                        body: Block {
+                                            statements: vec![
+                                                Statement::Print(Expression::Identifier("inner".to_string()))
+                                            ]
+                                        },
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern::Wildcard,
+                                        body: Block { statements: vec![] },
+                                    },
+                                ],
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ---- Plan 06: Lambda Expression Tests ----
+
+    #[test]
+    fn test_lambda_expression_valid() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block {
+                        statements: vec![
+                            Statement::Let {
+                                name: "add".to_string(),
+                                ty: None,
+                                value: Expression::Lambda {
+                                    params: vec![
+                                        FieldDecl { name: "a".to_string(), ty: TypeNode::Int },
+                                        FieldDecl { name: "b".to_string(), ty: TypeNode::Int },
+                                    ],
+                                    return_ty: Some(Box::new(TypeNode::Int)),
+                                    body: Box::new(LambdaBody::Expression(
+                                        Expression::BinaryOp {
+                                            left: Box::new(Expression::Identifier("a".to_string())),
+                                            operator: BinaryOperator::Add,
+                                            right: Box::new(Expression::Identifier("b".to_string())),
+                                        }
+                                    )),
+                                },
+                            }
+                        ]
+                    })
+                }]
+            })]
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_lambda_inferred_type() {
+        // Lambda should infer as Func type
+        let mut checker = TypeChecker::new();
+        let lambda_expr = Expression::Lambda {
+            params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::String }],
+            return_ty: Some(Box::new(TypeNode::Int)),
+            body: Box::new(LambdaBody::Expression(Expression::Int(42))),
+        };
+        let ty = checker.infer_expression_type(&lambda_expr).unwrap();
+        assert_eq!(ty, TypeNode::Func(vec![TypeNode::String], Box::new(TypeNode::Int)));
     }
 }

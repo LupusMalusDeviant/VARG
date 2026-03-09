@@ -56,6 +56,30 @@ impl Context {
     }
 }
 
+// --- OCAP Capability Token Marker Structs (Plan 03) ---
+// These are zero-size marker types passed as method parameters
+// to grant permission for privileged operations.
+
+/// Grants permission to make network requests (fetch, HTTP calls)
+#[derive(Debug, Clone, Copy)]
+pub struct NetworkAccess;
+
+/// Grants permission to read/write files on disk
+#[derive(Debug, Clone, Copy)]
+pub struct FileAccess;
+
+/// Grants permission to execute database queries
+#[derive(Debug, Clone, Copy)]
+pub struct DbAccess;
+
+/// Grants permission to invoke LLM inference/chat
+#[derive(Debug, Clone, Copy)]
+pub struct LlmAccess;
+
+/// Grants permission for system-level operations (processes, env, etc.)
+#[derive(Debug, Clone, Copy)]
+pub struct SystemAccess;
+
 // OS Level Kernel Execution Macro
 #[macro_export]
 macro_rules! varg_os_query {

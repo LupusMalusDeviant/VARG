@@ -359,6 +359,12 @@ impl Parser {
             Some(Token::Context) => Ok(TypeNode::Context),
             Some(Token::Tensor) => Ok(TypeNode::Tensor),
             Some(Token::Embedding) => Ok(TypeNode::Embedding),
+            // OCAP Capability Tokens (Plan 03)
+            Some(Token::NetworkAccess) => Ok(TypeNode::Capability(CapabilityType::NetworkAccess)),
+            Some(Token::FileAccess) => Ok(TypeNode::Capability(CapabilityType::FileAccess)),
+            Some(Token::DbAccess) => Ok(TypeNode::Capability(CapabilityType::DbAccess)),
+            Some(Token::LlmAccess) => Ok(TypeNode::Capability(CapabilityType::LlmAccess)),
+            Some(Token::SystemAccess) => Ok(TypeNode::Capability(CapabilityType::SystemAccess)),
             Some(Token::Result) => {
                 self.consume(Token::LessThan)?;
                 let ok_ty = Box::new(self.parse_type()?);
@@ -528,7 +534,7 @@ impl Parser {
 
             match tok {
                 // Varg-Min Optional Variable Binding Type
-                Token::Var | Token::TypeInt | Token::TypeString | Token::TypeBool | Token::Prompt | Token::Tensor | Token::Context | Token::TypeIntShort | Token::TypeStringShort | Token::TypeBoolShort | Token::TypeMapShort => {
+                Token::Var | Token::TypeInt | Token::TypeString | Token::TypeBool | Token::Prompt | Token::Tensor | Token::Context | Token::TypeIntShort | Token::TypeStringShort | Token::TypeBoolShort | Token::TypeMapShort | Token::NetworkAccess | Token::FileAccess | Token::DbAccess | Token::LlmAccess | Token::SystemAccess => {
                     let ty = if *tok == Token::Var {
                         self.advance(); // consume 'var'
                         None
@@ -710,6 +716,24 @@ impl Parser {
                     self.consume(Token::Semicolon)?;
                     statements.push(Statement::Throw(expr));
                 },
+                Token::Match => {
+                    self.advance();
+                    let subject = self.parse_expression()?;
+                    self.consume(Token::LBrace)?;
+                    let mut arms = Vec::new();
+                    while self.peek() != Some(&Token::RBrace) {
+                        let pattern = self.parse_pattern()?;
+                        self.consume(Token::FatArrow)?;
+                        let body = self.parse_block()?;
+                        // Optional comma between arms
+                        if self.peek() == Some(&Token::Comma) {
+                            self.advance();
+                        }
+                        arms.push(MatchArm { pattern, body });
+                    }
+                    self.consume(Token::RBrace)?;
+                    statements.push(Statement::Match { subject, arms });
+                },
                 // Fallback dummy token skipper to avoid infinite loops if an expression fails
                 _ => {
                     let skipped = self.advance();
@@ -722,6 +746,58 @@ impl Parser {
         
         self.consume(Token::RBrace)?;
         Ok(Block { statements })
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        match self.peek() {
+            Some(Token::Underscore) => {
+                self.advance();
+                Ok(Pattern::Wildcard)
+            },
+            Some(Token::IntLiteral(_)) => {
+                if let Some(Token::IntLiteral(val)) = self.advance() {
+                    Ok(Pattern::Literal(Expression::Int(val)))
+                } else { unreachable!() }
+            },
+            Some(Token::StringLiteral(_)) => {
+                if let Some(Token::StringLiteral(val)) = self.advance() {
+                    Ok(Pattern::Literal(Expression::String(val.trim_matches('"').to_string())))
+                } else { unreachable!() }
+            },
+            Some(Token::BoolLiteral(_)) => {
+                if let Some(Token::BoolLiteral(val)) = self.advance() {
+                    Ok(Pattern::Literal(Expression::Bool(val)))
+                } else { unreachable!() }
+            },
+            Some(Token::Identifier(_)) => {
+                let name = self.parse_identifier()?;
+                if self.peek() == Some(&Token::LParen) {
+                    self.advance();
+                    let mut bindings = Vec::new();
+                    if self.peek() != Some(&Token::RParen) {
+                        loop {
+                            bindings.push(self.parse_identifier()?);
+                            if self.peek() == Some(&Token::Comma) {
+                                self.advance();
+                            } else { break; }
+                        }
+                    }
+                    self.consume(Token::RParen)?;
+                    Ok(Pattern::Variant(name, bindings))
+                } else {
+                    // Simple identifier used as variant without bindings
+                    Ok(Pattern::Variant(name, vec![]))
+                }
+            },
+            _ => {
+                let span = self.current_span();
+                Err(ParseError::UnexpectedToken {
+                    expected: "Pattern (literal, variant, or _)".to_string(),
+                    found: self.advance(),
+                    span,
+                })
+            }
+        }
     }
 
     fn parse_expression(&mut self) -> Result<Expression, ParseError> {
@@ -824,6 +900,12 @@ impl Parser {
                     });
                 }
             },
+            // OCAP capability tokens as expressions (for token passing)
+            Some(Token::NetworkAccess) => Expression::Identifier("NetworkAccess".to_string()),
+            Some(Token::FileAccess) => Expression::Identifier("FileAccess".to_string()),
+            Some(Token::DbAccess) => Expression::Identifier("DbAccess".to_string()),
+            Some(Token::LlmAccess) => Expression::Identifier("LlmAccess".to_string()),
+            Some(Token::SystemAccess) => Expression::Identifier("SystemAccess".to_string()),
             Some(Token::FButton) => {
                 if let Some(Token::LParen) = self.advance() {
                     let mut args = Vec::new();
@@ -1707,6 +1789,138 @@ mod tests {
             assert_eq!(m.constraints.len(), 1);
             assert_eq!(m.constraints[0].type_param, "T");
             assert_eq!(m.constraints[0].bound, "Comparable");
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 03/06: Wave 3 Parser Tests ----
+
+    #[test]
+    fn test_parse_capability_type_in_method() {
+        let source = r#"
+            agent ApiAgent {
+                public string Fetch(string url, NetworkAccess net) {
+                    return "ok";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let m = &a.methods[0];
+            assert_eq!(m.args.len(), 2);
+            assert_eq!(m.args[0].name, "url");
+            assert_eq!(m.args[0].ty, TypeNode::String);
+            assert_eq!(m.args[1].name, "net");
+            assert_eq!(m.args[1].ty, TypeNode::Capability(CapabilityType::NetworkAccess));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_all_capability_types() {
+        let source = r#"
+            agent Test {
+                public void Run(NetworkAccess a, FileAccess b, DbAccess c, LlmAccess d, SystemAccess e) {
+                    return;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let m = &a.methods[0];
+            assert_eq!(m.args.len(), 5);
+            assert_eq!(m.args[0].ty, TypeNode::Capability(CapabilityType::NetworkAccess));
+            assert_eq!(m.args[1].ty, TypeNode::Capability(CapabilityType::FileAccess));
+            assert_eq!(m.args[2].ty, TypeNode::Capability(CapabilityType::DbAccess));
+            assert_eq!(m.args[3].ty, TypeNode::Capability(CapabilityType::LlmAccess));
+            assert_eq!(m.args[4].ty, TypeNode::Capability(CapabilityType::SystemAccess));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_match_statement() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 42;
+                    match x {
+                        1 => { print("one"); }
+                        2 => { print("two"); }
+                        _ => { print("other"); }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // First statement is let, second is match
+            if let Statement::Match { subject, arms } = &body.statements[1] {
+                assert!(matches!(subject, Expression::Identifier(n) if n == "x"));
+                assert_eq!(arms.len(), 3);
+                assert!(matches!(&arms[0].pattern, Pattern::Literal(Expression::Int(1))));
+                assert!(matches!(&arms[1].pattern, Pattern::Literal(Expression::Int(2))));
+                assert!(matches!(&arms[2].pattern, Pattern::Wildcard));
+            } else { panic!("Expected Match statement"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_match_with_variant_pattern() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 1;
+                    match x {
+                        Some(val) => { print(val); }
+                        None => { print("nothing"); }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Match { arms, .. } = &body.statements[1] {
+                assert_eq!(arms.len(), 2);
+                if let Pattern::Variant(name, bindings) = &arms[0].pattern {
+                    assert_eq!(name, "Some");
+                    assert_eq!(bindings, &vec!["val".to_string()]);
+                } else { panic!("Expected Variant pattern"); }
+                if let Pattern::Variant(name, bindings) = &arms[1].pattern {
+                    assert_eq!(name, "None");
+                    assert!(bindings.is_empty());
+                } else { panic!("Expected Variant pattern for None"); }
+            } else { panic!("Expected Match statement"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_match_with_string_pattern() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var cmd = "help";
+                    match cmd {
+                        "help" => { print("showing help"); }
+                        "quit" => { print("quitting"); }
+                        _ => { print("unknown"); }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Match { arms, .. } = &body.statements[1] {
+                assert_eq!(arms.len(), 3);
+                assert!(matches!(&arms[0].pattern, Pattern::Literal(Expression::String(s)) if s == "help"));
+                assert!(matches!(&arms[1].pattern, Pattern::Literal(Expression::String(s)) if s == "quit"));
+                assert!(matches!(&arms[2].pattern, Pattern::Wildcard));
+            } else { panic!("Expected Match statement"); }
         } else { panic!("Expected Agent"); }
     }
 }

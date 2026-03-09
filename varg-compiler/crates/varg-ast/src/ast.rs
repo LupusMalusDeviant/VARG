@@ -115,6 +115,9 @@ pub enum Statement {
     
     // Phase 20: Streaming
     Stream(Expression),
+
+    // Plan 06: Pattern Matching
+    Match { subject: Expression, arms: Vec<MatchArm> },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -147,6 +150,20 @@ pub enum Expression {
     MapLiteral(Vec<(Expression, Expression)>), // Phase 10: {"key": value}
     PromptLiteral(String), // Phase 20: prompt """ ... """
     Query(SurrealQueryNode), // Phase 15: Native Database Query Expression
+
+    // Plan 06: Closures/Lambdas
+    Lambda {
+        params: Vec<FieldDecl>,
+        return_ty: Option<Box<TypeNode>>,
+        body: Box<LambdaBody>,
+    },
+}
+
+// ---- Lambda Body (Plan 06) ----
+#[derive(Debug, PartialEq, Clone)]
+pub enum LambdaBody {
+    Expression(Expression),  // (a, b) => a + b
+    Block(Block),            // (a) => { ... }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -162,6 +179,30 @@ pub struct LinqQuery {
 #[derive(Debug, PartialEq, Clone)]
 pub enum BinaryOperator {
     Add, Sub, Mul, Div, Eq, NotEq, Lt, Gt, LtEq, GtEq, CosineSim
+}
+
+// ---- OCAP Capability Tokens (Plan 03) ----
+#[derive(Debug, PartialEq, Clone)]
+pub enum CapabilityType {
+    NetworkAccess,
+    FileAccess,
+    DbAccess,
+    LlmAccess,
+    SystemAccess,
+}
+
+// ---- Pattern Matching (Plan 06) ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Block,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Pattern {
+    Literal(Expression),           // 200, "hello", true
+    Variant(String, Vec<String>),  // Ok(value), Err(e)
+    Wildcard,                      // _
 }
 
 // ---- AI-OS Native Types ----
@@ -192,6 +233,12 @@ pub enum TypeNode {
     Generic(String, Vec<TypeNode>),  // Standard User-Generics Box<int>
     List(Box<TypeNode>),             // Standard Library List<T>
     Custom(String), // References to Agent or Struct names
+
+    // Plan 03: OCAP Capability Tokens
+    Capability(CapabilityType),
+
+    // Plan 06: Function/Closure types
+    Func(Vec<TypeNode>, Box<TypeNode>), // (params) => return
 }
 
 // ---- SurrealDB AST Node ----

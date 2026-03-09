@@ -279,4 +279,63 @@ mod tests {
         assert_eq!(lexer.next().unwrap().0, Ok(Token::RBrace));
         assert_eq!(lexer.next(), None);
     }
+
+    // ---- Plan 03/06: Wave 3 Lexer Tests ----
+
+    #[test]
+    fn test_lex_ocap_capability_tokens() {
+        let source = "NetworkAccess FileAccess DbAccess LlmAccess SystemAccess";
+        let mut lexer = Lexer::new(source);
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::NetworkAccess));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::FileAccess));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::DbAccess));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::LlmAccess));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::SystemAccess));
+        assert_eq!(lexer.next(), None);
+    }
+
+    #[test]
+    fn test_lex_fat_arrow_and_underscore() {
+        let source = "=> _";
+        let mut lexer = Lexer::new(source);
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::FatArrow));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Underscore));
+        assert_eq!(lexer.next(), None);
+    }
+
+    #[test]
+    fn test_lex_match_pattern_tokens() {
+        let source = "match x { 1 => { } _ => { } }";
+        let mut lexer = Lexer::new(source);
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Match));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Identifier("x".to_string())));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::LBrace));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::IntLiteral(1)));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::FatArrow));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::LBrace));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::RBrace));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Underscore));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::FatArrow));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::LBrace));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::RBrace));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::RBrace));
+        assert_eq!(lexer.next(), None);
+    }
+
+    #[test]
+    fn test_lex_capability_in_method_signature() {
+        let source = "public string Fetch(string url, NetworkAccess net)";
+        let mut lexer = Lexer::new(source);
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Public));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::TypeString));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Identifier("Fetch".to_string())));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::LParen));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::TypeString));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Identifier("url".to_string())));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Comma));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::NetworkAccess));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Identifier("net".to_string())));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::RParen));
+        assert_eq!(lexer.next(), None);
+    }
 }
