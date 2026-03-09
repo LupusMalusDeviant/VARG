@@ -8,6 +8,7 @@ members = [
     "crates/vargc",
     "crates/varg-os-types",
     "crates/varg-runtime",
+    "crates/varg-lsp",
     "crates/varg-playground"
 ]
 exclude = [
