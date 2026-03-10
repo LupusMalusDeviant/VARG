@@ -853,6 +853,14 @@ impl RustGenerator {
 
                 format!("{{\n    let (__tx, __rx) = std::sync::mpsc::channel::<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>();\n    std::thread::spawn(move || {{\n        let mut __agent = {};\n        for (method, args, reply_tx) in __rx {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n    }});\n    __tx\n}}", agent_init, dispatch)
             },
+            // Plan 24: expr? → try-propagate
+            Expression::TryPropagate(expr) => {
+                format!("({})?", self.gen_expression(expr))
+            },
+            // Plan 24: expr or default → unwrap_or_else
+            Expression::OrDefault { expr, default } => {
+                format!("({}).unwrap_or_else(|_| {})", self.gen_expression(expr), self.gen_expression(default))
+            },
         }
     }
 }
@@ -2735,5 +2743,37 @@ mod tests {
         assert!(code.contains("format!"));
         assert!(code.contains("text"));
         assert!(code.contains("fmt"));
+    }
+
+    // ---- Plan 24: Error Propagation Codegen Tests ----
+    #[test]
+    fn test_codegen_question_mark_operator() {
+        let mut gen = RustGenerator::new();
+        let expr = Expression::TryPropagate(
+            Box::new(Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "fetch".to_string(),
+                args: vec![Expression::String("url".to_string())],
+            })
+        );
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("?"));
+        assert!(code.contains("fetch"));
+    }
+
+    #[test]
+    fn test_codegen_or_default() {
+        let mut gen = RustGenerator::new();
+        let expr = Expression::OrDefault {
+            expr: Box::new(Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "fetch".to_string(),
+                args: vec![Expression::String("url".to_string())],
+            }),
+            default: Box::new(Expression::String("fallback".to_string())),
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("unwrap_or_else"));
+        assert!(code.contains("fallback"));
     }
 }

@@ -155,6 +155,9 @@ pub enum Token {
     // ---- Wave 7: Actor-Model Concurrency ----
     #[token("timeout")] Timeout,
 
+    // ---- Plan 24: Error Propagation ----
+    #[token("or", priority = 3)] OrKeyword,
+
     // ---- Varg-Min (KI-Optimized Shorthands) ----
     #[token("+A")] PlusA,
     #[token("-A")] MinusA,

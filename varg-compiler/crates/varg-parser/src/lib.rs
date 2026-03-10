@@ -1504,6 +1504,20 @@ impl Parser {
                         return Err(ParseError::UnexpectedToken { expected: "Identifier before call".to_string(), found: Some(Token::LParen), span: self.last_span() });
                     }
                 },
+                // Plan 24: ? postfix — try-propagate error
+                Token::QuestionMark => {
+                    self.advance(); // consume ?
+                    left = Expression::TryPropagate(Box::new(left));
+                },
+                // Plan 24: expr or default — unwrap with fallback
+                Token::OrKeyword => {
+                    self.advance(); // consume 'or'
+                    let default = self.parse_expression_bp(0)?;
+                    left = Expression::OrDefault {
+                        expr: Box::new(left),
+                        default: Box::new(default),
+                    };
+                },
                 // Pipe operator: a |> f(b) → f(a, b), a |> .method() → a.method()
                 Token::Pipe => {
                     self.advance(); // consume |>
@@ -3623,5 +3637,46 @@ mod tests {
             assert!(pt.body.contains("{text}"));
             assert!(pt.body.contains("{count}"));
         } else { panic!("Expected PromptTemplate"); }
+    }
+
+    // ---- Plan 24: Error Propagation Tests ----
+    #[test]
+    fn test_parse_try_propagate() {
+        let source = r#"
+            agent Test {
+                public string Run() {
+                    var data = fetch("url")?;
+                    return data;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::TryPropagate(_)));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_or_default() {
+        let source = r#"
+            agent Test {
+                public string Run() {
+                    var data = fetch("url") or "default";
+                    return data;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::OrDefault { .. }));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
     }
 }

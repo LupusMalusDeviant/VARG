@@ -202,6 +202,13 @@ pub enum Expression {
         agent_name: String,
         args: Vec<Expression>,
     },
+
+    // Plan 24: Error Propagation
+    TryPropagate(Box<Expression>),  // expr? — auto-propagate Result error
+    OrDefault {
+        expr: Box<Expression>,
+        default: Box<Expression>,
+    },  // expr or default — unwrap with fallback
 }
 
 // ---- Lambda Body (Plan 06) ----

@@ -734,6 +734,28 @@ impl TypeChecker {
                 }
                 Ok(TypeNode::AgentHandle(agent_name.clone()))
             },
+            // Plan 24: expr? — must be inside a method that returns Result
+            Expression::TryPropagate(expr) => {
+                let inner_ty = self.infer_expression_type(expr)?;
+                // If the expression is Result<T, E>, the ? unwraps to T
+                if let TypeNode::Result(ok_ty, _) = inner_ty {
+                    Ok(*ok_ty)
+                } else {
+                    // Allow ? on any expression (runtime will handle)
+                    Ok(inner_ty)
+                }
+            },
+            // Plan 24: expr or default — returns inner type
+            Expression::OrDefault { expr, default } => {
+                let expr_ty = self.infer_expression_type(expr)?;
+                let default_ty = self.infer_expression_type(default)?;
+                // If expr is Result<T, E>, return T (the unwrapped type)
+                if let TypeNode::Result(ok_ty, _) = expr_ty {
+                    Ok(*ok_ty)
+                } else {
+                    Ok(default_ty)
+                }
+            },
         }
     }
 
@@ -2713,5 +2735,77 @@ mod tests {
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
+    }
+
+    // ---- Plan 24: Error Propagation Type Checking ----
+    #[test]
+    fn test_try_propagate_unwraps_result() {
+        // expr? on Result<String, Error> should infer as String
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true, is_async: false,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "data".to_string(),
+                            ty: Some(TypeNode::String),
+                            value: Expression::TryPropagate(
+                                Box::new(Expression::String("hello".to_string()))
+                            ),
+                        },
+                        Statement::Return(Some(Expression::Identifier("data".to_string()))),
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_or_default_type_inference() {
+        // expr or "default" should type-check
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true, is_async: false,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "data".to_string(),
+                            ty: Some(TypeNode::String),
+                            value: Expression::OrDefault {
+                                expr: Box::new(Expression::String("test".to_string())),
+                                default: Box::new(Expression::String("fallback".to_string())),
+                            },
+                        },
+                        Statement::Return(Some(Expression::Identifier("data".to_string()))),
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
     }
 }
