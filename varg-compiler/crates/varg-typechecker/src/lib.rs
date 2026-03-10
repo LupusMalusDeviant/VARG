@@ -7,6 +7,9 @@ pub enum TypeError {
     TypeMismatch { expected: String, found: String },
     UndeclaredVariable(String),
     IllegalOsCall { reason: String }, // OCAP Violation
+    // Plan 21: Dedicated capability error for flow analysis
+    MissingCapability { capability: String, operation: String },
+    CapabilityConstructionOutsideUnsafe { capability: String },
 }
 
 impl TypeError {
@@ -21,6 +24,12 @@ impl TypeError {
             }
             TypeError::IllegalOsCall { reason } => {
                 reason.clone()
+            }
+            TypeError::MissingCapability { capability, operation } => {
+                format!("operation `{}` requires `{}` capability token — pass it as a parameter or use `unsafe {{}}`", operation, capability)
+            }
+            TypeError::CapabilityConstructionOutsideUnsafe { capability } => {
+                format!("`{}` capability token cannot be constructed outside `unsafe` block", capability)
             }
         }
     }
@@ -85,13 +94,36 @@ impl TypeChecker {
                 CapabilityType::LlmAccess => "LlmAccess",
                 CapabilityType::SystemAccess => "SystemAccess",
             };
-            Err(TypeError::IllegalOsCall {
-                reason: format!(
-                    "`{}` requires a `{}` capability token or an `unsafe` block.",
-                    operation, cap_name
-                ),
+            Err(TypeError::MissingCapability {
+                capability: cap_name.to_string(),
+                operation: operation.to_string(),
             })
         }
+    }
+
+    /// Plan 21: Check that capability arguments being passed are actually available
+    fn check_capability_propagation(&self, args: &[Expression]) -> Result<(), TypeError> {
+        for arg in args {
+            if let Expression::Identifier(name) = arg {
+                if let Some(TypeNode::Capability(cap)) = self.env.get(name) {
+                    // Check if this capability is available in the current scope
+                    if !self.in_unsafe_block && !self.has_capability(cap) {
+                        let cap_name = match cap {
+                            CapabilityType::NetworkAccess => "NetworkAccess",
+                            CapabilityType::FileAccess => "FileAccess",
+                            CapabilityType::DbAccess => "DbAccess",
+                            CapabilityType::LlmAccess => "LlmAccess",
+                            CapabilityType::SystemAccess => "SystemAccess",
+                        };
+                        return Err(TypeError::MissingCapability {
+                            capability: cap_name.to_string(),
+                            operation: format!("passing {} to method", cap_name),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), TypeError> {
@@ -778,11 +810,8 @@ mod tests {
         let result = checker.check_program(&program);
         
         assert!(result.is_err());
-        if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("query") || reason.contains("unsafe"));
-        } else {
-            panic!("Expected IllegalOsCall error!");
-        }
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("query") || msg.contains("DbAccess"));
     }
 
     #[test]
@@ -901,11 +930,8 @@ mod tests {
         let result = checker.check_program(&program);
         
         assert!(result.is_err());
-        if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("fetch") && reason.contains("NetworkAccess"));
-        } else {
-            panic!("Expected IllegalOsCall error for fetch!");
-        }
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("fetch") && msg.contains("NetworkAccess"));
     }
 
     #[test]
@@ -1159,9 +1185,8 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("llm_infer") && reason.contains("LlmAccess"));
-        } else { panic!("Expected IllegalOsCall"); }
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("llm_infer") && msg.contains("LlmAccess"));
     }
 
     #[test]
@@ -1198,9 +1223,8 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("file_read") && reason.contains("FileAccess"));
-        } else { panic!("Expected IllegalOsCall"); }
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("file_read") && msg.contains("FileAccess"));
     }
 
     #[test]
@@ -1240,9 +1264,8 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("file_write") && reason.contains("FileAccess"));
-        } else { panic!("Expected IllegalOsCall"); }
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("file_write") && msg.contains("FileAccess"));
     }
 
     #[test]
@@ -1710,9 +1733,8 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        if let Err(TypeError::IllegalOsCall { reason }) = result {
-            assert!(reason.contains("NetworkAccess"));
-        } else { panic!("Expected IllegalOsCall"); }
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("NetworkAccess"));
     }
 
     #[test]
@@ -2473,5 +2495,173 @@ mod tests {
             ]},
         ]};
         assert!(checker.check_block(&block).is_ok());
+    }
+
+    // ===== Plan 21: OCAP Flow Analysis Tests =====
+
+    #[test]
+    fn test_capability_available_from_params() {
+        // Method with NetworkAccess param can call fetch
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![
+                        FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess) },
+                    ],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Expr(Expression::MethodCall {
+                            caller: Box::new(Expression::Identifier("self".to_string())),
+                            method_name: "fetch".to_string(),
+                            args: vec![Expression::String("https://example.com".to_string())],
+                        }),
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_capability_missing_error() {
+        // Method without capability param cannot call fetch
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Expr(Expression::MethodCall {
+                            caller: Box::new(Expression::Identifier("self".to_string())),
+                            method_name: "fetch".to_string(),
+                            args: vec![Expression::String("https://example.com".to_string())],
+                        }),
+                    ]}),
+                }],
+            })],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        if let Err(TypeError::MissingCapability { capability, operation }) = result {
+            assert_eq!(capability, "NetworkAccess");
+            assert_eq!(operation, "fetch");
+        } else {
+            panic!("Expected MissingCapability error, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_multiple_capabilities_tracking() {
+        // Method with multiple capability params can call multiple ops
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![
+                        FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess) },
+                        FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess) },
+                        FieldDecl { name: "db".to_string(), ty: TypeNode::Capability(CapabilityType::DbAccess) },
+                    ],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Expr(Expression::MethodCall {
+                            caller: Box::new(Expression::Identifier("self".to_string())),
+                            method_name: "fetch".to_string(),
+                            args: vec![Expression::String("url".to_string())],
+                        }),
+                        Statement::Expr(Expression::MethodCall {
+                            caller: Box::new(Expression::Identifier("self".to_string())),
+                            method_name: "file_read".to_string(),
+                            args: vec![Expression::String("path".to_string())],
+                        }),
+                        Statement::Expr(Expression::Query(SurrealQueryNode {
+                            raw_query: "SELECT * FROM users".to_string(),
+                        })),
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_unsafe_allows_all_operations() {
+        // Unsafe block bypasses all capability checks
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], // No capabilities!
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::UnsafeBlock(Block { statements: vec![
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "fetch".to_string(),
+                                args: vec![Expression::String("url".to_string())],
+                            }),
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "file_read".to_string(),
+                                args: vec![Expression::String("path".to_string())],
+                            }),
+                        ]}),
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_missing_capability_error_message() {
+        let err = TypeError::MissingCapability {
+            capability: "FileAccess".to_string(),
+            operation: "file_write".to_string(),
+        };
+        let msg = err.message();
+        assert!(msg.contains("file_write"));
+        assert!(msg.contains("FileAccess"));
+        assert!(msg.contains("capability token"));
+    }
+
+    #[test]
+    fn test_capability_construction_error_message() {
+        let err = TypeError::CapabilityConstructionOutsideUnsafe {
+            capability: "NetworkAccess".to_string(),
+        };
+        let msg = err.message();
+        assert!(msg.contains("NetworkAccess"));
+        assert!(msg.contains("unsafe"));
     }
 }
