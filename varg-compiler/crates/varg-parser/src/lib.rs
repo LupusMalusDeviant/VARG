@@ -421,9 +421,17 @@ impl Parser {
             
             let annotations = self.parse_annotations()?;
 
+            // Optional: async modifier
+            let is_async = if let Some(Token::Async) = self.peek() {
+                self.advance();
+                true
+            } else {
+                false
+            };
+
             let mut is_public = false;
             let mut return_ty = TypeNode::Void;
-            
+
             match self.peek() {
                 Some(Token::PlusM) | Some(Token::PlusV) => {
                     self.advance();
@@ -505,6 +513,7 @@ impl Parser {
             methods.push(MethodDecl {
                 name,
                 is_public,
+                is_async,
                 annotations,
                 type_params,
                 constraints,
@@ -515,6 +524,33 @@ impl Parser {
         }
         self.consume(Token::RBrace)?;
         Ok(methods)
+    }
+
+    /// Parse an optional else branch: `else { ... }` or `else if (...) { ... } else ...`
+    fn parse_else_branch(&mut self) -> Result<Option<Block>, ParseError> {
+        if let Some(Token::Else) = self.peek() {
+            self.advance();
+            if let Some(Token::If) = self.peek() {
+                // else if → parse the if-statement recursively, wrap in a Block
+                let if_stmt = self.parse_if_statement()?;
+                Ok(Some(Block { statements: vec![if_stmt] }))
+            } else {
+                Ok(Some(self.parse_block()?))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Parse a full if / else-if / else statement (called from parse_block and recursively from parse_else_branch)
+    fn parse_if_statement(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // consume 'if'
+        self.consume(Token::LParen)?;
+        let condition = self.parse_expression()?;
+        self.consume(Token::RParen)?;
+        let then_block = self.parse_block()?;
+        let else_block = self.parse_else_branch()?;
+        Ok(Statement::If { condition, then_block, else_block })
     }
 
     fn parse_block(&mut self) -> Result<Block, ParseError> {
@@ -643,18 +679,33 @@ impl Parser {
                     self.consume(Token::Semicolon)?;
                     statements.push(Statement::Print(expr));
                 },
-                Token::If => {
+                Token::Const => {
                     self.advance();
-                    self.consume(Token::LParen)?;
-                    let condition = self.parse_expression()?;
-                    self.consume(Token::RParen)?;
-                    let then_block = self.parse_block()?;
-                    let mut else_block = None;
-                    if let Some(Token::Else) = self.peek() {
-                       self.advance();
-                       else_block = Some(self.parse_block()?);
-                    }
-                    statements.push(Statement::If { condition, then_block, else_block });
+                    // const TYPE NAME = expr;  or  const var NAME = expr;
+                    let ty = if let Some(Token::Var) = self.peek() {
+                        self.advance();
+                        None
+                    } else {
+                        Some(self.parse_type()?)
+                    };
+                    let name = self.parse_identifier()?;
+                    self.consume(Token::Assign)?;
+                    let value = self.parse_expression()?;
+                    self.consume(Token::Semicolon)?;
+                    statements.push(Statement::Const { name, ty, value });
+                },
+                Token::Break => {
+                    self.advance();
+                    self.consume(Token::Semicolon)?;
+                    statements.push(Statement::Break);
+                },
+                Token::Continue => {
+                    self.advance();
+                    self.consume(Token::Semicolon)?;
+                    statements.push(Statement::Continue);
+                },
+                Token::If => {
+                    statements.push(self.parse_if_statement()?);
                 },
                 Token::While => {
                     self.advance();
@@ -921,6 +972,10 @@ impl Parser {
                     operator: UnaryOperator::Not,
                     operand: Box::new(operand),
                 }
+            },
+            Some(Token::Await) => {
+                let operand = self.parse_expression_bp(15)?;
+                Expression::Await(Box::new(operand))
             },
             Some(Token::Null) => Expression::Null,
             Some(Token::IntLiteral(val)) => Expression::Int(val),
@@ -2553,6 +2608,272 @@ mod tests {
                     } else { panic!("Expected UnaryOp Negate on right, got {:?}", right); }
                 } else { panic!("Expected Add at top level, got {:?}", value); }
             } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 5: break / continue =====
+
+    #[test]
+    fn test_parse_break() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    while (true) {
+                        break;
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::While { body: loop_body, .. } = &body.statements[0] {
+                assert!(matches!(loop_body.statements[0], Statement::Break));
+            } else { panic!("Expected While"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_continue() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    while (true) {
+                        continue;
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::While { body: loop_body, .. } = &body.statements[0] {
+                assert!(matches!(loop_body.statements[0], Statement::Continue));
+            } else { panic!("Expected While"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_break_continue_in_for() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    foreach (var i in items) {
+                        if (i == 0) {
+                            continue;
+                        }
+                        if (i > 10) {
+                            break;
+                        }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Foreach { body: loop_body, .. } = &body.statements[0] {
+                // First statement is if-continue, second is if-break
+                assert_eq!(loop_body.statements.len(), 2);
+                if let Statement::If { then_block, .. } = &loop_body.statements[0] {
+                    assert!(matches!(then_block.statements[0], Statement::Continue));
+                } else { panic!("Expected If"); }
+                if let Statement::If { then_block, .. } = &loop_body.statements[1] {
+                    assert!(matches!(then_block.statements[0], Statement::Break));
+                } else { panic!("Expected If"); }
+            } else { panic!("Expected Foreach"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 5: else if =====
+
+    #[test]
+    fn test_parse_else_if() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    if (x > 10) {
+                        print "big";
+                    } else if (x > 5) {
+                        print "medium";
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::If { else_block: Some(eb), .. } = &body.statements[0] {
+                // else block contains a single If statement
+                assert_eq!(eb.statements.len(), 1);
+                assert!(matches!(eb.statements[0], Statement::If { .. }));
+            } else { panic!("Expected If with else block"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_else_if_else() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    if (x > 10) {
+                        print "big";
+                    } else if (x > 5) {
+                        print "medium";
+                    } else {
+                        print "small";
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::If { else_block: Some(eb), .. } = &body.statements[0] {
+                // else block contains a single If with its own else
+                if let Statement::If { else_block: Some(final_else), .. } = &eb.statements[0] {
+                    // The final else block has a print statement
+                    assert_eq!(final_else.statements.len(), 1);
+                    assert!(matches!(final_else.statements[0], Statement::Print(_)));
+                } else { panic!("Expected nested If with else"); }
+            } else { panic!("Expected If with else block"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_chained_else_if() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    if (x == 1) {
+                        print "one";
+                    } else if (x == 2) {
+                        print "two";
+                    } else if (x == 3) {
+                        print "three";
+                    } else {
+                        print "other";
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // First level: if (x == 1) ... else { if (x == 2) ... }
+            if let Statement::If { else_block: Some(eb1), .. } = &body.statements[0] {
+                if let Statement::If { else_block: Some(eb2), .. } = &eb1.statements[0] {
+                    // Second level: if (x == 3) ... else { print "other" }
+                    if let Statement::If { else_block: Some(eb3), .. } = &eb2.statements[0] {
+                        assert_eq!(eb3.statements.len(), 1);
+                        assert!(matches!(eb3.statements[0], Statement::Print(_)));
+                    } else { panic!("Expected third-level If with else"); }
+                } else { panic!("Expected second-level If with else"); }
+            } else { panic!("Expected first If with else"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 5: async / await =====
+
+    #[test]
+    fn test_parse_async_method() {
+        let source = r#"
+            agent Test {
+                async public void FetchData() {
+                    print "fetching";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert!(a.methods[0].is_async);
+            assert_eq!(a.methods[0].name, "FetchData");
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_await_expression() {
+        let source = r#"
+            agent Test {
+                async public void Run() {
+                    var result = await fetch("https://api.example.com");
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert!(a.methods[0].is_async);
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::Await(_)));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_non_async_method() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    print "sync";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert!(!a.methods[0].is_async);
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 5: const =====
+
+    #[test]
+    fn test_parse_const_with_type() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    const int MAX = 100;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Const { name, ty, value } = &body.statements[0] {
+                assert_eq!(name, "MAX");
+                assert_eq!(*ty, Some(TypeNode::Int));
+                assert_eq!(*value, Expression::Int(100));
+            } else { panic!("Expected Const, got {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_const_with_var() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    const var NAME = "varg";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Const { name, ty, .. } = &body.statements[0] {
+                assert_eq!(name, "NAME");
+                assert_eq!(*ty, None); // inferred
+            } else { panic!("Expected Const"); }
         } else { panic!("Expected Agent"); }
     }
 }

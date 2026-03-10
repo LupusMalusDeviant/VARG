@@ -119,7 +119,8 @@ impl RustGenerator {
                 .collect();
             format!(" where {}", constraints.join(", "))
         };
-        format!("{}fn {}{}({}){}{}", vis, method.name, type_params, arg_str, ret_str, where_clause)
+        let async_kw = if method.is_async { "async " } else { "" };
+        format!("{}{}fn {}{}({}){}{}", vis, async_kw, method.name, type_params, arg_str, ret_str, where_clause)
     }
 
     /// Heuristic: does this expression produce a String?
@@ -202,10 +203,49 @@ impl RustGenerator {
                     out.push_str(&format!("{}}}\n", indent));
                 },
 
+                Statement::Const { name, ty, value } => {
+                    let val_str = self.gen_expression(value);
+                    if let Some(t) = ty {
+                        out.push_str(&format!("{}let {}: {} = {};\n", indent, name, self.gen_type(t), val_str));
+                    } else {
+                        out.push_str(&format!("{}let {} = {};\n", indent, name, val_str));
+                    }
+                },
+                Statement::Break => {
+                    out.push_str(&format!("{}break;\n", indent));
+                },
+                Statement::Continue => {
+                    out.push_str(&format!("{}continue;\n", indent));
+                },
                 Statement::If { condition, then_block, else_block } => {
                     out.push_str(&format!("{}if {} {{\n", indent, self.gen_expression(condition)));
                     out.push_str(&self.gen_block(then_block, indent_level + 1));
                     if let Some(eb) = else_block {
+                        // Detect else-if chain: single If statement in else block
+                        if eb.statements.len() == 1 {
+                            if let Statement::If { condition: elif_cond, then_block: elif_then, else_block: elif_else } = &eb.statements[0] {
+                                out.push_str(&format!("{}}} else if {} {{\n", indent, self.gen_expression(elif_cond)));
+                                out.push_str(&self.gen_block(elif_then, indent_level + 1));
+                                if let Some(final_else) = elif_else {
+                                    // Check for further chaining
+                                    if final_else.statements.len() == 1 {
+                                        if let Statement::If { .. } = &final_else.statements[0] {
+                                            // Recurse: generate the rest of the chain via gen_block
+                                            // which will hit this same branch
+                                            let chain = self.gen_block(final_else, indent_level);
+                                            // Strip the leading indent from the generated if
+                                            let trimmed = chain.trim_start();
+                                            out.push_str(&format!("{}}} else {}", indent, trimmed));
+                                            continue;
+                                        }
+                                    }
+                                    out.push_str(&format!("{}}} else {{\n", indent));
+                                    out.push_str(&self.gen_block(final_else, indent_level + 1));
+                                }
+                                out.push_str(&format!("{}}}\n", indent));
+                                continue;
+                            }
+                        }
                         out.push_str(&format!("{}}} else {{\n", indent));
                         out.push_str(&self.gen_block(eb, indent_level + 1));
                     }
@@ -381,6 +421,9 @@ impl RustGenerator {
                 };
                 format!("{} {} {}", self.gen_expression(left), op, self.gen_expression(right))
             },
+            Expression::Await(inner) => {
+                format!("{}.await", self.gen_expression(inner))
+            },
             Expression::UnaryOp { operator, operand } => {
                 let expr = self.gen_expression(operand);
                 match operator {
@@ -432,6 +475,48 @@ impl RustGenerator {
                     format!("{}.trim().to_string()", arg_strs[0])
                 } else if method_name == "str_split" {
                     format!("{}.split(&{}).map(|s| s.to_string()).collect::<Vec<String>>()", arg_strs[0], arg_strs[1])
+                // ===== Wave 5: String Methods (caller-as-receiver) =====
+                } else if method_name == "len" {
+                    format!("{}.len() as i64", self.gen_expression(caller))
+                } else if method_name == "contains" {
+                    format!("{}.contains(&{})", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "starts_with" {
+                    format!("{}.starts_with(&{})", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "ends_with" {
+                    format!("{}.ends_with(&{})", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "to_upper" {
+                    format!("{}.to_uppercase()", self.gen_expression(caller))
+                } else if method_name == "to_lower" {
+                    format!("{}.to_lowercase()", self.gen_expression(caller))
+                } else if method_name == "substring" {
+                    format!("{}.chars().skip({} as usize).take({} as usize).collect::<String>()", self.gen_expression(caller), arg_strs[0], arg_strs[1])
+                } else if method_name == "char_at" {
+                    format!("{}.chars().nth({} as usize).map(|c| c.to_string()).unwrap_or_default()", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "index_of" {
+                    format!("{}.find(&{}).map(|i| i as i64).unwrap_or(-1)", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "trim" {
+                    format!("{}.trim().to_string()", self.gen_expression(caller))
+                } else if method_name == "split" {
+                    format!("{}.split(&{}).map(|s| s.to_string()).collect::<Vec<String>>()", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "replace" {
+                    format!("{}.replace(&{}, &{})", self.gen_expression(caller), arg_strs[0], arg_strs[1])
+                // ===== Wave 5: Collection Methods =====
+                } else if method_name == "push" {
+                    format!("{}.push({})", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "pop" {
+                    format!("{}.pop().unwrap()", self.gen_expression(caller))
+                } else if method_name == "reverse" {
+                    format!("{}.reverse()", self.gen_expression(caller))
+                } else if method_name == "is_empty" {
+                    format!("{}.is_empty()", self.gen_expression(caller))
+                } else if method_name == "keys" {
+                    format!("{}.keys().cloned().collect::<Vec<_>>()", self.gen_expression(caller))
+                } else if method_name == "values" {
+                    format!("{}.values().cloned().collect::<Vec<_>>()", self.gen_expression(caller))
+                } else if method_name == "contains_key" {
+                    format!("{}.contains_key(&{})", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "remove" {
+                    format!("{}.remove(&{})", self.gen_expression(caller), arg_strs[0])
                 } else {
                     format!("{}.{}({})", self.gen_expression(caller), method_name, arg_strs.join(", "))
                 }
@@ -508,7 +593,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Recall".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -550,7 +635,7 @@ mod tests {
                 methods: vec![
                     MethodDecl {
                         name: "Find".to_string(),
-                        is_public: true,
+                        is_public: true, is_async: false,
                         annotations: vec![],
                         type_params: vec![],
                         constraints: vec![],
@@ -602,7 +687,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -642,7 +727,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -679,7 +764,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -716,7 +801,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -757,7 +842,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -788,7 +873,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -837,7 +922,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -876,7 +961,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -910,7 +995,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Sort".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec!["T".to_string()],
                     constraints: vec![GenericConstraint {
@@ -1024,7 +1109,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -1075,7 +1160,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Fetch".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -1109,7 +1194,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -1171,7 +1256,7 @@ mod tests {
                 annotations: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
-                    is_public: true,
+                    is_public: true, is_async: false,
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
@@ -1222,7 +1307,7 @@ mod tests {
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
                 methods: vec![MethodDecl {
-                    name: "Run".to_string(), is_public: true,
+                    name: "Run".to_string(), is_public: true, is_async: false,
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
@@ -1248,7 +1333,7 @@ mod tests {
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
                 methods: vec![MethodDecl {
-                    name: "Run".to_string(), is_public: true,
+                    name: "Run".to_string(), is_public: true, is_async: false,
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
@@ -1279,7 +1364,7 @@ mod tests {
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
                 methods: vec![MethodDecl {
-                    name: "Run".to_string(), is_public: true,
+                    name: "Run".to_string(), is_public: true, is_async: false,
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
@@ -1432,7 +1517,7 @@ mod tests {
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
                 methods: vec![MethodDecl {
-                    name: "Run".to_string(), is_public: true,
+                    name: "Run".to_string(), is_public: true, is_async: false,
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
@@ -1462,7 +1547,7 @@ mod tests {
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
                 methods: vec![MethodDecl {
-                    name: "Run".to_string(), is_public: true,
+                    name: "Run".to_string(), is_public: true, is_async: false,
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
@@ -1517,7 +1602,7 @@ mod tests {
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
                 methods: vec![MethodDecl {
-                    name: "Run".to_string(), is_public: true,
+                    name: "Run".to_string(), is_public: true, is_async: false,
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
@@ -1641,5 +1726,188 @@ mod tests {
         let code = gen.gen_expression(&expr);
         assert!(code.starts_with('-'));
         assert!(code.contains("a + b"));
+    }
+
+    // ===== Wave 5: break / continue =====
+
+    #[test]
+    fn test_codegen_break() {
+        let gen = RustGenerator::new();
+        let block = Block { statements: vec![Statement::Break] };
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("break;"));
+    }
+
+    #[test]
+    fn test_codegen_continue() {
+        let gen = RustGenerator::new();
+        let block = Block { statements: vec![Statement::Continue] };
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("continue;"));
+    }
+
+    // ===== Wave 5: String Methods =====
+
+    #[test]
+    fn test_codegen_string_len() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("s".to_string())),
+            method_name: "len".to_string(),
+            args: vec![],
+        };
+        assert_eq!(gen.gen_expression(&expr), "s.len() as i64");
+    }
+
+    #[test]
+    fn test_codegen_string_contains() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("s".to_string())),
+            method_name: "contains".to_string(),
+            args: vec![Expression::String("hello".to_string())],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("s.contains("));
+        assert!(code.contains("hello"));
+    }
+
+    #[test]
+    fn test_codegen_string_to_upper() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("name".to_string())),
+            method_name: "to_upper".to_string(),
+            args: vec![],
+        };
+        assert_eq!(gen.gen_expression(&expr), "name.to_uppercase()");
+    }
+
+    #[test]
+    fn test_codegen_string_substring() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("text".to_string())),
+            method_name: "substring".to_string(),
+            args: vec![Expression::Int(2), Expression::Int(5)],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("text.chars().skip(2 as usize).take(5 as usize)"));
+    }
+
+    // ===== Wave 5: Collection Methods =====
+
+    #[test]
+    fn test_codegen_array_len() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("arr".to_string())),
+            method_name: "len".to_string(),
+            args: vec![],
+        };
+        assert_eq!(gen.gen_expression(&expr), "arr.len() as i64");
+    }
+
+    #[test]
+    fn test_codegen_array_push() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("arr".to_string())),
+            method_name: "push".to_string(),
+            args: vec![Expression::Int(42)],
+        };
+        assert_eq!(gen.gen_expression(&expr), "arr.push(42)");
+    }
+
+    #[test]
+    fn test_codegen_map_keys() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("map".to_string())),
+            method_name: "keys".to_string(),
+            args: vec![],
+        };
+        assert_eq!(gen.gen_expression(&expr), "map.keys().cloned().collect::<Vec<_>>()");
+    }
+
+    #[test]
+    fn test_codegen_map_contains_key() {
+        let gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("map".to_string())),
+            method_name: "contains_key".to_string(),
+            args: vec![Expression::String("key".to_string())],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("map.contains_key("));
+    }
+
+    // ===== Wave 5: async / await =====
+
+    #[test]
+    fn test_codegen_async_method() {
+        let program = Program {
+            no_std: true,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl {
+                    name: "FetchData".to_string(), is_public: true, is_async: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Print(Expression::String("hello".to_string())),
+                    ]}),
+                }],
+            })]
+        };
+        let gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("async fn FetchData"));
+    }
+
+    #[test]
+    fn test_codegen_await_expression() {
+        let gen = RustGenerator::new();
+        let expr = Expression::Await(Box::new(
+            Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("client".to_string())),
+                method_name: "fetch".to_string(),
+                args: vec![Expression::String("url".to_string())],
+            }
+        ));
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains(".await"));
+    }
+
+    // ===== Wave 5: const =====
+
+    #[test]
+    fn test_codegen_const_with_type() {
+        let gen = RustGenerator::new();
+        let block = Block { statements: vec![
+            Statement::Const {
+                name: "MAX".to_string(),
+                ty: Some(TypeNode::Int),
+                value: Expression::Int(100),
+            },
+        ]};
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("let MAX: i64 = 100;"));
+    }
+
+    #[test]
+    fn test_codegen_const_without_type() {
+        let gen = RustGenerator::new();
+        let block = Block { statements: vec![
+            Statement::Const {
+                name: "NAME".to_string(),
+                ty: None,
+                value: Expression::String("varg".to_string()),
+            },
+        ]};
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("let NAME = \"varg\".to_string();"));
     }
 }

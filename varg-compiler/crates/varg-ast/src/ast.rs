@@ -80,6 +80,7 @@ pub struct FieldDecl {
 pub struct MethodDecl {
     pub name: String,
     pub is_public: bool,
+    pub is_async: bool,
     pub annotations: Vec<Annotation>,
     pub type_params: Vec<String>,
     pub constraints: Vec<GenericConstraint>,
@@ -107,6 +108,9 @@ pub enum Statement {
     While { condition: Expression, body: Block },
     For { init: Box<Statement>, condition: Expression, update: Box<Statement>, body: Block },
     Foreach { item_name: String, collection: Expression, body: Block },
+    Break,
+    Continue,
+    Const { name: String, ty: Option<TypeNode>, value: Expression },
     Print(Expression),
     
     // Phase 12: Error Handling
@@ -153,6 +157,9 @@ pub enum Expression {
     MapLiteral(Vec<(Expression, Expression)>), // Phase 10: {"key": value}
     PromptLiteral(String), // Phase 20: prompt """ ... """
     Query(SurrealQueryNode), // Phase 15: Native Database Query Expression
+
+    // Wave 5: await expression
+    Await(Box<Expression>),
 
     // Unary operators: -x, !x
     UnaryOp {
@@ -294,7 +301,7 @@ mod tests {
                     methods: vec![
                         MethodDecl {
                             name: "Allocate".to_string(),
-                            is_public: true,
+                            is_public: true, is_async: false,
                             annotations: vec![],
                             type_params: vec![],
                             constraints: vec![],

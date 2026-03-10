@@ -208,6 +208,19 @@ impl TypeChecker {
                     self.in_unsafe_block = previous_unsafe;
                 },
 
+                Statement::Const { name, ty, value } => {
+                    let inferred = self.infer_expression_type(value)?;
+                    let expected = ty.clone().unwrap_or(inferred.clone());
+                    if expected != inferred && inferred != TypeNode::Custom("Dynamic".to_string()) {
+                        return Err(TypeError::TypeMismatch {
+                            expected: format!("{:?}", expected),
+                            found: format!("{:?}", inferred),
+                        });
+                    }
+                    self.env.insert(name.clone(), expected);
+                },
+                Statement::Break => {},
+                Statement::Continue => {},
                 Statement::If { condition, then_block, else_block } => {
                     let cond_ty = self.infer_expression_type(condition)?;
                     if cond_ty != TypeNode::Bool {
@@ -365,6 +378,10 @@ impl TypeChecker {
                     _ => Ok(TypeNode::Int)
                 }
             },
+            Expression::Await(inner) => {
+                // await unwraps the future — for MVP, return the inner expression type
+                self.infer_expression_type(inner)
+            },
             Expression::UnaryOp { operator, operand } => {
                 let inner_ty = self.infer_expression_type(operand)?;
                 match operator {
@@ -449,6 +466,60 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (map or array)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::String)
+                // ===== Wave 5: String Methods (caller.method() style) =====
+                } else if method_name == "len" {
+                    Ok(TypeNode::Int)
+                } else if method_name == "contains" || method_name == "starts_with" || method_name == "ends_with" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "to_upper" || method_name == "to_lower" || method_name == "trim" {
+                    Ok(TypeNode::String)
+                } else if method_name == "substring" {
+                    if args.len() != 2 {
+                        return Err(TypeError::TypeMismatch { expected: "2 arguments (start, length)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::String)
+                } else if method_name == "char_at" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (index)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::String)
+                } else if method_name == "index_of" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (substring)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::Int)
+                } else if method_name == "split" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (delimiter)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "replace" {
+                    if args.len() != 2 {
+                        return Err(TypeError::TypeMismatch { expected: "2 arguments (search, replace)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::String)
+                // ===== Wave 5: Collection Methods =====
+                } else if method_name == "push" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (item)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::Void)
+                } else if method_name == "pop" {
+                    Ok(TypeNode::Custom("Dynamic".to_string()))
+                } else if method_name == "reverse" {
+                    Ok(TypeNode::Void)
+                } else if method_name == "is_empty" || method_name == "contains_key" {
+                    Ok(TypeNode::Bool)
+                } else if method_name == "keys" || method_name == "values" {
+                    Ok(TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string()))))
+                } else if method_name == "remove" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::Void)
                 } else {
                     // Simplified MVP: assume void for undeclared calls
                     Ok(TypeNode::Void)
@@ -590,7 +661,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "StealData".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -629,7 +700,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Read".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -666,7 +737,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -702,7 +773,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Scrape".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -748,7 +819,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "RunCmd".to_string(),
                     is_public: true,
                     annotations: vec![Annotation {
@@ -791,7 +862,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -822,7 +893,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -856,7 +927,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -890,7 +961,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -926,7 +997,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -959,7 +1030,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -997,7 +1068,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1035,7 +1106,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1076,7 +1147,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1114,7 +1185,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1164,7 +1235,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Read".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1203,7 +1274,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Echo".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1233,7 +1304,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1276,7 +1347,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1312,7 +1383,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1348,7 +1419,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1393,7 +1464,7 @@ mod tests {
                     is_public: false,
                     target_annotation: None,
                     annotations: vec![],
-                    methods: vec![MethodDecl {
+                    methods: vec![MethodDecl { is_async: false,
                         name: "Run".to_string(),
                         is_public: true,
                         annotations: vec![],
@@ -1426,7 +1497,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "GetData".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1461,7 +1532,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "ReadConfig".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1496,7 +1567,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1534,7 +1605,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Think".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1568,7 +1639,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "ReadAll".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1600,7 +1671,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1643,7 +1714,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1692,7 +1763,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Run".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1877,7 +1948,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Sort".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -1907,7 +1978,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
-                methods: vec![MethodDecl {
+                methods: vec![MethodDecl { is_async: false,
                     name: "Sort".to_string(),
                     is_public: true,
                     annotations: vec![],
@@ -2003,5 +2074,79 @@ mod tests {
             operand: Box::new(Expression::Bool(true)),
         }).unwrap();
         assert_eq!(ty, TypeNode::Bool);
+    }
+
+    // ===== Wave 5: String & Collection Method Types =====
+
+    #[test]
+    fn test_string_method_types() {
+        let mut checker = TypeChecker::new();
+        let caller = Box::new(Expression::String("test".to_string()));
+
+        // .len() → Int
+        let ty = checker.infer_expression_type(&Expression::MethodCall {
+            caller: caller.clone(), method_name: "len".to_string(), args: vec![],
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+
+        // .contains("x") → Bool
+        let ty = checker.infer_expression_type(&Expression::MethodCall {
+            caller: caller.clone(), method_name: "contains".to_string(),
+            args: vec![Expression::String("x".to_string())],
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+
+        // .to_upper() → String
+        let ty = checker.infer_expression_type(&Expression::MethodCall {
+            caller: caller.clone(), method_name: "to_upper".to_string(), args: vec![],
+        }).unwrap();
+        assert_eq!(ty, TypeNode::String);
+
+        // .index_of("x") → Int
+        let ty = checker.infer_expression_type(&Expression::MethodCall {
+            caller: caller.clone(), method_name: "index_of".to_string(),
+            args: vec![Expression::String("x".to_string())],
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_collection_method_types() {
+        let mut checker = TypeChecker::new();
+        let caller = Box::new(Expression::Identifier("arr".to_string()));
+
+        // .push(1) → Void
+        let ty = checker.infer_expression_type(&Expression::MethodCall {
+            caller: caller.clone(), method_name: "push".to_string(),
+            args: vec![Expression::Int(1)],
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Void);
+
+        // .is_empty() → Bool
+        let ty = checker.infer_expression_type(&Expression::MethodCall {
+            caller: caller.clone(), method_name: "is_empty".to_string(), args: vec![],
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+
+        // .keys() → Array
+        let ty = checker.infer_expression_type(&Expression::MethodCall {
+            caller: caller.clone(), method_name: "keys".to_string(), args: vec![],
+        }).unwrap();
+        assert!(matches!(ty, TypeNode::Array(_)));
+    }
+
+    // ===== Wave 5: const =====
+
+    #[test]
+    fn test_const_type_inference() {
+        let mut checker = TypeChecker::new();
+        let block = Block { statements: vec![
+            Statement::Const {
+                name: "MAX".to_string(),
+                ty: Some(TypeNode::Int),
+                value: Expression::Int(100),
+            },
+        ]};
+        assert!(checker.check_block(&block).is_ok());
     }
 }

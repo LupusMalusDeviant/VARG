@@ -51,6 +51,11 @@ pub enum Token {
     #[token("for")] For,
     #[token("foreach")] Foreach,
     #[token("in")] In,
+    #[token("break")] Break,
+    #[token("continue")] Continue,
+    #[token("async")] Async,
+    #[token("await")] Await,
+    #[token("const")] Const,
 
     // ---- LINQ / Queries ----
     #[token("from")] From,
