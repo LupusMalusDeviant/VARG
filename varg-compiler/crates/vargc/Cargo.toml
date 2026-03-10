@@ -10,3 +10,4 @@ varg-parser = { path = "../varg-parser" }
 varg-typechecker = { path = "../varg-typechecker" }
 varg-codegen = { path = "../varg-codegen" }
 codespan-reporting.workspace = true
+serde_json.workspace = true

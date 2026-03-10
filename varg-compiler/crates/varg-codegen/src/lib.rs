@@ -46,7 +46,7 @@ impl RustGenerator {
             Item::Struct(s) => {
                 let vis = if s.is_public { "pub " } else { "" };
                 let type_params = if s.type_params.is_empty() { "".to_string() } else { format!("<{}>", s.type_params.join(", ")) };
-                let mut out = format!("{}struct {}{} {{\n", vis, s.name, type_params);
+                let mut out = format!("#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]\n{}struct {}{} {{\n", vis, s.name, type_params);
                 for field in &s.fields {
                     // MVP: all generated fields are pub to the struct
                     out.push_str(&format!("    pub {}: {},\n", field.name, self.gen_type(&field.ty)));
@@ -730,6 +730,9 @@ mod tests {
         assert!(code.contains("pub name: String,"));
         assert!(code.contains("pub age: i64,"));
         assert!(code.contains("pub active: bool,"));
+        // Plan 18: Structs get serde derives for JSON serialization
+        assert!(code.contains("serde::Serialize"));
+        assert!(code.contains("serde::Deserialize"));
     }
 
     #[test]

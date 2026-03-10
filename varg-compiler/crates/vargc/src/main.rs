@@ -57,6 +57,63 @@ fn print_usage() {
     println!("  vargc emit-rs <file.varg> - Translates to Rust source code (.rs) but does not compile");
 }
 
+/// Maps Varg types to JSON Schema representations for MCP discovery
+fn varg_type_to_json_schema(ty: &varg_ast::ast::TypeNode) -> serde_json::Value {
+    use varg_ast::ast::TypeNode;
+    match ty {
+        TypeNode::String => serde_json::json!({"type": "string"}),
+        TypeNode::Int => serde_json::json!({"type": "integer"}),
+        TypeNode::Bool => serde_json::json!({"type": "boolean"}),
+        TypeNode::Ulong => serde_json::json!({"type": "integer"}),
+        TypeNode::Void => serde_json::json!({"type": "null"}),
+        TypeNode::Array(inner) => serde_json::json!({
+            "type": "array",
+            "items": varg_type_to_json_schema(inner)
+        }),
+        TypeNode::List(inner) => serde_json::json!({
+            "type": "array",
+            "items": varg_type_to_json_schema(inner)
+        }),
+        TypeNode::Map(_, v) => serde_json::json!({
+            "type": "object",
+            "additionalProperties": varg_type_to_json_schema(v)
+        }),
+        TypeNode::Nullable(inner) => {
+            let mut schema = varg_type_to_json_schema(inner);
+            if let Some(obj) = schema.as_object_mut() {
+                obj.insert("nullable".to_string(), serde_json::json!(true));
+            }
+            schema
+        },
+        TypeNode::Result(ok, _) => varg_type_to_json_schema(ok),
+        _ => serde_json::json!({"type": "string"}), // Fallback for Custom, Prompt, etc.
+    }
+}
+
+/// Builds a JSON Schema for a struct definition (for MCP outputSchema)
+fn struct_to_json_schema(struct_def: &varg_ast::ast::StructDef) -> serde_json::Value {
+    let mut props = serde_json::Map::new();
+    for field in &struct_def.fields {
+        props.insert(field.name.clone(), varg_type_to_json_schema(&field.ty));
+    }
+    serde_json::json!({
+        "type": "object",
+        "properties": props
+    })
+}
+
+/// Finds a struct definition by name in the AST
+fn find_struct_def<'a>(ast: &'a varg_ast::ast::Program, name: &str) -> Option<&'a varg_ast::ast::StructDef> {
+    for item in &ast.items {
+        if let varg_ast::ast::Item::Struct(s) = item {
+            if s.name == name {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
 fn report_parse_error(filename: &str, source: &str, err: &ParseError) {
     let mut files = SimpleFiles::new();
     let file_id = files.add(filename, source);
@@ -224,11 +281,44 @@ fn compile_varg_file(input_path: &str, run_immediately: bool) {
                     
                     if is_mcp {
                         has_cli_or_mcp = true;
-                        
-                        // Push to MCP tools JSON array
+
+                        // Build inputSchema from method args
+                        let mut input_props = Vec::new();
+                        let mut input_required = Vec::new();
+                        for arg in &method_decl.args {
+                            let schema = varg_type_to_json_schema(&arg.ty);
+                            input_props.push(format!("\"{}\":{}", arg.name, schema));
+                            input_required.push(format!("\"{}\"", arg.name));
+                        }
+
+                        // Build outputSchema from return type
+                        let output_schema = if let Some(ref ret_ty) = method_decl.return_ty {
+                            if *ret_ty != varg_ast::ast::TypeNode::Void {
+                                // Check if return type is a struct (Custom type)
+                                if let varg_ast::ast::TypeNode::Custom(ref struct_name) = ret_ty {
+                                    if let Some(struct_def) = find_struct_def(&ast, struct_name) {
+                                        let schema = struct_to_json_schema(struct_def);
+                                        Some(format!(",\"outputSchema\":{}", schema))
+                                    } else {
+                                        let schema = varg_type_to_json_schema(ret_ty);
+                                        Some(format!(",\"outputSchema\":{}", schema))
+                                    }
+                                } else {
+                                    let schema = varg_type_to_json_schema(ret_ty);
+                                    Some(format!(",\"outputSchema\":{}", schema))
+                                }
+                            } else { None }
+                        } else { None };
+
+                        let output_part = output_schema.unwrap_or_default();
+
+                        // Push to MCP tools JSON array with full schema
                         tools_json_block.push_str(&format!(
-                            "            tools.push(serde_json::json!({{ \"name\": \"{}\", \"description\": \"{}\" }}));\n",
-                            cmd_name, cmd_desc
+                            "            tools.push(serde_json::json!({{\"name\":\"{}\",\"description\":\"{}\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{{}}},\"required\":[{}]}}{} }}));\n",
+                            cmd_name, cmd_desc,
+                            input_props.join(","),
+                            input_required.join(","),
+                            output_part
                         ));
                         
                         // Generate Route
@@ -257,7 +347,15 @@ fn compile_varg_file(input_path: &str, run_immediately: bool) {
                         
                         command_dispatch_block.push_str(&format!("            let res = instance.{}({});\n", method_decl.name, arg_vars.join(", ")));
                         if method_decl.return_ty.is_some() && method_decl.return_ty != Some(varg_ast::ast::TypeNode::Void) {
-                            command_dispatch_block.push_str("            println!(\"{}\", res);\n");
+                            // Check if return type is a struct → serialize as JSON
+                            let is_struct_return = if let Some(varg_ast::ast::TypeNode::Custom(ref name)) = method_decl.return_ty {
+                                find_struct_def(&ast, name).is_some()
+                            } else { false };
+                            if is_struct_return {
+                                command_dispatch_block.push_str("            println!(\"{}\", serde_json::to_string(&res).unwrap());\n");
+                            } else {
+                                command_dispatch_block.push_str("            println!(\"{}\", res);\n");
+                            }
                         }
                         command_dispatch_block.push_str("            std::process::exit(0);\n");
                     }
@@ -423,5 +521,91 @@ serde_json = "1.0"
         } else {
             eprintln!("-> Built, but failed to copy {} to current directory.", exe_name);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use varg_ast::ast::*;
+
+    #[test]
+    fn test_mcp_schema_string_args() {
+        let ty = TypeNode::String;
+        let schema = varg_type_to_json_schema(&ty);
+        assert_eq!(schema, serde_json::json!({"type": "string"}));
+    }
+
+    #[test]
+    fn test_mcp_schema_int_type() {
+        let ty = TypeNode::Int;
+        let schema = varg_type_to_json_schema(&ty);
+        assert_eq!(schema, serde_json::json!({"type": "integer"}));
+    }
+
+    #[test]
+    fn test_mcp_schema_bool_type() {
+        let ty = TypeNode::Bool;
+        let schema = varg_type_to_json_schema(&ty);
+        assert_eq!(schema, serde_json::json!({"type": "boolean"}));
+    }
+
+    #[test]
+    fn test_mcp_schema_array_type() {
+        let ty = TypeNode::Array(Box::new(TypeNode::String));
+        let schema = varg_type_to_json_schema(&ty);
+        assert_eq!(schema, serde_json::json!({"type": "array", "items": {"type": "string"}}));
+    }
+
+    #[test]
+    fn test_mcp_schema_map_type() {
+        let ty = TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Int));
+        let schema = varg_type_to_json_schema(&ty);
+        assert_eq!(schema, serde_json::json!({"type": "object", "additionalProperties": {"type": "integer"}}));
+    }
+
+    #[test]
+    fn test_mcp_schema_nullable_type() {
+        let ty = TypeNode::Nullable(Box::new(TypeNode::String));
+        let schema = varg_type_to_json_schema(&ty);
+        assert_eq!(schema, serde_json::json!({"type": "string", "nullable": true}));
+    }
+
+    #[test]
+    fn test_mcp_schema_struct_output() {
+        let struct_def = StructDef {
+            name: "SearchResult".to_string(),
+            is_public: true,
+            type_params: vec![],
+            fields: vec![
+                FieldDecl { name: "title".to_string(), ty: TypeNode::String },
+                FieldDecl { name: "url".to_string(), ty: TypeNode::String },
+                FieldDecl { name: "relevance".to_string(), ty: TypeNode::Int },
+            ],
+        };
+        let schema = struct_to_json_schema(&struct_def);
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["title"]["type"], "string");
+        assert_eq!(schema["properties"]["url"]["type"], "string");
+        assert_eq!(schema["properties"]["relevance"]["type"], "integer");
+    }
+
+    #[test]
+    fn test_find_struct_in_ast() {
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Struct(StructDef {
+                    name: "MyStruct".to_string(),
+                    is_public: false,
+                    type_params: vec![],
+                    fields: vec![
+                        FieldDecl { name: "value".to_string(), ty: TypeNode::Int },
+                    ],
+                }),
+            ],
+        };
+        assert!(find_struct_def(&program, "MyStruct").is_some());
+        assert!(find_struct_def(&program, "NonExistent").is_none());
     }
 }
