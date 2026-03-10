@@ -284,6 +284,9 @@ pub enum TypeNode {
 
     // Plan 06: Function/Closure types
     Func(Vec<TypeNode>, Box<TypeNode>), // (params) => return
+
+    // Plan 16: Agent messaging handle
+    AgentHandle(String), // AgentHandle("Worker") — handle to spawned agent
 }
 
 // ---- SurrealDB AST Node ----

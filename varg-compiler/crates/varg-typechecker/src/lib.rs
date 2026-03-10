@@ -558,6 +558,17 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::Void)
+                // ===== Plan 16: Agent Messaging Methods =====
+                } else if method_name == "send" {
+                    if args.is_empty() {
+                        return Err(TypeError::TypeMismatch { expected: "at least 1 argument (method name)".to_string(), found: "0 arguments".to_string() });
+                    }
+                    Ok(TypeNode::Void)
+                } else if method_name == "request" {
+                    if args.is_empty() {
+                        return Err(TypeError::TypeMismatch { expected: "at least 1 argument (method name)".to_string(), found: "0 arguments".to_string() });
+                    }
+                    Ok(TypeNode::String) // MVP: all responses are String
                 } else {
                     // Simplified MVP: assume void for undeclared calls
                     Ok(TypeNode::Void)
@@ -645,12 +656,12 @@ impl TypeChecker {
                 }
                 Ok(TypeNode::Void)
             },
-            // Wave 6: spawn returns an opaque handle type
+            // Plan 16: spawn returns an AgentHandle type
             Expression::Spawn { agent_name, args } => {
                 for arg in args {
                     self.infer_expression_type(arg)?;
                 }
-                Ok(TypeNode::Custom(format!("{}Handle", agent_name)))
+                Ok(TypeNode::AgentHandle(agent_name.clone()))
             },
         }
     }
@@ -2312,6 +2323,103 @@ mod tests {
             })],
         };
         // Void methods don't enforce return type
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ===== Plan 16: Agent Messaging Tests =====
+
+    #[test]
+    fn test_spawn_returns_agent_handle() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "worker".to_string(),
+                            ty: None,
+                            value: Expression::Spawn {
+                                agent_name: "Worker".to_string(),
+                                args: vec![],
+                            },
+                        },
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+        // The variable 'worker' should have AgentHandle type (registered in env)
+    }
+
+    #[test]
+    fn test_send_validates_args() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Expr(Expression::MethodCall {
+                            caller: Box::new(Expression::Identifier("worker".to_string())),
+                            method_name: "send".to_string(),
+                            args: vec![
+                                Expression::String("Process".to_string()),
+                                Expression::String("data".to_string()),
+                            ],
+                        }),
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_request_returns_string() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "result".to_string(),
+                            ty: None,
+                            value: Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("worker".to_string())),
+                                method_name: "request".to_string(),
+                                args: vec![
+                                    Expression::String("Process".to_string()),
+                                    Expression::String("data".to_string()),
+                                ],
+                            },
+                        },
+                    ]}),
+                }],
+            })],
+        };
         assert!(checker.check_program(&program).is_ok());
     }
 }
