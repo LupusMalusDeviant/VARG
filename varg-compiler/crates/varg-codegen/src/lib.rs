@@ -255,6 +255,22 @@ impl RustGenerator {
         }
     }
 
+    /// Plan 22: Defensive cloning — clone identifiers used as method arguments
+    /// to prevent Rust move-errors. Copy types (i64, bool) are no-ops.
+    fn gen_cloned_arg(&self, expr: &Expression) -> String {
+        match expr {
+            Expression::Identifier(name) => {
+                let base = if self.agent_field_names.contains(name) {
+                    format!("self.{}", name)
+                } else {
+                    name.clone()
+                };
+                format!("{}.clone()", base)
+            },
+            _ => self.gen_expression(expr),
+        }
+    }
+
     fn gen_block(&self, block: &Block, indent_level: usize) -> String {
         let indent = "    ".repeat(indent_level);
         let mut out = String::new();
@@ -687,7 +703,9 @@ impl RustGenerator {
                     let args_vec = if msg_args.is_empty() { "vec![]".to_string() } else { format!("vec![{}]", msg_args.join(", ")) };
                     format!("{{\n    let (__reply_tx, __reply_rx) = std::sync::mpsc::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.recv().unwrap()\n}}", self.gen_expression(caller), method_arg, args_vec)
                 } else {
-                    format!("{}.{}({})", self.gen_expression(caller), method_name, arg_strs.join(", "))
+                    // Plan 22: Defensive cloning for user-defined method calls
+                    let cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    format!("{}.{}({})", self.gen_expression(caller), method_name, cloned_args.join(", "))
                 }
             },
             Expression::PropertyAccess { caller, property_name } => {
@@ -2586,5 +2604,62 @@ mod tests {
         assert!(code.contains("agent1.try_recv()"));
         // No timeout — should not have Instant::now()
         assert!(!code.contains("Instant::now()"));
+    }
+
+    // ===== Plan 22: Simplified Memory Model Tests =====
+
+    #[test]
+    fn test_clone_on_method_call_args() {
+        // Identifier args in user-defined method calls get .clone()
+        let mut gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("obj".to_string())),
+            method_name: "custom_method".to_string(),
+            args: vec![Expression::Identifier("name".to_string())],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("name.clone()"), "Expected name.clone(), got: {}", code);
+    }
+
+    #[test]
+    fn test_no_clone_on_literals() {
+        // Literal args don't get .clone()
+        let mut gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("obj".to_string())),
+            method_name: "custom_method".to_string(),
+            args: vec![Expression::String("hello".to_string()), Expression::Int(42)],
+        };
+        let code = gen.gen_expression(&expr);
+        // String literals become "hello".to_string() — no extra .clone()
+        assert!(!code.contains(".clone()"), "Literals shouldn't be cloned, got: {}", code);
+    }
+
+    #[test]
+    fn test_clone_agent_field_in_method_call() {
+        // Agent fields get self.field.clone()
+        let mut gen = RustGenerator::new();
+        gen.agent_field_names.insert("data".to_string());
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("obj".to_string())),
+            method_name: "process".to_string(),
+            args: vec![Expression::Identifier("data".to_string())],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("self.data.clone()"), "Expected self.data.clone(), got: {}", code);
+    }
+
+    #[test]
+    fn test_builtin_methods_no_double_clone() {
+        // Built-in methods like push/contains handle args themselves, no extra clone
+        let mut gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("vec".to_string())),
+            method_name: "push".to_string(),
+            args: vec![Expression::Identifier("item".to_string())],
+        };
+        let code = gen.gen_expression(&expr);
+        // push uses arg_strs directly (not gen_cloned_arg)
+        assert_eq!(code, "vec.push(item)");
     }
 }
