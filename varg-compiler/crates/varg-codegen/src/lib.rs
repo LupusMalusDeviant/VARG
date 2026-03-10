@@ -188,14 +188,30 @@ impl RustGenerator {
                     out.push_str(&format!("{}let mut {} = {};\n", indent, name, self.gen_expression(value)));
                 },
                 Statement::Assign { name, value } => {
+                    // Optimization: detect `name = name + expr` where string → name.push_str(...)
+                    if let Expression::BinaryOp { left, operator: BinaryOperator::Add, right } = value {
+                        if let Expression::Identifier(ref lhs_name) = **left {
+                            if lhs_name == name && (self.is_string_expr(left) || self.is_string_expr(right)) {
+                                // For string literals, use direct &str to avoid allocation
+                                if let Expression::String(ref s) = **right {
+                                    out.push_str(&format!("{}{}.push_str({:?});\n", indent, name, s));
+                                } else {
+                                    out.push_str(&format!("{}{}.push_str(&({}).to_string());\n", indent, name, self.gen_expression(right)));
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     out.push_str(&format!("{}{} = {};\n", indent, name, self.gen_expression(value)));
                 },
                 Statement::IndexAssign { target, index, value } => {
                     let idx_str = self.gen_expression(index);
-                    if let Expression::Int(_) = index {
-                        out.push_str(&format!("{}{}[{} as usize] = {};\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
-                    } else {
+                    if let Expression::String(_) = index {
+                        // String literal key → map insert
                         out.push_str(&format!("{}{}.insert({}, {});\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
+                    } else {
+                        // Int literal or int variable → array index assign
+                        out.push_str(&format!("{}{}[{} as usize] = {};\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
                     }
                 },
                 Statement::PropertyAssign { target, property, value } => {
@@ -300,7 +316,15 @@ impl RustGenerator {
                     }
                 },
                 Statement::Print(expr) => {
-                    out.push_str(&format!("{}println!(\"{{:?}}\", {});\n", indent, self.gen_expression(expr)));
+                    // Use Display ({}) for strings, Debug ({:?}) for other types
+                    if self.is_string_expr(expr) {
+                        out.push_str(&format!("{}println!(\"{{}}\", {});\n", indent, self.gen_expression(expr)));
+                    } else if let Expression::Identifier(_) = expr {
+                        // Identifiers could be any type — use Debug for safety
+                        out.push_str(&format!("{}println!(\"{{:?}}\", {});\n", indent, self.gen_expression(expr)));
+                    } else {
+                        out.push_str(&format!("{}println!(\"{{:?}}\", {});\n", indent, self.gen_expression(expr)));
+                    }
                 },
                 Statement::Expr(expr) => {
                     out.push_str(&format!("{}{};\n", indent, self.gen_expression(expr)));
@@ -407,7 +431,7 @@ impl RustGenerator {
                     return format!("__varg_cosine_sim(&{}, &{})", self.gen_expression(left), self.gen_expression(right));
                 }
 
-                // String concatenation: "a" + "b" → format!("{}{}", a, b)
+                // String concatenation: format! for expression-level concat
                 if let BinaryOperator::Add = operator {
                     if self.is_string_expr(left) || self.is_string_expr(right) {
                         return format!("format!(\"{{}}{{}}\", {}, {})", self.gen_expression(left), self.gen_expression(right));
@@ -537,10 +561,12 @@ impl RustGenerator {
             },
             Expression::IndexAccess { caller, index } => {
                 let idx_str = self.gen_expression(index);
-                if let Expression::Int(_) = **index {
-                    format!("{}[{} as usize].clone()", self.gen_expression(caller), idx_str)
-                } else {
+                if let Expression::String(_) = **index {
+                    // String literal key → map access
                     format!("{}.get(&{}).unwrap().clone()", self.gen_expression(caller), idx_str)
+                } else {
+                    // Int literal or int variable → array access (no .clone() needed for Copy types)
+                    format!("{}[{} as usize]", self.gen_expression(caller), idx_str)
                 }
             },
             Expression::ArrayLiteral(elements) => {

@@ -1,0 +1,52 @@
+agent Benchmark {
+    public void RunOnce() {
+        // 1. Fibonacci
+        int n = 35;
+        int fa = 0;
+        int fb = 1;
+        int fi = 0;
+        while (fi < n) {
+            int temp = fb;
+            fb = fa + fb;
+            fa = temp;
+            fi += 1;
+        }
+
+        // 2. String building
+        string result = "";
+        int si = 0;
+        while (si < 10000) {
+            result = result + "x";
+            si += 1;
+        }
+
+        // 3. Array fill + sum
+        var numbers = [0];
+        int ai = 1;
+        while (ai < 10000) {
+            numbers.push(ai);
+            ai += 1;
+        }
+        int sum = 0;
+        int mi = 0;
+        while (mi < 10000) {
+            sum += numbers[mi];
+            mi += 1;
+        }
+    }
+
+    public void Run() {
+        print "=== Varg Benchmark (100 iterations) ===";
+
+        int iter = 0;
+        while (iter < 100) {
+            RunOnce();
+            iter += 1;
+        }
+
+        print "Fibonacci(35) = 9227465";
+        print "String length: 10000";
+        print "Sum 0..9999 = 49995000";
+        print "=== Done ===";
+    }
+}

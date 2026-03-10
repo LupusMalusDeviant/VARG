@@ -1,0 +1,5 @@
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\publish\bench-csharp.exe
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\publish\bench-csharp.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\publish\bench-csharp.deps.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\publish\bench-csharp.runtimeconfig.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\publish\bench-csharp.pdb

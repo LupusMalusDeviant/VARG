@@ -1,0 +1,14 @@
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\bin\Release\net10.0\bench-csharp.exe
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\bin\Release\net10.0\bench-csharp.deps.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\bin\Release\net10.0\bench-csharp.runtimeconfig.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\bin\Release\net10.0\bench-csharp.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\bin\Release\net10.0\bench-csharp.pdb
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\bench-csharp.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\bench-csharp.AssemblyInfoInputs.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\bench-csharp.AssemblyInfo.cs
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\bench-csharp.csproj.CoreCompileInputs.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\bench-csharp.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\refint\bench-csharp.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\bench-csharp.pdb
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\bench-csharp.genruntimeconfig.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\bench-csharp\obj\Release\net10.0\ref\bench-csharp.dll
