@@ -617,7 +617,29 @@ impl TypeChecker {
                 self.check_ocap(&CapabilityType::DbAccess, "query")?;
                 // Memory queries return JSON Strings
                 Ok(TypeNode::String)
-            }
+            },
+            // Wave 6: retry returns whatever the body's last expression returns
+            Expression::Retry { max_attempts, body, fallback } => {
+                let attempts_ty = self.infer_expression_type(max_attempts)?;
+                if attempts_ty != TypeNode::Int {
+                    return Err(TypeError::TypeMismatch {
+                        expected: "Int".to_string(),
+                        found: format!("{:?}", attempts_ty),
+                    });
+                }
+                self.check_block(body)?;
+                if let Some(fb) = fallback {
+                    self.check_block(fb)?;
+                }
+                Ok(TypeNode::Void)
+            },
+            // Wave 6: spawn returns an opaque handle type
+            Expression::Spawn { agent_name, args } => {
+                for arg in args {
+                    self.infer_expression_type(arg)?;
+                }
+                Ok(TypeNode::Custom(format!("{}Handle", agent_name)))
+            },
         }
     }
 

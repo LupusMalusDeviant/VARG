@@ -1164,6 +1164,38 @@ impl Parser {
                     });
                 }
             },
+            // Wave 6: retry(N) { body } fallback { fallback_body }
+            Some(Token::Retry) => {
+                self.consume(Token::LParen)?;
+                let max_attempts = self.parse_expression()?;
+                self.consume(Token::RParen)?;
+                let body = self.parse_block()?;
+                let fallback = if self.peek() == Some(&Token::Fallback) {
+                    self.advance();
+                    Some(Box::new(self.parse_block()?))
+                } else {
+                    None
+                };
+                Expression::Retry {
+                    max_attempts: Box::new(max_attempts),
+                    body: Box::new(body),
+                    fallback,
+                }
+            },
+            // Wave 6: spawn Agent(args)
+            Some(Token::Spawn) => {
+                let agent_name = self.parse_identifier()?;
+                self.consume(Token::LParen)?;
+                let mut args = Vec::new();
+                if self.peek() != Some(&Token::RParen) {
+                    loop {
+                        args.push(self.parse_expression()?);
+                        if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                    }
+                }
+                self.consume(Token::RParen)?;
+                Expression::Spawn { agent_name, args }
+            },
             Some(t) => return Err(ParseError::UnexpectedToken {
                 expected: "Expression Literal/Identifier/From".to_string(),
                 found: Some(t),
@@ -1266,6 +1298,46 @@ impl Parser {
                         };
                     } else {
                         return Err(ParseError::UnexpectedToken { expected: "Identifier before call".to_string(), found: Some(Token::LParen), span: self.last_span() });
+                    }
+                },
+                // Pipe operator: a |> f(b) → f(a, b), a |> .method() → a.method()
+                Token::Pipe => {
+                    self.advance(); // consume |>
+                    if self.peek() == Some(&Token::Dot) {
+                        // a |> .method(args) → a.method(args)
+                        self.advance(); // consume .
+                        let method = self.parse_identifier()?;
+                        self.consume(Token::LParen)?;
+                        let mut args = Vec::new();
+                        if self.peek() != Some(&Token::RParen) {
+                            loop {
+                                args.push(self.parse_expression()?);
+                                if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                            }
+                        }
+                        self.consume(Token::RParen)?;
+                        left = Expression::MethodCall {
+                            caller: Box::new(left),
+                            method_name: method,
+                            args,
+                        };
+                    } else {
+                        // a |> f(b, c) → f(a, b, c)
+                        let func_name = self.parse_identifier()?;
+                        self.consume(Token::LParen)?;
+                        let mut args = vec![left];
+                        if self.peek() != Some(&Token::RParen) {
+                            loop {
+                                args.push(self.parse_expression()?);
+                                if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                            }
+                        }
+                        self.consume(Token::RParen)?;
+                        left = Expression::MethodCall {
+                            caller: Box::new(Expression::Identifier("self".to_string())),
+                            method_name: func_name,
+                            args,
+                        };
                     }
                 },
                 _ => break,
@@ -3010,6 +3082,180 @@ mod tests {
             if let Statement::IndexAssign { value, .. } = &body.statements[0] {
                 assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::Add, .. }));
             } else { panic!("Expected IndexAssign, got {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Plan 13: Pipe Operator =====
+
+    #[test]
+    fn test_parse_pipe_simple() {
+        // a |> f() → MethodCall { caller: self, method: f, args: [a] }
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = data |> process();
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::MethodCall { method_name, args, .. } = value {
+                    assert_eq!(method_name, "process");
+                    assert_eq!(args.len(), 1); // 'data' is first arg
+                    assert!(matches!(&args[0], Expression::Identifier(n) if n == "data"));
+                } else { panic!("Expected MethodCall, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_pipe_chain() {
+        // a |> f() |> g() → g(f(a))
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = data |> step1() |> step2();
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                // Outer: step2(step1(data))
+                if let Expression::MethodCall { method_name, args, .. } = value {
+                    assert_eq!(method_name, "step2");
+                    assert_eq!(args.len(), 1);
+                    // Inner: step1(data)
+                    if let Expression::MethodCall { method_name: inner_name, args: inner_args, .. } = &args[0] {
+                        assert_eq!(inner_name, "step1");
+                        assert_eq!(inner_args.len(), 1);
+                        assert!(matches!(&inner_args[0], Expression::Identifier(n) if n == "data"));
+                    } else { panic!("Expected inner MethodCall"); }
+                } else { panic!("Expected MethodCall"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_pipe_with_args() {
+        // a |> f(b, c) → f(a, b, c)
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = data |> transform("json", 5);
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::MethodCall { method_name, args, .. } = value {
+                    assert_eq!(method_name, "transform");
+                    assert_eq!(args.len(), 3); // data, "json", 5
+                    assert!(matches!(&args[0], Expression::Identifier(n) if n == "data"));
+                    assert!(matches!(&args[1], Expression::String(s) if s == "json"));
+                    assert!(matches!(&args[2], Expression::Int(5)));
+                } else { panic!("Expected MethodCall"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_pipe_dot_method() {
+        // a |> .to_upper() → a.to_upper()
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = name |> .to_upper();
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::MethodCall { caller, method_name, args } = value {
+                    assert_eq!(method_name, "to_upper");
+                    assert!(matches!(**caller, Expression::Identifier(ref n) if n == "name"));
+                    assert_eq!(args.len(), 0);
+                } else { panic!("Expected MethodCall, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Plan 14: Retry/Fallback =====
+
+    #[test]
+    fn test_parse_retry_simple() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = retry(3) { fetch("url") };
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::Retry { max_attempts, fallback, .. } = value {
+                    assert!(matches!(**max_attempts, Expression::Int(3)));
+                    assert!(fallback.is_none());
+                } else { panic!("Expected Retry, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_retry_with_fallback() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = retry(5) { fetch("url") } fallback { "default" };
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::Retry { max_attempts, fallback, .. } = value {
+                    assert!(matches!(**max_attempts, Expression::Int(5)));
+                    assert!(fallback.is_some());
+                } else { panic!("Expected Retry"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_spawn() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var worker = spawn Worker();
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::Spawn { agent_name, args } = value {
+                    assert_eq!(agent_name, "Worker");
+                    assert_eq!(args.len(), 0);
+                } else { panic!("Expected Spawn, got {:?}", value); }
+            } else { panic!("Expected Let"); }
         } else { panic!("Expected Agent"); }
     }
 }

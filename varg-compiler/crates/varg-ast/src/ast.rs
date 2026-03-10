@@ -175,6 +175,19 @@ pub enum Expression {
         return_ty: Option<Box<TypeNode>>,
         body: Box<LambdaBody>,
     },
+
+    // Wave 6: Retry/Fallback
+    Retry {
+        max_attempts: Box<Expression>,
+        body: Box<Block>,
+        fallback: Option<Box<Block>>,
+    },
+
+    // Wave 6: Spawn agent
+    Spawn {
+        agent_name: String,
+        args: Vec<Expression>,
+    },
 }
 
 // ---- Lambda Body (Plan 06) ----

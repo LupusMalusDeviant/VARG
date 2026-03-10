@@ -145,6 +145,12 @@ pub enum Token {
     #[token("!")] Bang,
 
     #[token("->")] Arrow,
+    #[token("|>")] Pipe,
+
+    // ---- Wave 6: LLM-Native Features ----
+    #[token("retry")] Retry,
+    #[token("fallback")] Fallback,
+    #[token("spawn")] Spawn,
 
     // ---- Varg-Min (KI-Optimized Shorthands) ----
     #[token("+A")] PlusA,

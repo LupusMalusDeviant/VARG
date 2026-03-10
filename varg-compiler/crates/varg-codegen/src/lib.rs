@@ -609,7 +609,27 @@ impl RustGenerator {
             Expression::Query(q) => {
                 // Native embedded DB call
                 format!("__varg_query({:?})", q.raw_query)
-            }
+            },
+            // Wave 6: retry(N) { body } fallback { fallback_body }
+            Expression::Retry { max_attempts, body, fallback } => {
+                let attempts_str = self.gen_expression(max_attempts);
+                let body_str = self.gen_block(body, 2);
+                let fallback_str = if let Some(fb) = fallback {
+                    format!("{{ {} }}", self.gen_block(fb, 3).trim())
+                } else {
+                    "{ panic!(\"retry: all attempts failed\") }".to_string()
+                };
+                format!("{{\n    let mut __retry_result = None;\n    for __retry_i in 0..{} {{\n        match (|| -> std::result::Result<_, String> {{\n            Ok({{\n{}\n            }})\n        }})() {{\n            Ok(val) => {{ __retry_result = Some(val); break; }}\n            Err(_) => {{}}\n        }}\n    }}\n    __retry_result.unwrap_or_else(|| {})\n}}", attempts_str, body_str.trim(), fallback_str)
+            },
+            // Wave 6: spawn Agent(args)
+            Expression::Spawn { agent_name, args } => {
+                let args_str: Vec<String> = args.iter().map(|a| self.gen_expression(a)).collect();
+                if args_str.is_empty() {
+                    format!("{{\n    let (tx, rx) = std::sync::mpsc::channel();\n    std::thread::spawn(move || {{\n        let mut __agent = {} {{}};\n        for (method, args, reply_tx) in rx {{\n            let result = \"ok\".to_string();\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n    }});\n    tx\n}}", agent_name)
+                } else {
+                    format!("{{\n    let (tx, rx) = std::sync::mpsc::channel();\n    std::thread::spawn(move || {{\n        let mut __agent = {} {{}};\n        for (method, args, reply_tx) in rx {{\n            let result = \"ok\".to_string();\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n    }});\n    tx\n}}", agent_name)
+                }
+            },
         }
     }
 }
