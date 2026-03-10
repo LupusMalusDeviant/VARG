@@ -1848,6 +1848,7 @@ name = "vargc"
 version = "0.1.0"
 dependencies = [
  "codespan-reporting",
+ "serde_json",
  "varg-ast",
  "varg-codegen",
  "varg-lexer",

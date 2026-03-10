@@ -182,7 +182,7 @@ fn parse_and_generate(input_path: &str) -> (String, varg_ast::ast::Program) {
         exit(1);
     }
 
-    let generator = RustGenerator::new();
+    let mut generator = RustGenerator::new();
     let source = generator.generate(&merged_ast);
     (source, merged_ast)
 }
@@ -248,7 +248,17 @@ fn compile_varg_file(input_path: &str, run_immediately: bool) {
     }
     
     if let Some(agent) = main_agent_name {
-        final_rust_source.push_str(&format!("    let mut instance = {} {{}};\n", agent));
+        // Plan 19: Use new() if agent has fields, otherwise empty struct
+        let main_agent_has_fields = ast.items.iter().any(|item| {
+            if let varg_ast::ast::Item::Agent(a) = item {
+                a.name == agent && !a.fields.is_empty()
+            } else { false }
+        });
+        if main_agent_has_fields {
+            final_rust_source.push_str(&format!("    let mut instance = {}::new();\n", agent));
+        } else {
+            final_rust_source.push_str(&format!("    let mut instance = {} {{}};\n", agent));
+        }
 
         // -- CLI AND MCP DISCOVERY DISPATCHER --
         let mut cli_dispatch = String::from("    if _varg_args.len() > 1 {\n");

@@ -195,13 +195,14 @@ impl Parser {
                 if tok == Token::MinusA { is_public = false; }
                 
                 let name = self.parse_identifier()?;
-                let methods = self.parse_methods_block()?;
+                let (fields, methods) = self.parse_agent_body()?;
                 Ok(Item::Agent(AgentDef {
                     name,
                     is_system,
                     is_public,
                     target_annotation,
                     annotations,
+                    fields,
                     methods,
                 }))
             },
@@ -408,6 +409,109 @@ impl Parser {
             }),
             None => Err(ParseError::UnexpectedEof),
         }
+    }
+
+    /// Parses an agent body: fields (type name;) and methods (type name(...) { ... })
+    fn parse_agent_body(&mut self) -> Result<(Vec<FieldDecl>, Vec<MethodDecl>), ParseError> {
+        self.consume(Token::LBrace)?;
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+
+        while let Some(tok) = self.peek() {
+            if *tok == Token::RBrace { break; }
+
+            let annotations = self.parse_annotations()?;
+
+            // Optional: async modifier
+            let is_async = if let Some(Token::Async) = self.peek() {
+                self.advance();
+                true
+            } else {
+                false
+            };
+
+            let mut is_public = false;
+            let mut return_ty = TypeNode::Void;
+
+            match self.peek() {
+                Some(Token::PlusM) | Some(Token::PlusV) => {
+                    self.advance();
+                    is_public = true;
+                },
+                Some(Token::Public) => {
+                    self.advance();
+                    is_public = true;
+                    return_ty = self.parse_type()?;
+                },
+                _ => {
+                    return_ty = self.parse_type()?;
+                }
+            }
+
+            let name = self.parse_identifier()?;
+
+            // Distinguish: field (;) vs method (()
+            if self.peek() == Some(&Token::Semicolon) && !is_async {
+                // It's a field declaration: type name;
+                self.advance(); // consume ;
+                fields.push(FieldDecl { name, ty: return_ty });
+                continue;
+            }
+
+            // It's a method — continue parsing like parse_methods_block
+            let mut type_params = Vec::new();
+            if self.peek() == Some(&Token::LessThan) {
+                self.advance();
+                if self.peek() != Some(&Token::GreaterThan) {
+                    loop {
+                        type_params.push(self.parse_identifier()?);
+                        if let Some(Token::Comma) = self.peek() { self.advance(); } else { break; }
+                    }
+                }
+                self.consume(Token::GreaterThan)?;
+            }
+
+            self.consume(Token::LParen)?;
+            let mut args = Vec::new();
+            if let Some(inner) = self.peek() {
+                if *inner != Token::RParen {
+                    loop {
+                        let arg_ty = self.parse_type()?;
+                        let arg_name = self.parse_identifier()?;
+                        args.push(FieldDecl { name: arg_name, ty: arg_ty });
+                        if let Some(Token::Comma) = self.peek() { self.advance(); } else { break; }
+                    }
+                }
+            }
+            self.consume(Token::RParen)?;
+
+            let mut constraints = Vec::new();
+            if self.peek() == Some(&Token::Where) {
+                self.advance();
+                loop {
+                    let type_param = self.parse_identifier()?;
+                    self.consume(Token::Colon)?;
+                    let bound = self.parse_identifier()?;
+                    constraints.push(GenericConstraint { type_param, bound });
+                    if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                }
+            }
+
+            let body = if let Some(Token::Semicolon) = self.peek() {
+                self.advance();
+                None
+            } else {
+                Some(self.parse_block()?)
+            };
+
+            methods.push(MethodDecl {
+                name, is_public, is_async, annotations, type_params,
+                constraints, args, return_ty: Some(return_ty), body,
+            });
+        }
+
+        self.consume(Token::RBrace)?;
+        Ok((fields, methods))
     }
 
     fn parse_methods_block(&mut self) -> Result<Vec<MethodDecl>, ParseError> {
@@ -3256,6 +3360,52 @@ mod tests {
                     assert_eq!(args.len(), 0);
                 } else { panic!("Expected Spawn, got {:?}", value); }
             } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Plan 19: Agent Fields Tests =====
+
+    #[test]
+    fn test_parse_agent_fields() {
+        let source = r#"
+            agent Counter {
+                int count;
+                string name;
+                public void Run() { }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.fields.len(), 2);
+            assert_eq!(a.fields[0].name, "count");
+            assert_eq!(a.fields[0].ty, TypeNode::Int);
+            assert_eq!(a.fields[1].name, "name");
+            assert_eq!(a.fields[1].ty, TypeNode::String);
+            assert_eq!(a.methods.len(), 1);
+            assert_eq!(a.methods[0].name, "Run");
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_agent_fields_mixed_order() {
+        let source = r#"
+            agent Mixed {
+                int value;
+                public void Init() { }
+                string label;
+                public int Get() { return 0; }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.fields.len(), 2);
+            assert_eq!(a.fields[0].name, "value");
+            assert_eq!(a.fields[1].name, "label");
+            assert_eq!(a.methods.len(), 2);
+            assert_eq!(a.methods[0].name, "Init");
+            assert_eq!(a.methods[1].name, "Get");
         } else { panic!("Expected Agent"); }
     }
 }

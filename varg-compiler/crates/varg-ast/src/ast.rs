@@ -29,6 +29,7 @@ pub struct AgentDef {
     pub is_public: bool,
     pub target_annotation: Option<String>, // legacy @target
     pub annotations: Vec<Annotation>,
+    pub fields: Vec<FieldDecl>,  // Agent-State (Plan 19)
     pub methods: Vec<MethodDecl>,
 }
 
@@ -313,6 +314,7 @@ mod tests {
                     is_public: false,
                     target_annotation: None,
                     annotations: vec![],
+                    fields: vec![],
                     methods: vec![
                         MethodDecl {
                             name: "Allocate".to_string(),
