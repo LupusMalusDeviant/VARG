@@ -237,6 +237,8 @@ impl RustGenerator {
             TypeNode::Map(k, v) => format!("std::collections::HashMap::<{}, {}>::new()", self.gen_type(k), self.gen_type(v)),
             TypeNode::Nullable(_) => "None".to_string(),
             TypeNode::TypeMapShort => "std::collections::HashMap::<String, String>::new()".to_string(),
+            TypeNode::Context => "Context::new(\"default\")".to_string(),
+            TypeNode::Prompt => "Prompt { text: String::new() }".to_string(),
             _ => format!("{} {{}}", self.gen_type(ty)), // struct-like default
         }
     }
@@ -2229,5 +2231,61 @@ mod tests {
         let code = gen.generate(&program);
         // Agent field 'counter' should be accessed via self.counter
         assert!(code.contains("self.counter = 42"));
+    }
+
+    // ===== Plan 17: Implicit Context Passing Tests =====
+
+    #[test]
+    fn test_codegen_context_agent_struct() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "SmartAgent".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![Annotation { name: "WithContext".to_string(), values: vec![] }],
+                fields: vec![
+                    FieldDecl { name: "context".to_string(), ty: TypeNode::Context },
+                ],
+                methods: vec![],
+            })]
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("pub context: Context"));
+        assert!(code.contains("Context::new(\"default\")"));
+    }
+
+    #[test]
+    fn test_codegen_context_implicit_access() {
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "CtxAgent".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                fields: vec![
+                    FieldDecl { name: "context".to_string(), ty: TypeNode::Context },
+                ],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true, is_async: false,
+                    annotations: vec![],
+                    type_params: vec![], constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        // Accessing 'context' should generate 'self.context'
+                        Statement::Print(Expression::Identifier("context".to_string())),
+                    ]}),
+                }],
+            })]
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("self.context"));
     }
 }

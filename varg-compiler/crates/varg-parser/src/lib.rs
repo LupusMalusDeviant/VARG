@@ -195,7 +195,13 @@ impl Parser {
                 if tok == Token::MinusA { is_public = false; }
                 
                 let name = self.parse_identifier()?;
-                let (fields, methods) = self.parse_agent_body()?;
+                let (mut fields, methods) = self.parse_agent_body()?;
+                // Plan 17: @[WithContext] auto-injects context field
+                if annotations.iter().any(|a| a.name == "WithContext") {
+                    if !fields.iter().any(|f| f.name == "context") {
+                        fields.insert(0, FieldDecl { name: "context".to_string(), ty: TypeNode::Context });
+                    }
+                }
                 Ok(Item::Agent(AgentDef {
                     name,
                     is_system,
@@ -3406,6 +3412,28 @@ mod tests {
             assert_eq!(a.methods.len(), 2);
             assert_eq!(a.methods[0].name, "Init");
             assert_eq!(a.methods[1].name, "Get");
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Plan 17: Implicit Context Passing Tests =====
+
+    #[test]
+    fn test_parse_with_context_annotation() {
+        let source = r#"
+            @[WithContext]
+            agent SmartAgent {
+                public void Run() { }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.name, "SmartAgent");
+            // @[WithContext] auto-injects a context field
+            assert_eq!(a.fields.len(), 1);
+            assert_eq!(a.fields[0].name, "context");
+            assert_eq!(a.fields[0].ty, TypeNode::Context);
+            assert_eq!(a.methods.len(), 1);
         } else { panic!("Expected Agent"); }
     }
 }
