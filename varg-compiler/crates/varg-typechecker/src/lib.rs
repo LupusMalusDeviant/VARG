@@ -162,6 +162,21 @@ impl TypeChecker {
                 // Register the type alias for later resolution
                 self.type_aliases.insert(name.clone(), target.clone());
                 Ok(())
+            },
+            // Plan 23: Prompt templates — validate param types
+            Item::PromptTemplate(pt) => {
+                for param in &pt.params {
+                    match &param.ty {
+                        TypeNode::String | TypeNode::Int | TypeNode::Bool => {},
+                        other => {
+                            return Err(TypeError::TypeMismatch {
+                                expected: "String, Int, or Bool".to_string(),
+                                found: format!("{:?}", other),
+                            });
+                        }
+                    }
+                }
+                Ok(())
             }
         }
     }
@@ -2663,5 +2678,40 @@ mod tests {
         let msg = err.message();
         assert!(msg.contains("NetworkAccess"));
         assert!(msg.contains("unsafe"));
+    }
+
+    // ---- Plan 23: Prompt Template Type Checking ----
+    #[test]
+    fn test_prompt_param_types_valid() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::PromptTemplate(PromptTemplateDef {
+                name: "greet".to_string(),
+                params: vec![
+                    FieldDecl { name: "name".to_string(), ty: TypeNode::String },
+                    FieldDecl { name: "count".to_string(), ty: TypeNode::Int },
+                ],
+                body: "Hello {name}, you have {count} items.".to_string(),
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_prompt_param_types_invalid() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::PromptTemplate(PromptTemplateDef {
+                name: "bad".to_string(),
+                params: vec![
+                    FieldDecl { name: "data".to_string(), ty: TypeNode::Array(Box::new(TypeNode::String)) },
+                ],
+                body: "Data: {data}".to_string(),
+            })],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
     }
 }

@@ -12,6 +12,16 @@ pub enum Item {
     Enum(EnumDef),
     TypeAlias { name: String, target: TypeNode },
     Import(String),
+    // Plan 23: First-class prompt templates
+    PromptTemplate(PromptTemplateDef),
+}
+
+// ---- Prompt Templates (Plan 23) ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct PromptTemplateDef {
+    pub name: String,
+    pub params: Vec<FieldDecl>,
+    pub body: String,  // Raw template text with {var} placeholders
 }
 
 // ---- Annotations ----

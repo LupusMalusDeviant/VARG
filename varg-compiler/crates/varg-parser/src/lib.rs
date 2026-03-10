@@ -7,6 +7,8 @@ pub struct Parser {
     tokens: Vec<(Token, Range<usize>)>,
     pos: usize,
     source_len: usize,
+    /// Plan 23: Raw source for prompt template body extraction
+    raw_source: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -32,7 +34,7 @@ impl Parser {
             .filter_map(|(res, span)| res.ok().map(|tok| (tok, span)))
             .collect();
         let source_len = source.len();
-        Self { tokens, pos: 0, source_len }
+        Self { tokens, pos: 0, source_len, raw_source: source.to_string() }
     }
 
     fn advance(&mut self) -> Option<Token> {
@@ -267,8 +269,29 @@ impl Parser {
                     fields,
                 }))
             }
+            // Plan 23: prompt template_name(params) { body }
+            Some(Token::Prompt) => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                self.consume(Token::LParen)?;
+                let mut params = Vec::new();
+                if self.peek() != Some(&Token::RParen) {
+                    loop {
+                        let ty = self.parse_type()?;
+                        let param_name = self.parse_identifier()?;
+                        params.push(FieldDecl { name: param_name, ty });
+                        if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                    }
+                }
+                self.consume(Token::RParen)?;
+                // Extract raw body text between { and }
+                self.consume(Token::LBrace)?;
+                let body = self.parse_prompt_template_body()?;
+                self.consume(Token::RBrace)?;
+                Ok(Item::PromptTemplate(PromptTemplateDef { name, params, body }))
+            },
             Some(t) => Err(ParseError::UnexpectedToken {
-                expected: "Agent, Contract, Struct, Enum, or Type".to_string(),
+                expected: "Agent, Contract, Struct, Enum, Type, or Prompt".to_string(),
                 found: Some(t.clone()),
                 span: self.current_span(),
             }),
@@ -309,6 +332,37 @@ impl Parser {
         }
         self.consume(Token::RBrace)?;
         Ok(variants)
+    }
+
+    /// Plan 23: Extract raw template body text between { and }
+    /// The opening { has already been consumed. Scans forward to the matching }
+    /// using brace-depth tracking to handle {var} interpolation markers.
+    fn parse_prompt_template_body(&mut self) -> Result<String, ParseError> {
+        let start_byte = self.last_span().end;
+        let mut depth: usize = 0;
+
+        while self.pos < self.tokens.len() {
+            match &self.tokens[self.pos].0 {
+                Token::LBrace => {
+                    depth += 1;
+                    self.pos += 1;
+                },
+                Token::RBrace => {
+                    if depth == 0 {
+                        // This is the body-closing brace — don't consume (caller will)
+                        let end_byte = self.tokens[self.pos].1.start;
+                        let body = self.raw_source[start_byte..end_byte].trim().to_string();
+                        return Ok(body);
+                    }
+                    depth -= 1;
+                    self.pos += 1;
+                },
+                _ => {
+                    self.pos += 1;
+                }
+            }
+        }
+        Err(ParseError::UnexpectedEof)
     }
 
     fn parse_struct_fields_block(&mut self) -> Result<Vec<FieldDecl>, ParseError> {
@@ -3530,5 +3584,44 @@ mod tests {
                 assert!(matches!(arms[1].source, SelectSource::Timeout(_)));
             } else { panic!("Expected Select"); }
         } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 23: Prompt Template Tests ----
+    #[test]
+    fn test_parse_prompt_template() {
+        // Token is #[token("Prompt")] — capital P
+        let source = r#"
+            Prompt greet() {
+                Hello, World!
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.items.len(), 1);
+        if let Item::PromptTemplate(pt) = &program.items[0] {
+            assert_eq!(pt.name, "greet");
+            assert!(pt.params.is_empty());
+            assert!(pt.body.contains("Hello"));
+        } else { panic!("Expected PromptTemplate"); }
+    }
+
+    #[test]
+    fn test_parse_prompt_with_params() {
+        let source = r#"
+            Prompt analyze(string text, int count) {
+                Analyze the following: {text}
+                Repeat {count} times
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::PromptTemplate(pt) = &program.items[0] {
+            assert_eq!(pt.name, "analyze");
+            assert_eq!(pt.params.len(), 2);
+            assert_eq!(pt.params[0].name, "text");
+            assert_eq!(pt.params[1].name, "count");
+            assert!(pt.body.contains("{text}"));
+            assert!(pt.body.contains("{count}"));
+        } else { panic!("Expected PromptTemplate"); }
     }
 }

@@ -40,6 +40,41 @@ impl RustGenerator {
     fn gen_item(&mut self, item: &Item) -> String {
         match item {
             Item::Import(_) => String::new(), // Merged by vargc beforehand
+            // Plan 23: Prompt template → Rust function returning Prompt
+            Item::PromptTemplate(pt) => {
+                let params: Vec<String> = pt.params.iter()
+                    .map(|p| format!("{}: {}", p.name, self.gen_type(&p.ty)))
+                    .collect();
+
+                // Parse {var} placeholders → format!() args
+                let mut format_str = String::new();
+                let mut format_args: Vec<String> = Vec::new();
+                let mut chars = pt.body.chars().peekable();
+                while let Some(c) = chars.next() {
+                    if c == '{' {
+                        let mut var_name = String::new();
+                        for inner in chars.by_ref() {
+                            if inner == '}' { break; }
+                            var_name.push(inner);
+                        }
+                        format_str.push_str("{}");
+                        format_args.push(var_name.trim().to_string());
+                    } else if c == '"' {
+                        format_str.push_str("\\\"");
+                    } else {
+                        format_str.push(c);
+                    }
+                }
+
+                let body_expr = if format_args.is_empty() {
+                    format!("\"{}\".to_string()", format_str)
+                } else {
+                    format!("format!(\"{}\", {})", format_str, format_args.join(", "))
+                };
+
+                format!("fn {}({}) -> Prompt {{\n    Prompt {{ text: {} }}\n}}\n",
+                    pt.name, params.join(", "), body_expr)
+            },
             Item::TypeAlias { name, target } => {
                 format!("type {} = {};\n", name, self.gen_type(target))
             },
@@ -2661,5 +2696,44 @@ mod tests {
         let code = gen.gen_expression(&expr);
         // push uses arg_strs directly (not gen_cloned_arg)
         assert_eq!(code, "vec.push(item)");
+    }
+
+    // ---- Plan 23: Prompt Template Codegen Tests ----
+    #[test]
+    fn test_codegen_prompt_template_function() {
+        let mut gen = RustGenerator::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::PromptTemplate(PromptTemplateDef {
+                name: "greet".to_string(),
+                params: vec![],
+                body: "Hello, World!".to_string(),
+            })],
+        };
+        let code = gen.generate(&program);
+        assert!(code.contains("fn greet() -> Prompt"));
+        assert!(code.contains("Hello, World!"));
+        assert!(code.contains("Prompt { text:"));
+    }
+
+    #[test]
+    fn test_codegen_prompt_interpolation() {
+        let mut gen = RustGenerator::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::PromptTemplate(PromptTemplateDef {
+                name: "analyze".to_string(),
+                params: vec![
+                    FieldDecl { name: "text".to_string(), ty: TypeNode::String },
+                    FieldDecl { name: "fmt".to_string(), ty: TypeNode::String },
+                ],
+                body: "Analyze: {text}\nFormat: {fmt}".to_string(),
+            })],
+        };
+        let code = gen.generate(&program);
+        assert!(code.contains("fn analyze(text: String, fmt: String) -> Prompt"));
+        assert!(code.contains("format!"));
+        assert!(code.contains("text"));
+        assert!(code.contains("fmt"));
     }
 }
