@@ -358,6 +358,30 @@ impl TypeChecker {
                         self.env = saved_env;
                     }
                 },
+                // Plan 20: select statement
+                Statement::Select { arms } => {
+                    for arm in arms {
+                        let saved_env = self.env.clone();
+                        match &arm.source {
+                            SelectSource::Agent(expr) => {
+                                self.infer_expression_type(expr)?;
+                                // Bind the var_name as String (messages are strings in MVP)
+                                self.env.insert(arm.var_name.clone(), TypeNode::String);
+                            },
+                            SelectSource::Timeout(expr) => {
+                                let ty = self.infer_expression_type(expr)?;
+                                if ty != TypeNode::Int {
+                                    return Err(TypeError::TypeMismatch {
+                                        expected: "Int".to_string(),
+                                        found: format!("{:?}", ty),
+                                    });
+                                }
+                            },
+                        }
+                        self.check_block(&arm.body)?;
+                        self.env = saved_env;
+                    }
+                },
             }
         }
         Ok(())
@@ -2421,5 +2445,33 @@ mod tests {
             })],
         };
         assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ===== Plan 20: Select Statement Test =====
+
+    #[test]
+    fn test_select_arm_types() {
+        let mut checker = TypeChecker::new();
+        // Register a variable so agent expression resolves
+        checker.env.insert("worker".to_string(), TypeNode::AgentHandle("Worker".to_string()));
+        let block = Block { statements: vec![
+            Statement::Select { arms: vec![
+                SelectArm {
+                    var_name: "msg".to_string(),
+                    source: SelectSource::Agent(Expression::Identifier("worker".to_string())),
+                    body: Block { statements: vec![
+                        Statement::Print(Expression::Identifier("msg".to_string())),
+                    ]},
+                },
+                SelectArm {
+                    var_name: "_timeout".to_string(),
+                    source: SelectSource::Timeout(Expression::Int(5000)),
+                    body: Block { statements: vec![
+                        Statement::Print(Expression::String("timed out".to_string())),
+                    ]},
+                },
+            ]},
+        ]};
+        assert!(checker.check_block(&block).is_ok());
     }
 }

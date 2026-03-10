@@ -128,6 +128,9 @@ pub enum Statement {
 
     // Plan 06: Destructuring
     LetDestructure { pattern: DestructurePattern, value: Expression },
+
+    // Plan 20: Actor-Model select statement
+    Select { arms: Vec<SelectArm> },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -248,6 +251,20 @@ pub enum Pattern {
 pub enum DestructurePattern {
     Tuple(Vec<String>),                    // (a, b, c)
     Struct(Vec<(String, Option<String>)>), // { name, age: a }
+}
+
+// ---- Actor-Model Concurrency (Plan 20) ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct SelectArm {
+    pub var_name: String,          // msg binding variable
+    pub source: SelectSource,      // from agent | timeout(ms)
+    pub body: Block,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum SelectSource {
+    Agent(Expression),             // from agent_handle expression
+    Timeout(Expression),           // timeout(ms) expression
 }
 
 // ---- AI-OS Native Types ----

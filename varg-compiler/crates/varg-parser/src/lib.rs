@@ -979,6 +979,46 @@ impl Parser {
                     self.consume(Token::RBrace)?;
                     statements.push(Statement::Match { subject, arms });
                 },
+                // Plan 20: select { msg from agent => { ... } timeout(ms) => { ... } }
+                Token::Select => {
+                    self.advance();
+                    self.consume(Token::LBrace)?;
+                    let mut arms = Vec::new();
+                    while self.peek() != Some(&Token::RBrace) {
+                        // Check for timeout arm
+                        if self.peek() == Some(&Token::Timeout) {
+                            self.advance(); // consume 'timeout'
+                            self.consume(Token::LParen)?;
+                            let ms_expr = self.parse_expression()?;
+                            self.consume(Token::RParen)?;
+                            self.consume(Token::FatArrow)?;
+                            let body = self.parse_block()?;
+                            arms.push(SelectArm {
+                                var_name: "_timeout".to_string(),
+                                source: SelectSource::Timeout(ms_expr),
+                                body,
+                            });
+                        } else {
+                            // msg from agent_expr => { ... }
+                            let var_name = self.parse_identifier()?;
+                            self.consume(Token::From)?;
+                            let source_expr = self.parse_expression()?;
+                            self.consume(Token::FatArrow)?;
+                            let body = self.parse_block()?;
+                            arms.push(SelectArm {
+                                var_name,
+                                source: SelectSource::Agent(source_expr),
+                                body,
+                            });
+                        }
+                        // Optional comma between arms
+                        if self.peek() == Some(&Token::Comma) {
+                            self.advance();
+                        }
+                    }
+                    self.consume(Token::RBrace)?;
+                    statements.push(Statement::Select { arms });
+                },
                 // Fallback dummy token skipper to avoid infinite loops if an expression fails
                 _ => {
                     let skipped = self.advance();
@@ -3434,6 +3474,61 @@ mod tests {
             assert_eq!(a.fields[0].name, "context");
             assert_eq!(a.fields[0].ty, TypeNode::Context);
             assert_eq!(a.methods.len(), 1);
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Plan 20: Select Statement Tests =====
+
+    #[test]
+    fn test_parse_select_statement() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    select {
+                        msg from worker => {
+                            print msg;
+                        }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Select { arms } = &body.statements[0] {
+                assert_eq!(arms.len(), 1);
+                assert_eq!(arms[0].var_name, "msg");
+                assert!(matches!(arms[0].source, SelectSource::Agent(_)));
+            } else { panic!("Expected Select, got {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_select_with_timeout() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    select {
+                        msg from worker => {
+                            print msg;
+                        }
+                        timeout(5000) => {
+                            print "timeout";
+                        }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Select { arms } = &body.statements[0] {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(arms[0].source, SelectSource::Agent(_)));
+                assert!(matches!(arms[1].source, SelectSource::Timeout(_)));
+            } else { panic!("Expected Select"); }
         } else { panic!("Expected Agent"); }
     }
 }

@@ -152,6 +152,9 @@ pub enum Token {
     #[token("fallback")] Fallback,
     #[token("spawn")] Spawn,
 
+    // ---- Wave 7: Actor-Model Concurrency ----
+    #[token("timeout")] Timeout,
+
     // ---- Varg-Min (KI-Optimized Shorthands) ----
     #[token("+A")] PlusA,
     #[token("-A")] MinusA,

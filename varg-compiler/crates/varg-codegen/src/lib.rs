@@ -451,6 +451,34 @@ impl RustGenerator {
                     }
                     out.push_str(&format!("{}}}\n", indent));
                 },
+                // Plan 20: select { msg from agent => { ... } timeout(ms) => { ... } }
+                Statement::Select { arms } => {
+                    let has_timeout = arms.iter().any(|a| matches!(a.source, SelectSource::Timeout(_)));
+                    if has_timeout {
+                        out.push_str(&format!("{}let __select_start = std::time::Instant::now();\n", indent));
+                    }
+                    out.push_str(&format!("{}loop {{\n", indent));
+                    for arm in arms {
+                        match &arm.source {
+                            SelectSource::Agent(agent_expr) => {
+                                let agent_str = self.gen_expression(agent_expr);
+                                out.push_str(&format!("{}    if let Ok({}) = {}.try_recv() {{\n", indent, arm.var_name, agent_str));
+                                out.push_str(&self.gen_block(&arm.body, indent_level + 2));
+                                out.push_str(&format!("{}        break;\n", indent));
+                                out.push_str(&format!("{}    }}\n", indent));
+                            },
+                            SelectSource::Timeout(ms_expr) => {
+                                let ms_str = self.gen_expression(ms_expr);
+                                out.push_str(&format!("{}    if __select_start.elapsed() >= std::time::Duration::from_millis({} as u64) {{\n", indent, ms_str));
+                                out.push_str(&self.gen_block(&arm.body, indent_level + 2));
+                                out.push_str(&format!("{}        break;\n", indent));
+                                out.push_str(&format!("{}    }}\n", indent));
+                            },
+                        }
+                    }
+                    out.push_str(&format!("{}    std::thread::sleep(std::time::Duration::from_millis(1));\n", indent));
+                    out.push_str(&format!("{}}}\n", indent));
+                },
             }
         }
         out
@@ -2509,5 +2537,54 @@ mod tests {
         let code = gen.generate(&program);
         assert!(code.contains("StatefulWorker::new()"));
         assert!(code.contains("\"Tick\" =>"));
+    }
+
+    // ===== Plan 20: Actor-Model Concurrency Tests =====
+
+    #[test]
+    fn test_codegen_select_multi_agent() {
+        let mut gen = RustGenerator::new();
+        let block = Block { statements: vec![
+            Statement::Select { arms: vec![
+                SelectArm {
+                    var_name: "msg".to_string(),
+                    source: SelectSource::Agent(Expression::Identifier("worker".to_string())),
+                    body: Block { statements: vec![
+                        Statement::Print(Expression::Identifier("msg".to_string())),
+                    ]},
+                },
+                SelectArm {
+                    var_name: "_timeout".to_string(),
+                    source: SelectSource::Timeout(Expression::Int(5000)),
+                    body: Block { statements: vec![
+                        Statement::Print(Expression::String("timeout".to_string())),
+                    ]},
+                },
+            ]},
+        ]};
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("loop {"));
+        assert!(code.contains("try_recv()"));
+        assert!(code.contains("Instant::now()"));
+        assert!(code.contains("5000 as u64"));
+        assert!(code.contains("break;"));
+    }
+
+    #[test]
+    fn test_codegen_select_agent_only() {
+        let mut gen = RustGenerator::new();
+        let block = Block { statements: vec![
+            Statement::Select { arms: vec![
+                SelectArm {
+                    var_name: "msg".to_string(),
+                    source: SelectSource::Agent(Expression::Identifier("agent1".to_string())),
+                    body: Block { statements: vec![] },
+                },
+            ]},
+        ]};
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("agent1.try_recv()"));
+        // No timeout — should not have Instant::now()
+        assert!(!code.contains("Instant::now()"));
     }
 }
