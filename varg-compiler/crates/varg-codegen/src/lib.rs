@@ -122,6 +122,11 @@ impl RustGenerator {
         format!("{}fn {}{}({}){}{}", vis, method.name, type_params, arg_str, ret_str, where_clause)
     }
 
+    /// Heuristic: does this expression produce a String?
+    fn is_string_expr(&self, expr: &Expression) -> bool {
+        matches!(expr, Expression::String(_) | Expression::PromptLiteral(_))
+    }
+
     fn gen_type(&self, ty: &TypeNode) -> String {
         match ty {
             TypeNode::Int => "i64".to_string(),
@@ -351,20 +356,37 @@ impl RustGenerator {
                     return format!("__varg_cosine_sim(&{}, &{})", self.gen_expression(left), self.gen_expression(right));
                 }
 
+                // String concatenation: "a" + "b" → format!("{}{}", a, b)
+                if let BinaryOperator::Add = operator {
+                    if self.is_string_expr(left) || self.is_string_expr(right) {
+                        return format!("format!(\"{{}}{{}}\", {}, {})", self.gen_expression(left), self.gen_expression(right));
+                    }
+                }
+
                 let op = match operator {
                     BinaryOperator::Add => "+",
                     BinaryOperator::Sub => "-",
                     BinaryOperator::Mul => "*",
                     BinaryOperator::Div => "/",
+                    BinaryOperator::Mod => "%",
                     BinaryOperator::Eq => "==",
                     BinaryOperator::NotEq => "!=",
                     BinaryOperator::Lt => "<",
                     BinaryOperator::Gt => ">",
                     BinaryOperator::LtEq => "<=",
                     BinaryOperator::GtEq => ">=",
+                    BinaryOperator::And => "&&",
+                    BinaryOperator::Or => "||",
                     BinaryOperator::CosineSim => unreachable!(),
                 };
                 format!("{} {} {}", self.gen_expression(left), op, self.gen_expression(right))
+            },
+            Expression::UnaryOp { operator, operand } => {
+                let expr = self.gen_expression(operand);
+                match operator {
+                    UnaryOperator::Negate => format!("-{}", expr),
+                    UnaryOperator::Not => format!("!{}", expr),
+                }
             },
             Expression::MethodCall { caller, method_name, args } => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.gen_expression(a)).collect();
@@ -1520,5 +1542,104 @@ mod tests {
         let code = gen.generate(&program);
         assert!(code.contains("|s: String|"));
         assert!(code.contains("return s;"));
+    }
+
+    // ===== New Operators: &&, ||, !, %, unary, string concat =====
+
+    #[test]
+    fn test_codegen_and_operator() {
+        let gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::Identifier("a".to_string())),
+            operator: BinaryOperator::And,
+            right: Box::new(Expression::Identifier("b".to_string())),
+        };
+        assert_eq!(gen.gen_expression(&expr), "a && b");
+    }
+
+    #[test]
+    fn test_codegen_or_operator() {
+        let gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::Identifier("a".to_string())),
+            operator: BinaryOperator::Or,
+            right: Box::new(Expression::Identifier("b".to_string())),
+        };
+        assert_eq!(gen.gen_expression(&expr), "a || b");
+    }
+
+    #[test]
+    fn test_codegen_modulo_operator() {
+        let gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::Int(10)),
+            operator: BinaryOperator::Mod,
+            right: Box::new(Expression::Int(3)),
+        };
+        assert_eq!(gen.gen_expression(&expr), "10 % 3");
+    }
+
+    #[test]
+    fn test_codegen_unary_negate() {
+        let gen = RustGenerator::new();
+        let expr = Expression::UnaryOp {
+            operator: UnaryOperator::Negate,
+            operand: Box::new(Expression::Int(5)),
+        };
+        assert_eq!(gen.gen_expression(&expr), "-5");
+    }
+
+    #[test]
+    fn test_codegen_unary_not() {
+        let gen = RustGenerator::new();
+        let expr = Expression::UnaryOp {
+            operator: UnaryOperator::Not,
+            operand: Box::new(Expression::Identifier("flag".to_string())),
+        };
+        assert_eq!(gen.gen_expression(&expr), "!flag");
+    }
+
+    #[test]
+    fn test_codegen_string_concat() {
+        let gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::String("hello ".to_string())),
+            operator: BinaryOperator::Add,
+            right: Box::new(Expression::String("world".to_string())),
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("format!"));
+        assert!(code.contains("hello "));
+        assert!(code.contains("world"));
+    }
+
+    #[test]
+    fn test_codegen_string_concat_with_identifier() {
+        let gen = RustGenerator::new();
+        // "Hello " + name  — left is string, right is identifier
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::String("Hello ".to_string())),
+            operator: BinaryOperator::Add,
+            right: Box::new(Expression::Identifier("name".to_string())),
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("format!"));
+    }
+
+    #[test]
+    fn test_codegen_unary_negate_nested() {
+        let gen = RustGenerator::new();
+        // -(a + b)
+        let expr = Expression::UnaryOp {
+            operator: UnaryOperator::Negate,
+            operand: Box::new(Expression::BinaryOp {
+                left: Box::new(Expression::Identifier("a".to_string())),
+                operator: BinaryOperator::Add,
+                right: Box::new(Expression::Identifier("b".to_string())),
+            }),
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.starts_with('-'));
+        assert!(code.contains("a + b"));
     }
 }

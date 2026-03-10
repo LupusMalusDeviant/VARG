@@ -889,11 +889,14 @@ impl Parser {
     fn token_binding_power(tok: &Token) -> Option<(u8, u8)> {
         match tok {
             Token::Tilde                              => Some((1, 2)),   // cosine_sim: lowest
-            Token::Equals | Token::NotEquals           => Some((3, 4)),  // == !=
+            Token::Or                                  => Some((3, 4)),  // ||
+            Token::And                                 => Some((5, 6)),  // &&
+            Token::Equals | Token::NotEquals           => Some((7, 8)),  // == !=
             Token::LessThan | Token::GreaterThan |
-            Token::LessOrEqual | Token::GreaterOrEqual => Some((5, 6)),  // < > <= >=
-            Token::Plus | Token::Minus                 => Some((7, 8)),  // + -
-            Token::Multiply | Token::Divide            => Some((9, 10)), // * /
+            Token::LessOrEqual | Token::GreaterOrEqual => Some((9, 10)), // < > <= >=
+            Token::Plus | Token::Minus                 => Some((11, 12)), // + -
+            Token::Multiply | Token::Divide |
+            Token::Percent                             => Some((13, 14)), // * / %
             _ => None,
         }
     }
@@ -904,6 +907,21 @@ impl Parser {
 
     fn parse_expression_bp(&mut self, min_bp: u8) -> Result<Expression, ParseError> {
         let mut left = match self.advance() {
+            // Unary prefix operators: -expr, !expr
+            Some(Token::Minus) => {
+                let operand = self.parse_expression_bp(15)?; // high precedence for prefix
+                Expression::UnaryOp {
+                    operator: UnaryOperator::Negate,
+                    operand: Box::new(operand),
+                }
+            },
+            Some(Token::Bang) => {
+                let operand = self.parse_expression_bp(15)?;
+                Expression::UnaryOp {
+                    operator: UnaryOperator::Not,
+                    operand: Box::new(operand),
+                }
+            },
             Some(Token::Null) => Expression::Null,
             Some(Token::IntLiteral(val)) => Expression::Int(val),
             Some(Token::StringLiteral(val)) => Expression::String(val.trim_matches('"').to_string()),
@@ -1074,12 +1092,15 @@ impl Parser {
                     Token::Minus => BinaryOperator::Sub,
                     Token::Multiply => BinaryOperator::Mul,
                     Token::Divide => BinaryOperator::Div,
+                    Token::Percent => BinaryOperator::Mod,
                     Token::Equals => BinaryOperator::Eq,
                     Token::NotEquals => BinaryOperator::NotEq,
                     Token::LessThan => BinaryOperator::Lt,
                     Token::GreaterThan => BinaryOperator::Gt,
                     Token::LessOrEqual => BinaryOperator::LtEq,
                     Token::GreaterOrEqual => BinaryOperator::GtEq,
+                    Token::And => BinaryOperator::And,
+                    Token::Or => BinaryOperator::Or,
                     Token::Tilde => BinaryOperator::CosineSim,
                     _ => unreachable!(),
                 };
@@ -2347,6 +2368,190 @@ mod tests {
             } else { panic!("Expected Let"); }
             if let Statement::Let { value, .. } = &body.statements[1] {
                 assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::GtEq, .. }));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== New Operators: &&, ||, !, %, unary =====
+
+    #[test]
+    fn test_parse_and_operator() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = a > 5 && b < 10;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                // (a > 5) && (b < 10)
+                if let Expression::BinaryOp { operator: BinaryOperator::And, left, right } = value {
+                    assert!(matches!(left.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Gt, .. }));
+                    assert!(matches!(right.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Lt, .. }));
+                } else { panic!("Expected And at top level, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_or_operator() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = a == 1 || b == 2;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                // (a == 1) || (b == 2)
+                if let Expression::BinaryOp { operator: BinaryOperator::Or, left, right } = value {
+                    assert!(matches!(left.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Eq, .. }));
+                    assert!(matches!(right.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Eq, .. }));
+                } else { panic!("Expected Or at top level, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_modulo_operator() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 10 % 3;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::BinaryOp { operator: BinaryOperator::Mod, left, right } = value {
+                    assert_eq!(**left, Expression::Int(10));
+                    assert_eq!(**right, Expression::Int(3));
+                } else { panic!("Expected Mod, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_unary_negate() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = -5;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::UnaryOp { operator: UnaryOperator::Negate, operand } = value {
+                    assert_eq!(**operand, Expression::Int(5));
+                } else { panic!("Expected UnaryOp Negate, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_unary_not() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = !flag;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::UnaryOp { operator: UnaryOperator::Not, operand } = value {
+                    assert_eq!(**operand, Expression::Identifier("flag".to_string()));
+                } else { panic!("Expected UnaryOp Not, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_boolean_precedence_and_binds_tighter_than_or() {
+        // a || b && c  should parse as  a || (b && c)
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = a || b && c;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                // Top level should be Or, right should be And
+                if let Expression::BinaryOp { operator: BinaryOperator::Or, left, right } = value {
+                    assert_eq!(**left, Expression::Identifier("a".to_string()));
+                    assert!(matches!(right.as_ref(), Expression::BinaryOp { operator: BinaryOperator::And, .. }));
+                } else { panic!("Expected Or at top level, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_modulo_same_precedence_as_mul_div() {
+        // 10 * 3 % 2  should parse as  (10 * 3) % 2  (left-associative, same level)
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 10 * 3 % 2;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::BinaryOp { operator: BinaryOperator::Mod, left, right } = value {
+                    assert!(matches!(left.as_ref(), Expression::BinaryOp { operator: BinaryOperator::Mul, .. }));
+                    assert_eq!(**right, Expression::Int(2));
+                } else { panic!("Expected Mod at top level, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_unary_negate_in_expression() {
+        // var x = 5 + -3;  should parse as  5 + (-(3))
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 5 + -3;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::BinaryOp { operator: BinaryOperator::Add, left, right } = value {
+                    assert_eq!(**left, Expression::Int(5));
+                    if let Expression::UnaryOp { operator: UnaryOperator::Negate, operand } = right.as_ref() {
+                        assert_eq!(**operand, Expression::Int(3));
+                    } else { panic!("Expected UnaryOp Negate on right, got {:?}", right); }
+                } else { panic!("Expected Add at top level, got {:?}", value); }
             } else { panic!("Expected Let"); }
         } else { panic!("Expected Agent"); }
     }

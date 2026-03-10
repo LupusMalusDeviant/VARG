@@ -345,12 +345,31 @@ impl TypeChecker {
                     Err(TypeError::UndeclaredVariable(name.clone()))
                 }
             },
-            Expression::BinaryOp { operator, .. } => {
-                // If it's a comparison operator, it returns Bool, otherwise Int for MVP
+            Expression::BinaryOp { left, operator, right } => {
+                let left_ty = self.infer_expression_type(left)?;
+                let right_ty = self.infer_expression_type(right)?;
                 match operator {
-                    BinaryOperator::Eq | BinaryOperator::NotEq | BinaryOperator::Lt | BinaryOperator::Gt | BinaryOperator::LtEq | BinaryOperator::GtEq => Ok(TypeNode::Bool),
+                    BinaryOperator::Eq | BinaryOperator::NotEq |
+                    BinaryOperator::Lt | BinaryOperator::Gt |
+                    BinaryOperator::LtEq | BinaryOperator::GtEq |
+                    BinaryOperator::And | BinaryOperator::Or => Ok(TypeNode::Bool),
                     BinaryOperator::CosineSim => Ok(TypeNode::Custom("f32".to_string())),
+                    BinaryOperator::Add => {
+                        // String + anything = String (concat)
+                        if left_ty == TypeNode::String || right_ty == TypeNode::String {
+                            Ok(TypeNode::String)
+                        } else {
+                            Ok(TypeNode::Int)
+                        }
+                    },
                     _ => Ok(TypeNode::Int)
+                }
+            },
+            Expression::UnaryOp { operator, operand } => {
+                let inner_ty = self.infer_expression_type(operand)?;
+                match operator {
+                    UnaryOperator::Negate => Ok(inner_ty), // -x keeps the same type
+                    UnaryOperator::Not => Ok(TypeNode::Bool), // !x always Bool
                 }
             },
             Expression::MethodCall { method_name, args, .. } => {
@@ -1904,5 +1923,85 @@ mod tests {
         };
         // Should succeed because "T" is in type_params
         assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ===== New Operators: &&, ||, !, %, unary, string concat =====
+
+    #[test]
+    fn test_and_or_returns_bool() {
+        let mut checker = TypeChecker::new();
+        // true && false → Bool
+        let ty = checker.infer_expression_type(&Expression::BinaryOp {
+            left: Box::new(Expression::Bool(true)),
+            operator: BinaryOperator::And,
+            right: Box::new(Expression::Bool(false)),
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+
+        // true || false → Bool
+        let ty2 = checker.infer_expression_type(&Expression::BinaryOp {
+            left: Box::new(Expression::Bool(true)),
+            operator: BinaryOperator::Or,
+            right: Box::new(Expression::Bool(false)),
+        }).unwrap();
+        assert_eq!(ty2, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_string_concat_returns_string() {
+        let mut checker = TypeChecker::new();
+        // "hello" + " world" → String
+        let ty = checker.infer_expression_type(&Expression::BinaryOp {
+            left: Box::new(Expression::String("hello".to_string())),
+            operator: BinaryOperator::Add,
+            right: Box::new(Expression::String(" world".to_string())),
+        }).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_string_concat_mixed_returns_string() {
+        let mut checker = TypeChecker::new();
+        // "count: " + 5 → String (string on left promotes to string)
+        let ty = checker.infer_expression_type(&Expression::BinaryOp {
+            left: Box::new(Expression::String("count: ".to_string())),
+            operator: BinaryOperator::Add,
+            right: Box::new(Expression::Int(5)),
+        }).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_modulo_returns_int() {
+        let mut checker = TypeChecker::new();
+        // 10 % 3 → Int
+        let ty = checker.infer_expression_type(&Expression::BinaryOp {
+            left: Box::new(Expression::Int(10)),
+            operator: BinaryOperator::Mod,
+            right: Box::new(Expression::Int(3)),
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_unary_negate_returns_int() {
+        let mut checker = TypeChecker::new();
+        // -5 → Int
+        let ty = checker.infer_expression_type(&Expression::UnaryOp {
+            operator: UnaryOperator::Negate,
+            operand: Box::new(Expression::Int(5)),
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_unary_not_returns_bool() {
+        let mut checker = TypeChecker::new();
+        // !true → Bool
+        let ty = checker.infer_expression_type(&Expression::UnaryOp {
+            operator: UnaryOperator::Not,
+            operand: Box::new(Expression::Bool(true)),
+        }).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
     }
 }

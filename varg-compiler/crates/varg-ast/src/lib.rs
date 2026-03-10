@@ -126,7 +126,13 @@ pub enum Token {
     #[token("-")] Minus,
     #[token("*")] Multiply,
     #[token("/")] Divide,
+    #[token("%")] Percent,
     #[token("~")] Tilde, // Phase 20.B: Vector Math Operator
+
+    // ---- Logical Operators ----
+    #[token("&&")] And,
+    #[token("||")] Or,
+    #[token("!")] Bang,
 
     #[token("->")] Arrow,
 

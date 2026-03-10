@@ -154,6 +154,12 @@ pub enum Expression {
     PromptLiteral(String), // Phase 20: prompt """ ... """
     Query(SurrealQueryNode), // Phase 15: Native Database Query Expression
 
+    // Unary operators: -x, !x
+    UnaryOp {
+        operator: UnaryOperator,
+        operand: Box<Expression>,
+    },
+
     // Plan 06: Closures/Lambdas
     Lambda {
         params: Vec<FieldDecl>,
@@ -181,7 +187,13 @@ pub struct LinqQuery {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum BinaryOperator {
-    Add, Sub, Mul, Div, Eq, NotEq, Lt, Gt, LtEq, GtEq, CosineSim
+    Add, Sub, Mul, Div, Mod, Eq, NotEq, Lt, Gt, LtEq, GtEq, And, Or, CosineSim
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum UnaryOperator {
+    Negate, // -x
+    Not,    // !x
 }
 
 // ---- OCAP Capability Tokens (Plan 03) ----
