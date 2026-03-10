@@ -99,6 +99,8 @@ pub struct Block {
 pub enum Statement {
     Let { name: String, ty: Option<TypeNode>, value: Expression }, // ty is Option because of 'var'
     Assign { name: String, value: Expression },
+    IndexAssign { target: Expression, index: Expression, value: Expression },
+    PropertyAssign { target: Expression, property: String, value: Expression },
     Expr(Expression),
     UnsafeBlock(Block),           // OCAP: Unsafe Code Marker
     Return(Option<Expression>),

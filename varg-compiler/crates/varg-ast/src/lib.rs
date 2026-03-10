@@ -120,6 +120,11 @@ pub enum Token {
     #[token(".")] Dot,
 
     #[token("=")] Assign,
+    #[token("+=")] PlusAssign,
+    #[token("-=")] MinusAssign,
+    #[token("*=")] MulAssign,
+    #[token("/=")] DivAssign,
+    #[token("%=")] ModAssign,
     #[token("==")] Equals,
     #[token("!=")] NotEquals,
     #[token("<")] LessThan,

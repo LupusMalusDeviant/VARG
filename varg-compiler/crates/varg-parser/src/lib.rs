@@ -650,21 +650,58 @@ impl Parser {
                     }
 
                     let expr = self.parse_expression()?;
-                    match self.peek() {
-                        Some(Token::Assign) => {
-                            if let Expression::Identifier(var_name) = expr {
-                                self.advance(); // consume Assign
-                                let value = self.parse_expression()?;
-                                self.consume(Token::Semicolon)?;
-                                statements.push(Statement::Assign { name: var_name, value });
-                            } else {
-                                return Err(ParseError::UnexpectedToken { expected: "Valid L-Value".to_string(), found: Some(Token::Assign), span: self.current_span() });
-                            }
-                        },
-                        _ => {
-                            self.consume(Token::Semicolon)?;
-                            statements.push(Statement::Expr(expr));
+
+                    // Check for compound assignment operators (+=, -=, *=, /=, %=)
+                    let compound_op = match self.peek() {
+                        Some(Token::PlusAssign) => Some(BinaryOperator::Add),
+                        Some(Token::MinusAssign) => Some(BinaryOperator::Sub),
+                        Some(Token::MulAssign) => Some(BinaryOperator::Mul),
+                        Some(Token::DivAssign) => Some(BinaryOperator::Div),
+                        Some(Token::ModAssign) => Some(BinaryOperator::Mod),
+                        _ => None,
+                    };
+
+                    if let Some(op) = compound_op {
+                        self.advance(); // consume compound op
+                        let rhs = self.parse_expression()?;
+                        self.consume(Token::Semicolon)?;
+                        // Desugar: target op= value → target = target op value
+                        let desugared = Expression::BinaryOp {
+                            left: Box::new(expr.clone()),
+                            operator: op,
+                            right: Box::new(rhs),
+                        };
+                        match expr {
+                            Expression::Identifier(name) => {
+                                statements.push(Statement::Assign { name, value: desugared });
+                            },
+                            Expression::IndexAccess { caller, index } => {
+                                statements.push(Statement::IndexAssign { target: *caller, index: *index, value: desugared });
+                            },
+                            Expression::PropertyAccess { caller, property_name } => {
+                                statements.push(Statement::PropertyAssign { target: *caller, property: property_name, value: desugared });
+                            },
+                            _ => return Err(ParseError::UnexpectedToken { expected: "Valid L-Value for compound assignment".to_string(), found: None, span: self.current_span() }),
                         }
+                    } else if let Some(Token::Assign) = self.peek() {
+                        self.advance(); // consume =
+                        let value = self.parse_expression()?;
+                        self.consume(Token::Semicolon)?;
+                        match expr {
+                            Expression::Identifier(name) => {
+                                statements.push(Statement::Assign { name, value });
+                            },
+                            Expression::IndexAccess { caller, index } => {
+                                statements.push(Statement::IndexAssign { target: *caller, index: *index, value });
+                            },
+                            Expression::PropertyAccess { caller, property_name } => {
+                                statements.push(Statement::PropertyAssign { target: *caller, property: property_name, value });
+                            },
+                            _ => return Err(ParseError::UnexpectedToken { expected: "Valid L-Value".to_string(), found: Some(Token::Assign), span: self.current_span() }),
+                        }
+                    } else {
+                        self.consume(Token::Semicolon)?;
+                        statements.push(Statement::Expr(expr));
                     }
                 },
                 Token::Stream => {
@@ -2874,6 +2911,105 @@ mod tests {
                 assert_eq!(name, "NAME");
                 assert_eq!(*ty, None); // inferred
             } else { panic!("Expected Const"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 5b: Index/Property Assignment + Compound Assignment =====
+
+    #[test]
+    fn test_parse_index_assign() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    arr[0] = 42;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            assert!(matches!(body.statements[0], Statement::IndexAssign { .. }));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_property_assign() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    obj.name = "alice";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::PropertyAssign { property, .. } = &body.statements[0] {
+                assert_eq!(property, "name");
+            } else { panic!("Expected PropertyAssign, got {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_compound_plus_assign() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    x += 5;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // Desugared to: x = x + 5
+            if let Statement::Assign { name, value } = &body.statements[0] {
+                assert_eq!(name, "x");
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::Add, .. }));
+            } else { panic!("Expected Assign (desugared), got {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_compound_minus_assign() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    count -= 1;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Assign { name, value } = &body.statements[0] {
+                assert_eq!(name, "count");
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::Sub, .. }));
+            } else { panic!("Expected Assign (desugared)"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_index_compound_assign() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    arr[0] += 10;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // Desugared to IndexAssign with BinaryOp value
+            if let Statement::IndexAssign { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::BinaryOp { operator: BinaryOperator::Add, .. }));
+            } else { panic!("Expected IndexAssign, got {:?}", body.statements[0]); }
         } else { panic!("Expected Agent"); }
     }
 }

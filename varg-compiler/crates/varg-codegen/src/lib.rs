@@ -190,6 +190,17 @@ impl RustGenerator {
                 Statement::Assign { name, value } => {
                     out.push_str(&format!("{}{} = {};\n", indent, name, self.gen_expression(value)));
                 },
+                Statement::IndexAssign { target, index, value } => {
+                    let idx_str = self.gen_expression(index);
+                    if let Expression::Int(_) = index {
+                        out.push_str(&format!("{}{}[{} as usize] = {};\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
+                    } else {
+                        out.push_str(&format!("{}{}.insert({}, {});\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
+                    }
+                },
+                Statement::PropertyAssign { target, property, value } => {
+                    out.push_str(&format!("{}{}.{} = {};\n", indent, self.gen_expression(target), property, self.gen_expression(value)));
+                },
                 Statement::Return(Some(expr)) => {
                     out.push_str(&format!("{}return {};\n", indent, self.gen_expression(expr)));
                 },
@@ -1909,5 +1920,49 @@ mod tests {
         ]};
         let code = gen.gen_block(&block, 1);
         assert!(code.contains("let NAME = \"varg\".to_string();"));
+    }
+
+    // ===== Wave 5b: Index/Property/Compound Assignment =====
+
+    #[test]
+    fn test_codegen_index_assign() {
+        let gen = RustGenerator::new();
+        let block = Block { statements: vec![
+            Statement::IndexAssign {
+                target: Expression::Identifier("arr".to_string()),
+                index: Expression::Int(0),
+                value: Expression::Int(42),
+            },
+        ]};
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("arr[0 as usize] = 42;"));
+    }
+
+    #[test]
+    fn test_codegen_property_assign() {
+        let gen = RustGenerator::new();
+        let block = Block { statements: vec![
+            Statement::PropertyAssign {
+                target: Expression::Identifier("obj".to_string()),
+                property: "name".to_string(),
+                value: Expression::String("alice".to_string()),
+            },
+        ]};
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("obj.name = \"alice\".to_string();"));
+    }
+
+    #[test]
+    fn test_codegen_map_insert_via_index_assign() {
+        let gen = RustGenerator::new();
+        let block = Block { statements: vec![
+            Statement::IndexAssign {
+                target: Expression::Identifier("map".to_string()),
+                index: Expression::String("key".to_string()),
+                value: Expression::String("value".to_string()),
+            },
+        ]};
+        let code = gen.gen_block(&block, 1);
+        assert!(code.contains("map.insert("));
     }
 }

@@ -41,6 +41,9 @@ pub struct TypeChecker {
 
     // Plan 03: Capability tokens available in current method scope
     available_capabilities: Vec<CapabilityType>,
+
+    // Wave 5b: Expected return type for current method (for validation)
+    current_return_ty: Option<TypeNode>,
 }
 
 impl Default for TypeChecker {
@@ -57,6 +60,7 @@ impl TypeChecker {
             type_aliases: HashMap::new(),
             in_unsafe_block: false,
             available_capabilities: Vec::new(),
+            current_return_ty: None,
         }
     }
 
@@ -166,9 +170,14 @@ impl TypeChecker {
             self.env.insert(arg.name.clone(), arg.ty.clone());
         }
 
+        // Track expected return type for return-statement validation
+        self.current_return_ty = method.return_ty.clone();
+
         if let Some(body) = &method.body {
             self.check_block(body)?;
         }
+
+        self.current_return_ty = None;
         Ok(())
     }
 
@@ -201,6 +210,15 @@ impl TypeChecker {
                             found: format!("{:?}", val_type),
                         });
                     }
+                },
+                Statement::IndexAssign { target, index, value } => {
+                    self.infer_expression_type(target)?;
+                    self.infer_expression_type(index)?;
+                    self.infer_expression_type(value)?;
+                },
+                Statement::PropertyAssign { target, property: _, value } => {
+                    self.infer_expression_type(target)?;
+                    self.infer_expression_type(value)?;
                 },
                 Statement::UnsafeBlock(inner_block) => {
                     self.in_unsafe_block = true;
@@ -268,8 +286,16 @@ impl TypeChecker {
                      self.infer_expression_type(expr)?;
                 },
                 Statement::Return(Some(expr)) => {
-                    // MVP simplification: just verify the expression's type can be inferred
-                    let _val_type = self.infer_expression_type(expr)?;
+                    let val_type = self.infer_expression_type(expr)?;
+                    // Validate return type matches method declaration
+                    if let Some(expected) = &self.current_return_ty {
+                        if *expected != TypeNode::Void && !self.types_match(expected, &val_type) {
+                            return Err(TypeError::TypeMismatch {
+                                expected: format!("{:?}", expected),
+                                found: format!("{:?}", val_type),
+                            });
+                        }
+                    }
                 },
                 Statement::Return(None) => {},
                 Statement::Expr(expr) => {
@@ -2148,5 +2174,75 @@ mod tests {
             },
         ]};
         assert!(checker.check_block(&block).is_ok());
+    }
+
+    // ===== Wave 5b: Return-Type Validation =====
+
+    #[test]
+    fn test_return_type_correct_passes() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "GetName".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::String),
+                    body: Some(Block { statements: vec![
+                        Statement::Return(Some(Expression::String("hello".to_string())))
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_return_type_mismatch_fails() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "GetCount".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Int),
+                    body: Some(Block { statements: vec![
+                        // Return String when Int expected → should FAIL
+                        Statement::Return(Some(Expression::String("oops".to_string())))
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_return_void_allows_anything() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                methods: vec![MethodDecl { is_async: false,
+                    name: "Run".to_string(), is_public: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Return(Some(Expression::Int(42)))
+                    ]}),
+                }],
+            })],
+        };
+        // Void methods don't enforce return type
+        assert!(checker.check_program(&program).is_ok());
     }
 }
