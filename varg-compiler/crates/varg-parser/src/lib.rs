@@ -290,8 +290,30 @@ impl Parser {
                 self.consume(Token::RBrace)?;
                 Ok(Item::PromptTemplate(PromptTemplateDef { name, params, body }))
             },
+            // Plan 25: Standalone top-level functions
+            Some(Token::Fn) => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                self.consume(Token::LParen)?;
+                let mut params = Vec::new();
+                if self.peek() != Some(&Token::RParen) {
+                    loop {
+                        let ty = self.parse_type()?;
+                        let param_name = self.parse_identifier()?;
+                        params.push(FieldDecl { name: param_name, ty });
+                        if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                    }
+                }
+                self.consume(Token::RParen)?;
+                let return_ty = if self.peek() == Some(&Token::Arrow) {
+                    self.advance();
+                    Some(self.parse_type()?)
+                } else { None };
+                let body = self.parse_block()?;
+                Ok(Item::Function(FunctionDef { name, is_public, params, return_ty, body }))
+            },
             Some(t) => Err(ParseError::UnexpectedToken {
-                expected: "Agent, Contract, Struct, Enum, Type, or Prompt".to_string(),
+                expected: "Agent, Contract, Struct, Enum, Type, Prompt, or fn".to_string(),
                 found: Some(t.clone()),
                 span: self.current_span(),
             }),
@@ -3678,5 +3700,40 @@ mod tests {
                 assert!(matches!(value, Expression::OrDefault { .. }));
             } else { panic!("Expected Let"); }
         } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Plan 25: Standalone Functions =====
+    #[test]
+    fn test_parse_standalone_function() {
+        let source = r#"
+            fn add(int x, int y) -> int {
+                return x + y;
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Function(f) = &program.items[0] {
+            assert_eq!(f.name, "add");
+            assert_eq!(f.params.len(), 2);
+            assert_eq!(f.return_ty, Some(TypeNode::Int));
+            assert!(!f.is_public);
+        } else { panic!("Expected Function"); }
+    }
+
+    #[test]
+    fn test_parse_public_fn_no_return() {
+        let source = r#"
+            public fn greet(string name) {
+                print name;
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Function(f) = &program.items[0] {
+            assert_eq!(f.name, "greet");
+            assert!(f.is_public);
+            assert_eq!(f.return_ty, None);
+            assert_eq!(f.params.len(), 1);
+        } else { panic!("Expected Function"); }
     }
 }

@@ -56,6 +56,7 @@ pub enum Token {
     #[token("async")] Async,
     #[token("await")] Await,
     #[token("const")] Const,
+    #[token("fn", priority = 3)] Fn,
 
     // ---- LINQ / Queries ----
     #[token("from")] From,

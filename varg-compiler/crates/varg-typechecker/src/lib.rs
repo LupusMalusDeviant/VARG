@@ -207,6 +207,21 @@ impl TypeChecker {
                 self.type_aliases.insert(name.clone(), target.clone());
                 Ok(())
             },
+            // Plan 25: Standalone functions — type-check like methods
+            Item::Function(f) => {
+                self.env.clear();
+                self.available_capabilities.clear();
+                for param in &f.params {
+                    self.env.insert(param.name.clone(), param.ty.clone());
+                    if let TypeNode::Capability(cap) = &param.ty {
+                        self.available_capabilities.push(cap.clone());
+                    }
+                }
+                self.current_return_ty = f.return_ty.clone();
+                self.check_block(&f.body)?;
+                self.current_return_ty = None;
+                Ok(())
+            },
             // Plan 23: Prompt templates — validate param types
             Item::PromptTemplate(pt) => {
                 for param in &pt.params {
@@ -3287,5 +3302,51 @@ mod tests {
             ],
         };
         assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ===== Plan 25: Standalone Functions =====
+    #[test]
+    fn test_fn_param_types_checked() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Function(FunctionDef {
+                name: "add".to_string(),
+                is_public: false,
+                params: vec![
+                    FieldDecl { name: "a".to_string(), ty: TypeNode::Int },
+                    FieldDecl { name: "b".to_string(), ty: TypeNode::Int },
+                ],
+                return_ty: Some(TypeNode::Int),
+                body: Block { statements: vec![
+                    Statement::Return(Some(Expression::BinaryOp {
+                        left: Box::new(Expression::Identifier("a".to_string())),
+                        operator: BinaryOperator::Add,
+                        right: Box::new(Expression::Identifier("b".to_string())),
+                    })),
+                ]},
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_fn_return_type_validated() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Function(FunctionDef {
+                name: "bad".to_string(),
+                is_public: false,
+                params: vec![],
+                return_ty: Some(TypeNode::Int),
+                body: Block { statements: vec![
+                    // return "hello" but declared -> int = mismatch
+                    Statement::Return(Some(Expression::String("hello".to_string()))),
+                ]},
+            })],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
     }
 }

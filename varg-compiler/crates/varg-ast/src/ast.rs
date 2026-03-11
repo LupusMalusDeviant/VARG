@@ -14,6 +14,8 @@ pub enum Item {
     Import(String),
     // Plan 23: First-class prompt templates
     PromptTemplate(PromptTemplateDef),
+    // Plan 25: Standalone top-level functions
+    Function(FunctionDef),
 }
 
 // ---- Prompt Templates (Plan 23) ----
@@ -22,6 +24,16 @@ pub struct PromptTemplateDef {
     pub name: String,
     pub params: Vec<FieldDecl>,
     pub body: String,  // Raw template text with {var} placeholders
+}
+
+// ---- Standalone Functions (Plan 25) ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct FunctionDef {
+    pub name: String,
+    pub is_public: bool,
+    pub params: Vec<FieldDecl>,
+    pub return_ty: Option<TypeNode>,
+    pub body: Block,
 }
 
 // ---- Annotations ----

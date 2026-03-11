@@ -75,6 +75,17 @@ impl RustGenerator {
                 format!("fn {}({}) -> Prompt {{\n    Prompt {{ text: {} }}\n}}\n",
                     pt.name, params.join(", "), body_expr)
             },
+            // Plan 25: Standalone top-level functions
+            Item::Function(f) => {
+                let params: Vec<String> = f.params.iter()
+                    .map(|p| format!("{}: {}", p.name, self.gen_type(&p.ty)))
+                    .collect();
+                let ret = f.return_ty.as_ref()
+                    .map(|t| format!(" -> {}", self.gen_type(t)))
+                    .unwrap_or_default();
+                let body = self.gen_block(&f.body, 1);
+                format!("fn {}({}){} {{\n{}}}\n", f.name, params.join(", "), ret, body)
+            },
             Item::TypeAlias { name, target } => {
                 format!("type {} = {};\n", name, self.gen_type(target))
             },
@@ -2775,5 +2786,33 @@ mod tests {
         let code = gen.gen_expression(&expr);
         assert!(code.contains("unwrap_or_else"));
         assert!(code.contains("fallback"));
+    }
+
+    // ===== Plan 25: Standalone Functions =====
+    #[test]
+    fn test_codegen_standalone_function() {
+        let mut gen = RustGenerator::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Function(FunctionDef {
+                name: "add".to_string(),
+                is_public: false,
+                params: vec![
+                    FieldDecl { name: "a".to_string(), ty: TypeNode::Int },
+                    FieldDecl { name: "b".to_string(), ty: TypeNode::Int },
+                ],
+                return_ty: Some(TypeNode::Int),
+                body: Block { statements: vec![
+                    Statement::Return(Some(Expression::BinaryOp {
+                        left: Box::new(Expression::Identifier("a".to_string())),
+                        operator: BinaryOperator::Add,
+                        right: Box::new(Expression::Identifier("b".to_string())),
+                    })),
+                ]},
+            })],
+        };
+        let code = gen.generate(&program);
+        assert!(code.contains("fn add(a: i64, b: i64) -> i64"));
+        assert!(code.contains("return"));
     }
 }
