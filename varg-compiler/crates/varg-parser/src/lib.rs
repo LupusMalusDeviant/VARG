@@ -188,8 +188,34 @@ impl Parser {
             Some(Token::Import) => {
                 self.advance();
                 let module = self.parse_identifier()?;
+                // Plan 26: Extended import syntax
+                let items = if self.peek() == Some(&Token::Dot) {
+                    self.advance(); // consume .
+                    match self.peek() {
+                        Some(Token::Multiply) => {
+                            self.advance();
+                            ImportItems::All
+                        },
+                        Some(Token::LBrace) => {
+                            self.advance();
+                            let mut names = Vec::new();
+                            loop {
+                                names.push(self.parse_identifier()?);
+                                if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                            }
+                            self.consume(Token::RBrace)?;
+                            ImportItems::Selected(names)
+                        },
+                        _ => {
+                            let name = self.parse_identifier()?;
+                            ImportItems::Single(name)
+                        }
+                    }
+                } else {
+                    ImportItems::All // import math; == import math.*;
+                };
                 self.consume(Token::Semicolon)?;
-                Ok(Item::Import(module))
+                Ok(Item::ImportDecl(ImportDeclNode { module_name: module, items }))
             },
             Some(Token::Agent) | Some(Token::PlusA) | Some(Token::MinusA) => {
                 let tok = self.advance().unwrap();
@@ -1773,12 +1799,13 @@ mod tests {
 
     #[test]
     fn test_parse_import() {
-        let source = r#"import "std/crypto";"#;
+        let source = r#"import crypto;"#;
         let mut parser = Parser::new(source);
         let program = parser.parse_program().unwrap();
-        if let Item::Import(path) = &program.items[0] {
-            assert_eq!(path, "std/crypto");
-        } else { panic!("Expected Import"); }
+        if let Item::ImportDecl(decl) = &program.items[0] {
+            assert_eq!(decl.module_name, "crypto");
+            assert_eq!(decl.items, ImportItems::All);
+        } else { panic!("Expected ImportDecl"); }
     }
 
     #[test]
@@ -3735,5 +3762,50 @@ mod tests {
             assert_eq!(f.return_ty, None);
             assert_eq!(f.params.len(), 1);
         } else { panic!("Expected Function"); }
+    }
+
+    // ===== Plan 26: Module System =====
+    #[test]
+    fn test_parse_import_all() {
+        let source = r#"import math;"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::ImportDecl(decl) = &program.items[0] {
+            assert_eq!(decl.module_name, "math");
+            assert_eq!(decl.items, ImportItems::All);
+        } else { panic!("Expected ImportDecl"); }
+    }
+
+    #[test]
+    fn test_parse_import_wildcard() {
+        let source = r#"import utils.*;"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::ImportDecl(decl) = &program.items[0] {
+            assert_eq!(decl.module_name, "utils");
+            assert_eq!(decl.items, ImportItems::All);
+        } else { panic!("Expected ImportDecl"); }
+    }
+
+    #[test]
+    fn test_parse_selective_import() {
+        let source = r#"import math.{sqrt, pow};"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::ImportDecl(decl) = &program.items[0] {
+            assert_eq!(decl.module_name, "math");
+            assert_eq!(decl.items, ImportItems::Selected(vec!["sqrt".to_string(), "pow".to_string()]));
+        } else { panic!("Expected ImportDecl"); }
+    }
+
+    #[test]
+    fn test_parse_single_import() {
+        let source = r#"import math.sqrt;"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::ImportDecl(decl) = &program.items[0] {
+            assert_eq!(decl.module_name, "math");
+            assert_eq!(decl.items, ImportItems::Single("sqrt".to_string()));
+        } else { panic!("Expected ImportDecl"); }
     }
 }

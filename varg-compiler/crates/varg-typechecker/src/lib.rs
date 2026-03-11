@@ -170,7 +170,7 @@ impl TypeChecker {
 
     fn check_item(&mut self, item: &Item) -> Result<(), TypeError> {
         match item {
-            Item::Import(_) => Ok(()), // MVP: Imports are resolved and merged by CLI earlier
+            Item::Import(_) | Item::ImportDecl(_) => Ok(()), // MVP: Imports are resolved and merged by CLI earlier
             Item::Agent(agent) => {
                 // Plan 30: Register agent fields for property access resolution
                 self.agent_fields.insert(agent.name.clone(), agent.fields.clone());

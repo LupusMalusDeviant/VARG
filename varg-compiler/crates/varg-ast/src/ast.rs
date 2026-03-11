@@ -12,6 +12,8 @@ pub enum Item {
     Enum(EnumDef),
     TypeAlias { name: String, target: TypeNode },
     Import(String),
+    // Plan 26: Extended import with selective/qualified access
+    ImportDecl(ImportDeclNode),
     // Plan 23: First-class prompt templates
     PromptTemplate(PromptTemplateDef),
     // Plan 25: Standalone top-level functions
@@ -24,6 +26,20 @@ pub struct PromptTemplateDef {
     pub name: String,
     pub params: Vec<FieldDecl>,
     pub body: String,  // Raw template text with {var} placeholders
+}
+
+// ---- Module System (Plan 26) ----
+#[derive(Debug, PartialEq, Clone)]
+pub struct ImportDeclNode {
+    pub module_name: String,
+    pub items: ImportItems,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ImportItems {
+    All,                        // import math;  or  import math.*;
+    Selected(Vec<String>),      // import math.{sqrt, abs};
+    Single(String),             // import math.sqrt;
 }
 
 // ---- Standalone Functions (Plan 25) ----

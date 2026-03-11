@@ -46,7 +46,7 @@ impl RustGenerator {
 
     fn gen_item(&mut self, item: &Item) -> String {
         match item {
-            Item::Import(_) => String::new(), // Merged by vargc beforehand
+            Item::Import(_) | Item::ImportDecl(_) => String::new(), // Merged by vargc beforehand
             // Plan 23: Prompt template → Rust function returning Prompt
             Item::PromptTemplate(pt) => {
                 let params: Vec<String> = pt.params.iter()
