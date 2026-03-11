@@ -223,6 +223,15 @@ impl Parser {
                 if tok == Token::MinusA { is_public = false; }
                 
                 let name = self.parse_identifier()?;
+                // Plan 29: Parse contract implementations: agent Foo : Bar, Baz { ... }
+                let mut implements = Vec::new();
+                if self.peek() == Some(&Token::Colon) {
+                    self.advance();
+                    loop {
+                        implements.push(self.parse_identifier()?);
+                        if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                    }
+                }
                 let (mut fields, methods) = self.parse_agent_body()?;
                 // Plan 17: @[WithContext] auto-injects context field
                 if annotations.iter().any(|a| a.name == "WithContext") {
@@ -236,6 +245,7 @@ impl Parser {
                     is_public,
                     target_annotation,
                     annotations,
+                    implements,
                     fields,
                     methods,
                 }))
@@ -3807,5 +3817,44 @@ mod tests {
             assert_eq!(decl.module_name, "math");
             assert_eq!(decl.items, ImportItems::Single("sqrt".to_string()));
         } else { panic!("Expected ImportDecl"); }
+    }
+
+    // ===== Plan 29: Contract Enforcement =====
+    #[test]
+    fn test_parse_agent_implements_contract() {
+        let source = r#"
+            contract Greeter {
+                string Greet();
+            }
+            agent MyAgent : Greeter {
+                public string Greet() {
+                    return "hello";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[1] {
+            assert_eq!(a.name, "MyAgent");
+            assert_eq!(a.implements, vec!["Greeter".to_string()]);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_agent_implements_multiple() {
+        let source = r#"
+            contract Foo { void DoFoo(); }
+            contract Bar { void DoBar(); }
+            agent Multi : Foo, Bar {
+                public void DoFoo() { return; }
+                public void DoBar() { return; }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[2] {
+            assert_eq!(a.name, "Multi");
+            assert_eq!(a.implements, vec!["Foo".to_string(), "Bar".to_string()]);
+        } else { panic!("Expected Agent"); }
     }
 }

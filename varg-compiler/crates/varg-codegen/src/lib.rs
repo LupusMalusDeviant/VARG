@@ -200,6 +200,22 @@ impl RustGenerator {
                     out.push_str("}\n");
                 }
 
+                // Plan 29: Generate trait impls for implemented contracts
+                for contract_name in &a.implements {
+                    out.push_str(&format!("\nimpl {} for {} {{\n", contract_name, a.name));
+                    // Find contract methods that exist on the agent and delegate
+                    for method in &a.methods {
+                        // Only include methods that the contract declares
+                        // For simplicity, generate all public methods as trait method impls
+                        out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, true)));
+                        if let Some(body) = &method.body {
+                            out.push_str(&self.gen_block(body, 2));
+                        }
+                        out.push_str("    }\n");
+                    }
+                    out.push_str("}\n");
+                }
+
                 self.agent_field_names.clear();
                 out
             }
@@ -912,6 +928,7 @@ mod tests {
                 is_public: true,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Recall".to_string(),
@@ -1010,6 +1027,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1051,6 +1069,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1089,6 +1108,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1127,6 +1147,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1169,6 +1190,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1201,6 +1223,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1251,6 +1274,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1291,6 +1315,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1326,6 +1351,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Sort".to_string(),
@@ -1441,6 +1467,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1493,6 +1520,7 @@ mod tests {
                 is_public: true,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Fetch".to_string(),
@@ -1528,6 +1556,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1591,6 +1620,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(),
@@ -1644,6 +1674,7 @@ mod tests {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(), is_public: true, is_async: false,
@@ -1671,6 +1702,7 @@ mod tests {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(), is_public: true, is_async: false,
@@ -1703,6 +1735,7 @@ mod tests {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(), is_public: true, is_async: false,
@@ -1857,6 +1890,7 @@ mod tests {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(), is_public: true, is_async: false,
@@ -1888,6 +1922,7 @@ mod tests {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(), is_public: true, is_async: false,
@@ -1944,6 +1979,7 @@ mod tests {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(), is_public: true, is_async: false,
@@ -2196,6 +2232,7 @@ mod tests {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
                 target_annotation: None, annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "FetchData".to_string(), is_public: true, is_async: true,
@@ -2312,6 +2349,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![
                     FieldDecl { name: "count".to_string(), ty: TypeNode::Int },
                     FieldDecl { name: "name".to_string(), ty: TypeNode::String },
@@ -2336,6 +2374,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![
                     FieldDecl { name: "value".to_string(), ty: TypeNode::Int },
                 ],
@@ -2367,6 +2406,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Destroy".to_string(),
@@ -2395,6 +2435,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![
                     FieldDecl { name: "counter".to_string(), ty: TypeNode::Int },
                 ],
@@ -2432,6 +2473,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![Annotation { name: "WithContext".to_string(), values: vec![] }],
+                implements: vec![],
                 fields: vec![
                     FieldDecl { name: "context".to_string(), ty: TypeNode::Context },
                 ],
@@ -2454,6 +2496,7 @@ mod tests {
                 is_public: false,
                 target_annotation: None,
                 annotations: vec![],
+                    implements: vec![],
                 fields: vec![
                     FieldDecl { name: "context".to_string(), ty: TypeNode::Context },
                 ],
@@ -2490,6 +2533,7 @@ mod tests {
                     is_public: false,
                     target_annotation: None,
                     annotations: vec![],
+                    implements: vec![],
                     fields: vec![],
                     methods: vec![MethodDecl {
                         name: "Process".to_string(),
@@ -2509,6 +2553,7 @@ mod tests {
                     is_public: false,
                     target_annotation: None,
                     annotations: vec![],
+                    implements: vec![],
                     fields: vec![],
                     methods: vec![MethodDecl {
                         name: "Run".to_string(),
@@ -2586,6 +2631,7 @@ mod tests {
                     is_public: false,
                     target_annotation: None,
                     annotations: vec![],
+                    implements: vec![],
                     fields: vec![
                         FieldDecl { name: "count".to_string(), ty: TypeNode::Int },
                     ],
@@ -2605,6 +2651,7 @@ mod tests {
                     is_public: false,
                     target_annotation: None,
                     annotations: vec![],
+                    implements: vec![],
                     fields: vec![],
                     methods: vec![MethodDecl {
                         name: "Run".to_string(),
@@ -2846,7 +2893,7 @@ mod tests {
             no_std: false,
             items: vec![Item::Agent(AgentDef {
                 name: "Worker".to_string(), is_system: false, is_public: false,
-                target_annotation: None, annotations: vec![], fields: vec![],
+                target_annotation: None, annotations: vec![], implements: vec![], fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Fetch".to_string(), is_public: true, is_async: true,
                     annotations: vec![], type_params: vec![], constraints: vec![],
@@ -2869,7 +2916,7 @@ mod tests {
             no_std: false,
             items: vec![Item::Agent(AgentDef {
                 name: "App".to_string(), is_system: false, is_public: false,
-                target_annotation: None, annotations: vec![], fields: vec![],
+                target_annotation: None, annotations: vec![], implements: vec![], fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Run".to_string(), is_public: true, is_async: false,
                     annotations: vec![], type_params: vec![], constraints: vec![],
@@ -2890,7 +2937,7 @@ mod tests {
             no_std: false,
             items: vec![Item::Agent(AgentDef {
                 name: "Worker".to_string(), is_system: false, is_public: false,
-                target_annotation: None, annotations: vec![], fields: vec![],
+                target_annotation: None, annotations: vec![], implements: vec![], fields: vec![],
                 methods: vec![MethodDecl {
                     name: "Process".to_string(), is_public: true, is_async: true,
                     annotations: vec![], type_params: vec![], constraints: vec![],

@@ -67,6 +67,7 @@ pub struct AgentDef {
     pub is_public: bool,
     pub target_annotation: Option<String>, // legacy @target
     pub annotations: Vec<Annotation>,
+    pub implements: Vec<String>,  // Plan 29: Contract names this agent implements
     pub fields: Vec<FieldDecl>,  // Agent-State (Plan 19)
     pub methods: Vec<MethodDecl>,
 }
@@ -379,6 +380,7 @@ mod tests {
                     is_public: false,
                     target_annotation: None,
                     annotations: vec![],
+                    implements: vec![],
                     fields: vec![],
                     methods: vec![
                         MethodDecl {
