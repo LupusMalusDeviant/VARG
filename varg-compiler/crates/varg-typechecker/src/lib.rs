@@ -76,6 +76,9 @@ pub struct TypeChecker {
     agent_fields: HashMap<String, Vec<FieldDecl>>,
     // Plan 30: Registered method signatures (type_name → method_name → signature)
     method_signatures: HashMap<String, HashMap<String, MethodSignature>>,
+
+    // Plan 28: Generic struct definitions (struct_name → StructDef with type_params)
+    generic_structs: HashMap<String, StructDef>,
 }
 
 // Plan 30: Method signature for return-type tracking
@@ -105,6 +108,7 @@ impl TypeChecker {
             struct_fields: HashMap::new(),
             agent_fields: HashMap::new(),
             method_signatures: HashMap::new(),
+            generic_structs: HashMap::new(),
         }
     }
 
@@ -195,6 +199,10 @@ impl TypeChecker {
             Item::Struct(s) => {
                 // Plan 30: Register struct fields for property access resolution
                 self.struct_fields.insert(s.name.clone(), s.fields.clone());
+                // Plan 28: Register generic struct definitions
+                if !s.type_params.is_empty() {
+                    self.generic_structs.insert(s.name.clone(), s.clone());
+                }
                 Ok(())
             },
             Item::Enum(e) => {
@@ -541,6 +549,25 @@ impl TypeChecker {
         Vec::new()
     }
 
+    /// Plan 28: Substitute type variables in a type using a substitution map
+    fn substitute_type(ty: &TypeNode, subs: &HashMap<String, TypeNode>) -> TypeNode {
+        match ty {
+            TypeNode::TypeVar(name) => subs.get(name).cloned().unwrap_or_else(|| ty.clone()),
+            TypeNode::Array(inner) => TypeNode::Array(Box::new(Self::substitute_type(inner, subs))),
+            TypeNode::List(inner) => TypeNode::List(Box::new(Self::substitute_type(inner, subs))),
+            TypeNode::Map(k, v) => TypeNode::Map(
+                Box::new(Self::substitute_type(k, subs)),
+                Box::new(Self::substitute_type(v, subs)),
+            ),
+            TypeNode::Nullable(inner) => TypeNode::Nullable(Box::new(Self::substitute_type(inner, subs))),
+            TypeNode::Generic(name, args) => TypeNode::Generic(
+                name.clone(),
+                args.iter().map(|a| Self::substitute_type(a, subs)).collect(),
+            ),
+            _ => ty.clone(),
+        }
+    }
+
     fn infer_expression_type(&mut self, expr: &Expression) -> Result<TypeNode, TypeError> {
         match expr {
             Expression::Int(_) => Ok(TypeNode::Int),
@@ -777,6 +804,23 @@ impl TypeChecker {
                         // Known agent but unknown field → error
                         return Err(TypeError::UnknownField {
                             type_name: type_name.clone(),
+                            field_name: property_name.clone(),
+                        });
+                    }
+                }
+                // Plan 28: Generic struct field access with type substitution
+                if let TypeNode::Generic(ref struct_name, ref type_args) = caller_ty {
+                    if let Some(struct_def) = self.generic_structs.get(struct_name).cloned() {
+                        // Build substitution map: zip(type_params, type_args)
+                        let subs: HashMap<String, TypeNode> = struct_def.type_params.iter()
+                            .zip(type_args.iter())
+                            .map(|(param, arg)| (param.clone(), arg.clone()))
+                            .collect();
+                        if let Some(field) = struct_def.fields.iter().find(|f| f.name == *property_name) {
+                            return Ok(Self::substitute_type(&field.ty, &subs));
+                        }
+                        return Err(TypeError::UnknownField {
+                            type_name: format!("{}<{}>", struct_name, type_args.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(", ")),
                             field_name: property_name.clone(),
                         });
                     }
@@ -3348,5 +3392,106 @@ mod tests {
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
+    }
+
+    // ===== Plan 28: Working Generics =====
+    #[test]
+    fn test_generic_struct_field_type_resolved() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Struct(StructDef {
+                    name: "Box".to_string(),
+                    is_public: false,
+                    type_params: vec!["T".to_string()],
+                    fields: vec![
+                        FieldDecl { name: "value".to_string(), ty: TypeNode::TypeVar("T".to_string()) },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl {
+                            name: "box_val".to_string(),
+                            ty: TypeNode::Generic("Box".to_string(), vec![TypeNode::Int]),
+                        }],
+                        return_ty: Some(TypeNode::Int),
+                        body: Some(Block { statements: vec![
+                            // return box_val.value → should resolve T to Int
+                            Statement::Return(Some(Expression::PropertyAccess {
+                                caller: Box::new(Expression::Identifier("box_val".to_string())),
+                                property_name: "value".to_string(),
+                            })),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_generic_unknown_field_error() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Struct(StructDef {
+                    name: "Pair".to_string(),
+                    is_public: false,
+                    type_params: vec!["T".to_string()],
+                    fields: vec![
+                        FieldDecl { name: "first".to_string(), ty: TypeNode::TypeVar("T".to_string()) },
+                        FieldDecl { name: "second".to_string(), ty: TypeNode::TypeVar("T".to_string()) },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl {
+                            name: "p".to_string(),
+                            ty: TypeNode::Generic("Pair".to_string(), vec![TypeNode::String]),
+                        }],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Expr(Expression::PropertyAccess {
+                                caller: Box::new(Expression::Identifier("p".to_string())),
+                                property_name: "invalid".to_string(),
+                            }),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TypeError::UnknownField { .. }));
+    }
+
+    #[test]
+    fn test_type_substitution_map() {
+        // Test the substitute_type helper directly
+        let mut subs = HashMap::new();
+        subs.insert("T".to_string(), TypeNode::Int);
+        subs.insert("U".to_string(), TypeNode::String);
+
+        assert_eq!(TypeChecker::substitute_type(&TypeNode::TypeVar("T".to_string()), &subs), TypeNode::Int);
+        assert_eq!(TypeChecker::substitute_type(&TypeNode::TypeVar("U".to_string()), &subs), TypeNode::String);
+        assert_eq!(
+            TypeChecker::substitute_type(&TypeNode::Array(Box::new(TypeNode::TypeVar("T".to_string()))), &subs),
+            TypeNode::Array(Box::new(TypeNode::Int))
+        );
+        // Unknown type var stays unchanged
+        assert_eq!(
+            TypeChecker::substitute_type(&TypeNode::TypeVar("V".to_string()), &subs),
+            TypeNode::TypeVar("V".to_string())
+        );
     }
 }
