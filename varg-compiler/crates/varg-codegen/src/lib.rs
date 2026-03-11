@@ -6,6 +6,8 @@ pub struct RustGenerator {
     agent_field_names: HashSet<String>,
     /// Plan 16: Known agent definitions for spawn method dispatch
     known_agents: HashMap<String, AgentDef>,
+    /// Plan 27: Whether program uses async (for tokio spawn/channels)
+    use_async: bool,
 }
 
 impl RustGenerator {
@@ -13,6 +15,7 @@ impl RustGenerator {
         Self {
             agent_field_names: HashSet::new(),
             known_agents: HashMap::new(),
+            use_async: false,
         }
     }
 
@@ -21,6 +24,10 @@ impl RustGenerator {
         for item in &program.items {
             if let Item::Agent(a) = item {
                 self.known_agents.insert(a.name.clone(), a.clone());
+                // Plan 27: Detect async methods
+                if a.methods.iter().any(|m| m.is_async) {
+                    self.use_async = true;
+                }
             }
         }
 
@@ -268,8 +275,14 @@ impl RustGenerator {
                 let param_strs: Vec<String> = params.iter().map(|p| self.gen_type(p)).collect();
                 format!("Box<dyn Fn({}) -> {}>", param_strs.join(", "), self.gen_type(ret))
             },
-            // Plan 16: AgentHandle is a channel sender for messaging
-            TypeNode::AgentHandle(_) => "std::sync::mpsc::Sender<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>".to_string(),
+            // Plan 16/27: AgentHandle is a channel sender for messaging
+            TypeNode::AgentHandle(_) => {
+                if self.use_async {
+                    "tokio::sync::mpsc::UnboundedSender<(String, Vec<String>, Option<tokio::sync::oneshot::Sender<String>>)>".to_string()
+                } else {
+                    "std::sync::mpsc::Sender<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>".to_string()
+                }
+            },
             TypeNode::Custom(name) => {
                 if name == "Dynamic" {
                     "String".to_string() // MVP Fallback for empty []
@@ -741,13 +754,17 @@ impl RustGenerator {
                     let args_vec = if msg_args.is_empty() { "vec![]".to_string() } else { format!("vec![{}]", msg_args.join(", ")) };
                     format!("{}.send(({}, {}, None)).unwrap()", self.gen_expression(caller), method_arg, args_vec)
                 } else if method_name == "request" {
-                    // Synchronous request/reply: handle.request("Method", args...)
+                    // Request/reply: handle.request("Method", args...)
                     let method_arg = &arg_strs[0];
                     let msg_args: Vec<String> = arg_strs[1..].iter()
                         .map(|a| format!("format!(\"{{}}\", {})", a))
                         .collect();
                     let args_vec = if msg_args.is_empty() { "vec![]".to_string() } else { format!("vec![{}]", msg_args.join(", ")) };
-                    format!("{{\n    let (__reply_tx, __reply_rx) = std::sync::mpsc::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.recv().unwrap()\n}}", self.gen_expression(caller), method_arg, args_vec)
+                    if self.use_async {
+                        format!("{{\n    let (__reply_tx, __reply_rx) = tokio::sync::oneshot::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.await.unwrap()\n}}", self.gen_expression(caller), method_arg, args_vec)
+                    } else {
+                        format!("{{\n    let (__reply_tx, __reply_rx) = std::sync::mpsc::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.recv().unwrap()\n}}", self.gen_expression(caller), method_arg, args_vec)
+                    }
                 } else {
                     // Plan 22: Defensive cloning for user-defined method calls
                     let cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
@@ -862,7 +879,12 @@ impl RustGenerator {
                     "                _ => \"ok\".to_string()".to_string()
                 };
 
-                format!("{{\n    let (__tx, __rx) = std::sync::mpsc::channel::<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>();\n    std::thread::spawn(move || {{\n        let mut __agent = {};\n        for (method, args, reply_tx) in __rx {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n    }});\n    __tx\n}}", agent_init, dispatch)
+                if self.use_async {
+                    // Plan 27: tokio async spawn
+                    format!("{{\n    let (__tx, mut __rx) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<String>, Option<tokio::sync::oneshot::Sender<String>>)>();\n    tokio::spawn(async move {{\n        let mut __agent = {};\n        while let Some((method, args, reply_tx)) = __rx.recv().await {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n    }});\n    __tx\n}}", agent_init, dispatch)
+                } else {
+                    format!("{{\n    let (__tx, __rx) = std::sync::mpsc::channel::<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>();\n    std::thread::spawn(move || {{\n        let mut __agent = {};\n        for (method, args, reply_tx) in __rx {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n    }});\n    __tx\n}}", agent_init, dispatch)
+                }
             },
             // Plan 24: expr? → try-propagate
             Expression::TryPropagate(expr) => {
@@ -2814,5 +2836,76 @@ mod tests {
         let code = gen.generate(&program);
         assert!(code.contains("fn add(a: i64, b: i64) -> i64"));
         assert!(code.contains("return"));
+    }
+
+    // ===== Plan 27: Async Runtime =====
+    #[test]
+    fn test_codegen_async_method_generates_async_fn() {
+        let mut gen = RustGenerator::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Worker".to_string(), is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![], fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Fetch".to_string(), is_public: true, is_async: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::String),
+                    body: Some(Block { statements: vec![
+                        Statement::Return(Some(Expression::String("data".to_string()))),
+                    ]}),
+                }],
+            })],
+        };
+        let code = gen.generate(&program);
+        assert!(code.contains("async fn Fetch"));
+        assert!(gen.use_async); // should detect async
+    }
+
+    #[test]
+    fn test_codegen_sync_program_no_tokio_flag() {
+        let mut gen = RustGenerator::new();
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "App".to_string(), is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![], fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true, is_async: false,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![] }),
+                }],
+            })],
+        };
+        let _code = gen.generate(&program);
+        assert!(!gen.use_async);
+    }
+
+    #[test]
+    fn test_codegen_spawn_uses_tokio_when_async() {
+        let mut gen = RustGenerator::new();
+        // First generate a program with async to set the flag
+        let program = Program {
+            no_std: false,
+            items: vec![Item::Agent(AgentDef {
+                name: "Worker".to_string(), is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![], fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Process".to_string(), is_public: true, is_async: true,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::String),
+                    body: Some(Block { statements: vec![
+                        Statement::Return(Some(Expression::String("ok".to_string()))),
+                    ]}),
+                }],
+            })],
+        };
+        let _ = gen.generate(&program);
+        // Now test spawn expression
+        let spawn = Expression::Spawn { agent_name: "Worker".to_string(), args: vec![] };
+        let code = gen.gen_expression(&spawn);
+        assert!(code.contains("tokio::spawn"));
+        assert!(code.contains("tokio::sync::mpsc"));
     }
 }

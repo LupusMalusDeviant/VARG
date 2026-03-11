@@ -225,8 +225,19 @@ fn compile_varg_file(input_path: &str, run_immediately: bool) {
     println!("-> Transpiling {}...", input_path);
     let (mut final_rust_source, ast) = parse_and_generate(input_path);
 
+    // Plan 27: Detect if program uses async methods
+    let has_async = ast.items.iter().any(|item| {
+        if let varg_ast::ast::Item::Agent(a) = item {
+            a.methods.iter().any(|m| m.is_async)
+        } else { false }
+    });
+
     // We statically inject the bootstrap code.
-    final_rust_source.push_str("\nfn main() {\n");
+    if has_async {
+        final_rust_source.push_str("\n#[tokio::main]\nasync fn main() {\n");
+    } else {
+        final_rust_source.push_str("\nfn main() {\n");
+    }
     final_rust_source.push_str("    let _varg_args: Vec<String> = std::env::args().collect();\n");
     
     // Find the first agent and a suitable default method
@@ -468,6 +479,11 @@ fn {handler_name}(body: String) -> String {{
     let varg_os_types_path = current_dir.join("crates").join("varg-os-types");
     let varg_runtime_path = current_dir.join("crates").join("varg-runtime");
 
+    // Plan 27: Add tokio dependency if program uses async
+    let tokio_dep = if has_async {
+        "tokio = { version = \"1\", features = [\"full\"] }\n"
+    } else { "" };
+
     let cargo_toml = format!(r#"
 [package]
 name = "{}"
@@ -479,9 +495,10 @@ varg-os-types = {{ path = "{}" }}
 varg-runtime = {{ path = "{}" }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
-"#, varg_name,
+{}"#, varg_name,
     varg_os_types_path.display().to_string().replace("\\", "/"),
-    varg_runtime_path.display().to_string().replace("\\", "/"));
+    varg_runtime_path.display().to_string().replace("\\", "/"),
+    tokio_dep);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml).unwrap();
