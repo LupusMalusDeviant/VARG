@@ -10,6 +10,10 @@ pub enum TypeError {
     // Plan 21: Dedicated capability error for flow analysis
     MissingCapability { capability: String, operation: String },
     CapabilityConstructionOutsideUnsafe { capability: String },
+    // Plan 30: Type System Hardening
+    UnknownField { type_name: String, field_name: String },
+    UnknownMethod { type_name: String, method_name: String },
+    NonExhaustiveMatch { type_name: String, missing_variants: Vec<String> },
 }
 
 impl TypeError {
@@ -30,6 +34,15 @@ impl TypeError {
             }
             TypeError::CapabilityConstructionOutsideUnsafe { capability } => {
                 format!("`{}` capability token cannot be constructed outside `unsafe` block", capability)
+            }
+            TypeError::UnknownField { type_name, field_name } => {
+                format!("unknown field `{}` on type `{}`", field_name, type_name)
+            }
+            TypeError::UnknownMethod { type_name, method_name } => {
+                format!("unknown method `{}` on type `{}`", method_name, type_name)
+            }
+            TypeError::NonExhaustiveMatch { type_name, missing_variants } => {
+                format!("non-exhaustive match on `{}`: missing variant(s) {}", type_name, missing_variants.join(", "))
             }
         }
     }
@@ -56,6 +69,21 @@ pub struct TypeChecker {
 
     // Plan 19: Agent fields available in method scope
     current_agent_fields: Vec<FieldDecl>,
+
+    // Plan 30: Registered struct fields (struct_name → fields)
+    struct_fields: HashMap<String, Vec<FieldDecl>>,
+    // Plan 30: Registered agent fields (agent_name → fields)
+    agent_fields: HashMap<String, Vec<FieldDecl>>,
+    // Plan 30: Registered method signatures (type_name → method_name → signature)
+    method_signatures: HashMap<String, HashMap<String, MethodSignature>>,
+}
+
+// Plan 30: Method signature for return-type tracking
+#[derive(Debug, Clone)]
+struct MethodSignature {
+    return_ty: Option<TypeNode>,
+    #[allow(dead_code)]
+    args: Vec<FieldDecl>,
 }
 
 impl Default for TypeChecker {
@@ -74,6 +102,9 @@ impl TypeChecker {
             available_capabilities: Vec::new(),
             current_return_ty: None,
             current_agent_fields: Vec::new(),
+            struct_fields: HashMap::new(),
+            agent_fields: HashMap::new(),
+            method_signatures: HashMap::new(),
         }
     }
 
@@ -137,6 +168,18 @@ impl TypeChecker {
         match item {
             Item::Import(_) => Ok(()), // MVP: Imports are resolved and merged by CLI earlier
             Item::Agent(agent) => {
+                // Plan 30: Register agent fields for property access resolution
+                self.agent_fields.insert(agent.name.clone(), agent.fields.clone());
+                // Plan 30: Register method signatures for return-type tracking
+                let mut methods = HashMap::new();
+                for method in &agent.methods {
+                    methods.insert(method.name.clone(), MethodSignature {
+                        return_ty: method.return_ty.clone(),
+                        args: method.args.clone(),
+                    });
+                }
+                self.method_signatures.insert(agent.name.clone(), methods);
+
                 // Plan 19: Store agent fields so methods can access them
                 self.current_agent_fields = agent.fields.clone();
                 for method in &agent.methods {
@@ -149,8 +192,9 @@ impl TypeChecker {
                 // Contracts are interfaces, no bodies to check right now
                 Ok(())
             },
-            Item::Struct(_s) => {
-                // Struct property definitions are syntactically valid by parser.
+            Item::Struct(s) => {
+                // Plan 30: Register struct fields for property access resolution
+                self.struct_fields.insert(s.name.clone(), s.fields.clone());
                 Ok(())
             },
             Item::Enum(e) => {
@@ -388,6 +432,35 @@ impl TypeChecker {
                 Statement::Match { subject, arms } => {
                     // Type-check the subject expression
                     let subject_ty = self.infer_expression_type(subject)?;
+
+                    // Plan 30: Exhaustiveness check for enum types
+                    if let TypeNode::Custom(ref enum_name) = subject_ty {
+                        if let Some(variants) = self.enum_defs.get(enum_name).cloned() {
+                            let has_wildcard = arms.iter().any(|arm|
+                                matches!(arm.pattern, Pattern::Wildcard)
+                            );
+                            if !has_wildcard {
+                                let matched_variants: std::collections::HashSet<String> = arms.iter()
+                                    .filter_map(|arm| {
+                                        if let Pattern::Variant(variant_name, _) = &arm.pattern {
+                                            Some(variant_name.clone())
+                                        } else { None }
+                                    })
+                                    .collect();
+                                let missing: Vec<String> = variants.iter()
+                                    .filter(|v| !matched_variants.contains(&v.name))
+                                    .map(|v| v.name.clone())
+                                    .collect();
+                                if !missing.is_empty() {
+                                    return Err(TypeError::NonExhaustiveMatch {
+                                        type_name: enum_name.clone(),
+                                        missing_variants: missing,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
                     // Check each arm's body
                     for arm in arms {
                         let saved_env = self.env.clone();
@@ -498,7 +571,7 @@ impl TypeChecker {
                     UnaryOperator::Not => Ok(TypeNode::Bool), // !x always Bool
                 }
             },
-            Expression::MethodCall { method_name, args, .. } => {
+            Expression::MethodCall { caller, method_name, args } => {
                 if method_name == "fetch" {
                     self.check_ocap(&CapabilityType::NetworkAccess, "fetch")?;
                     if args.len() < 1 || args.len() > 4 {
@@ -641,20 +714,60 @@ impl TypeChecker {
                     }
                     Ok(TypeNode::String) // MVP: all responses are String
                 } else {
-                    // Simplified MVP: assume void for undeclared calls
+                    // Plan 30: Look up method signatures on known types
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    if let TypeNode::Custom(ref type_name) = caller_ty {
+                        if let Some(methods) = self.method_signatures.get(type_name) {
+                            if let Some(sig) = methods.get(method_name.as_str()) {
+                                return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
+                            }
+                            // Known type but unknown method → error
+                            return Err(TypeError::UnknownMethod {
+                                type_name: type_name.clone(),
+                                method_name: method_name.clone(),
+                            });
+                        }
+                    }
+                    // Fallback for unknown types: assume void
                     Ok(TypeNode::Void)
                 }
             },
             Expression::PropertyAccess { caller, property_name } => {
                 let caller_ty = self.infer_expression_type(caller)?;
-                // For MVP: assume property exists and is a String
+                // Hardcoded built-in properties
                 if *property_name == "text" && caller_ty == TypeNode::Prompt {
-                    Ok(TypeNode::String)
-                } else if caller_ty == TypeNode::Tensor && *property_name == "data" {
-                    Ok(TypeNode::Array(Box::new(TypeNode::Custom("f32".to_string()))))
-                } else {
-                    Ok(TypeNode::Custom("Dynamic".to_string()))
+                    return Ok(TypeNode::String);
                 }
+                if caller_ty == TypeNode::Tensor && *property_name == "data" {
+                    return Ok(TypeNode::Array(Box::new(TypeNode::Custom("f32".to_string()))));
+                }
+                // Plan 30: Struct/Agent field lookup
+                if let TypeNode::Custom(ref type_name) = caller_ty {
+                    // Check struct fields
+                    if let Some(fields) = self.struct_fields.get(type_name) {
+                        if let Some(field) = fields.iter().find(|f| f.name == *property_name) {
+                            return Ok(field.ty.clone());
+                        }
+                        // Known struct but unknown field → error
+                        return Err(TypeError::UnknownField {
+                            type_name: type_name.clone(),
+                            field_name: property_name.clone(),
+                        });
+                    }
+                    // Check agent fields
+                    if let Some(fields) = self.agent_fields.get(type_name) {
+                        if let Some(field) = fields.iter().find(|f| f.name == *property_name) {
+                            return Ok(field.ty.clone());
+                        }
+                        // Known agent but unknown field → error
+                        return Err(TypeError::UnknownField {
+                            type_name: type_name.clone(),
+                            field_name: property_name.clone(),
+                        });
+                    }
+                }
+                // Fallback for unknown/complex types
+                Ok(TypeNode::Custom("Dynamic".to_string()))
             },
             Expression::IndexAccess { caller, index } => {
                 let caller_ty = self.infer_expression_type(caller)?;
@@ -2805,6 +2918,373 @@ mod tests {
                     ]}),
                 }],
             })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ===== Plan 30: Type System Hardening Tests =====
+
+    // Phase A: Struct field resolution
+    #[test]
+    fn test_struct_field_type_resolved() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Struct(StructDef {
+                    name: "User".to_string(),
+                    is_public: false,
+                    type_params: vec![],
+                    fields: vec![
+                        FieldDecl { name: "name".to_string(), ty: TypeNode::String },
+                        FieldDecl { name: "age".to_string(), ty: TypeNode::Int },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "u".to_string(), ty: TypeNode::Custom("User".to_string()) }],
+                        return_ty: Some(TypeNode::String),
+                        body: Some(Block { statements: vec![
+                            Statement::Return(Some(Expression::PropertyAccess {
+                                caller: Box::new(Expression::Identifier("u".to_string())),
+                                property_name: "name".to_string(),
+                            })),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_unknown_struct_field_error() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Struct(StructDef {
+                    name: "User".to_string(),
+                    is_public: false,
+                    type_params: vec![],
+                    fields: vec![
+                        FieldDecl { name: "name".to_string(), ty: TypeNode::String },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "u".to_string(), ty: TypeNode::Custom("User".to_string()) }],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Expr(Expression::PropertyAccess {
+                                caller: Box::new(Expression::Identifier("u".to_string())),
+                                property_name: "invalid".to_string(),
+                            }),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TypeError::UnknownField { type_name, field_name } => {
+                assert_eq!(type_name, "User");
+                assert_eq!(field_name, "invalid");
+            },
+            e => panic!("Expected UnknownField, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_agent_field_type_resolved() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "Worker".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![],
+                    fields: vec![
+                        FieldDecl { name: "status".to_string(), ty: TypeNode::String },
+                    ],
+                    methods: vec![],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "w".to_string(), ty: TypeNode::Custom("Worker".to_string()) }],
+                        return_ty: Some(TypeNode::String),
+                        body: Some(Block { statements: vec![
+                            Statement::Return(Some(Expression::PropertyAccess {
+                                caller: Box::new(Expression::Identifier("w".to_string())),
+                                property_name: "status".to_string(),
+                            })),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    // Phase B: Method return type tracking
+    #[test]
+    fn test_method_return_type_tracked() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "Helper".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Greet".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![], return_ty: Some(TypeNode::String),
+                        body: Some(Block { statements: vec![
+                            Statement::Return(Some(Expression::String("hello".to_string()))),
+                        ]}),
+                    }],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "h".to_string(), ty: TypeNode::Custom("Helper".to_string()) }],
+                        return_ty: Some(TypeNode::String),
+                        body: Some(Block { statements: vec![
+                            // var x = h.Greet(); — should infer as String, not Void
+                            Statement::Let {
+                                name: "x".to_string(),
+                                ty: Some(TypeNode::String),
+                                value: Expression::MethodCall {
+                                    caller: Box::new(Expression::Identifier("h".to_string())),
+                                    method_name: "Greet".to_string(),
+                                    args: vec![],
+                                },
+                            },
+                            Statement::Return(Some(Expression::Identifier("x".to_string()))),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_unknown_method_error() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "Helper".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Greet".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![], return_ty: Some(TypeNode::String),
+                        body: Some(Block { statements: vec![
+                            Statement::Return(Some(Expression::String("hi".to_string()))),
+                        ]}),
+                    }],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "h".to_string(), ty: TypeNode::Custom("Helper".to_string()) }],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("h".to_string())),
+                                method_name: "Invalid".to_string(),
+                                args: vec![],
+                            }),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TypeError::UnknownMethod { type_name, method_name } => {
+                assert_eq!(type_name, "Helper");
+                assert_eq!(method_name, "Invalid");
+            },
+            e => panic!("Expected UnknownMethod, got {:?}", e),
+        }
+    }
+
+    // Phase C: Match exhaustiveness
+    #[test]
+    fn test_match_exhaustive_all_variants() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Enum(EnumDef {
+                    name: "Color".to_string(), is_public: false,
+                    variants: vec![
+                        EnumVariant { name: "Red".to_string(), fields: vec![] },
+                        EnumVariant { name: "Green".to_string(), fields: vec![] },
+                        EnumVariant { name: "Blue".to_string(), fields: vec![] },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()) }],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Match {
+                                subject: Expression::Identifier("c".to_string()),
+                                arms: vec![
+                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Variant("Green".to_string(), vec![]), body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Variant("Blue".to_string(), vec![]), body: Block { statements: vec![] } },
+                                ],
+                            },
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_match_non_exhaustive_error() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Enum(EnumDef {
+                    name: "Color".to_string(), is_public: false,
+                    variants: vec![
+                        EnumVariant { name: "Red".to_string(), fields: vec![] },
+                        EnumVariant { name: "Green".to_string(), fields: vec![] },
+                        EnumVariant { name: "Blue".to_string(), fields: vec![] },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()) }],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Match {
+                                subject: Expression::Identifier("c".to_string()),
+                                arms: vec![
+                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), body: Block { statements: vec![] } },
+                                    // Missing Green and Blue!
+                                ],
+                            },
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TypeError::NonExhaustiveMatch { type_name, missing_variants } => {
+                assert_eq!(type_name, "Color");
+                assert!(missing_variants.contains(&"Green".to_string()));
+                assert!(missing_variants.contains(&"Blue".to_string()));
+            },
+            e => panic!("Expected NonExhaustiveMatch, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_match_wildcard_covers_all() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Enum(EnumDef {
+                    name: "Color".to_string(), is_public: false,
+                    variants: vec![
+                        EnumVariant { name: "Red".to_string(), fields: vec![] },
+                        EnumVariant { name: "Green".to_string(), fields: vec![] },
+                        EnumVariant { name: "Blue".to_string(), fields: vec![] },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()) }],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Match {
+                                subject: Expression::Identifier("c".to_string()),
+                                arms: vec![
+                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Wildcard, body: Block { statements: vec![] } },
+                                ],
+                            },
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_match_non_enum_no_exhaustiveness() {
+        // Match on a non-enum type should not trigger exhaustiveness check
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false,
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "App".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Match {
+                                subject: Expression::Int(42),
+                                arms: vec![
+                                    MatchArm { pattern: Pattern::Literal(Expression::Int(1)), body: Block { statements: vec![] } },
+                                ],
+                            },
+                        ]}),
+                    }],
+                }),
+            ],
         };
         assert!(checker.check_program(&program).is_ok());
     }
