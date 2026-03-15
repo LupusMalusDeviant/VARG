@@ -14,3 +14,8 @@ pbkdf2 = "0.12.2"
 sha2 = "0.10.8"
 rand = "0.8.5"
 base64 = "0.22.1"
+# F42: Real runtime implementations
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+tungstenite = { version = "0.24", features = ["native-tls"] }

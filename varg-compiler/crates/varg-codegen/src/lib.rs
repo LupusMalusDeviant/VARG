@@ -1486,9 +1486,9 @@ impl RustGenerator {
                 } else if method_name == "ws_connect" {
                     format!("varg_runtime::websocket::__varg_ws_connect(&{})", arg_strs[0])
                 } else if method_name == "ws_send" {
-                    format!("varg_runtime::websocket::__varg_ws_send(&{}, &{})", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::websocket::__varg_ws_send(&mut {}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "ws_receive" {
-                    format!("varg_runtime::websocket::__varg_ws_receive(&{})", arg_strs[0])
+                    format!("varg_runtime::websocket::__varg_ws_receive(&mut {})", arg_strs[0])
                 } else if method_name == "ws_close" {
                     format!("varg_runtime::websocket::__varg_ws_close(&mut {})", arg_strs[0])
                 // ===== F41-4: SSE Builtins =====
@@ -1502,9 +1502,9 @@ impl RustGenerator {
                 } else if method_name == "mcp_connect" {
                     format!("varg_runtime::mcp::__varg_mcp_connect(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "mcp_list_tools" {
-                    format!("varg_runtime::mcp::__varg_mcp_list_tools(&{})", arg_strs[0])
+                    format!("varg_runtime::mcp::__varg_mcp_list_tools(&mut {})", arg_strs[0])
                 } else if method_name == "mcp_call_tool" {
-                    format!("varg_runtime::mcp::__varg_mcp_call_tool(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                    format!("varg_runtime::mcp::__varg_mcp_call_tool(&mut {}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "mcp_disconnect" {
                     format!("varg_runtime::mcp::__varg_mcp_disconnect(&mut {})", arg_strs[0])
                 } else {

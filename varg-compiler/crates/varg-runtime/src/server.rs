@@ -1,10 +1,18 @@
-// F41-2: Varg Runtime — HTTP Server (axum-based)
+// F42: Varg Runtime — HTTP Server (axum-based)
 //
 // Provides server builtins for compiled Varg programs.
 // Uses axum for routing and tokio for async runtime.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use axum::{
+    Router,
+    body::Body,
+    extract::Request,
+    http::{Method, StatusCode},
+    response::IntoResponse,
+    routing::{get, post, put, delete, patch},
+};
 
 /// A Varg HTTP request (passed to route handlers)
 #[derive(Clone, Debug)]
@@ -77,9 +85,91 @@ impl VargHttpServer {
     }
 }
 
-// Runtime constructor
-pub fn __varg_http_server(port: u16) -> VargHttpServer {
-    VargHttpServer::new(port)
+// Runtime constructors
+pub fn __varg_http_server() -> VargHttpServer {
+    VargHttpServer::new(0)
+}
+
+pub fn __varg_http_route<F>(server: &mut VargHttpServer, method: &str, path: &str, handler: F)
+where
+    F: Fn(VargHttpRequest) -> VargHttpResponse + Send + Sync + 'static,
+{
+    server.route(method, path, handler);
+}
+
+/// Convert an axum Request into a VargHttpRequest
+async fn axum_request_to_varg(req: Request) -> VargHttpRequest {
+    let method = req.method().to_string();
+    let path = req.uri().path().to_string();
+    let query_params: HashMap<String, String> = req.uri().query()
+        .map(|q| {
+            q.split('&').filter_map(|pair| {
+                let mut parts = pair.splitn(2, '=');
+                Some((parts.next()?.to_string(), parts.next().unwrap_or("").to_string()))
+            }).collect()
+        })
+        .unwrap_or_default();
+    let headers: HashMap<String, String> = req.headers().iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap_or_default();
+    let body = String::from_utf8_lossy(&body_bytes).to_string();
+    VargHttpRequest { method, path, headers, body, query_params }
+}
+
+/// Convert a VargHttpResponse into an axum Response
+fn varg_response_to_axum(resp: VargHttpResponse) -> impl IntoResponse {
+    let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut builder = axum::http::Response::builder().status(status);
+    for (key, value) in &resp.headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    builder.body(Body::from(resp.body)).unwrap_or_else(|_| {
+        axum::http::Response::builder()
+            .status(500)
+            .body(Body::from("Internal Server Error"))
+            .unwrap()
+    })
+}
+
+/// Start the HTTP server (async — called with .await from generated code)
+pub async fn __varg_http_listen(server: VargHttpServer, addr: &str) -> Result<(), String> {
+    let mut router = Router::new();
+
+    for route in server.routes {
+        let handler = route.handler.clone();
+        let make_handler = move || {
+            let h = handler.clone();
+            move |req: Request| {
+                let h = h.clone();
+                async move {
+                    let varg_req = axum_request_to_varg(req).await;
+                    let varg_resp = h(varg_req);
+                    varg_response_to_axum(varg_resp)
+                }
+            }
+        };
+
+        let path = route.path.as_str();
+        router = match route.method.as_str() {
+            "GET" => router.route(path, get(make_handler())),
+            "POST" => router.route(path, post(make_handler())),
+            "PUT" => router.route(path, put(make_handler())),
+            "DELETE" => router.route(path, delete(make_handler())),
+            "PATCH" => router.route(path, patch(make_handler())),
+            _ => router.route(path, get(make_handler())),
+        };
+    }
+
+    let listener = tokio::net::TcpListener::bind(addr).await
+        .map_err(|e| format!("Failed to bind '{}': {}", addr, e))?;
+
+    println!("Varg HTTP server listening on {}", addr);
+
+    axum::serve(listener, router).await
+        .map_err(|e| format!("Server error: {}", e))
 }
 
 #[cfg(test)]
@@ -88,15 +178,14 @@ mod tests {
 
     #[test]
     fn test_create_server() {
-        let server = __varg_http_server(8080);
-        assert_eq!(server.port, 8080);
+        let server = __varg_http_server();
         assert!(server.routes.is_empty());
     }
 
     #[test]
     fn test_add_route() {
-        let mut server = __varg_http_server(3000);
-        server.route("GET", "/health", |_req| {
+        let mut server = __varg_http_server();
+        __varg_http_route(&mut server, "GET", "/health", |_req| {
             VargHttpResponse::ok("{\"status\": \"ok\"}")
         });
         assert_eq!(server.routes.len(), 1);
@@ -117,8 +206,8 @@ mod tests {
 
     #[test]
     fn test_route_handler_invocation() {
-        let mut server = __varg_http_server(8080);
-        server.route("POST", "/api/echo", |req| {
+        let mut server = __varg_http_server();
+        __varg_http_route(&mut server, "POST", "/api/echo", |req| {
             VargHttpResponse::ok(&req.body)
         });
 
@@ -132,5 +221,47 @@ mod tests {
 
         let response = (server.routes[0].handler)(req);
         assert_eq!(response.body, "test body");
+    }
+
+    #[tokio::test]
+    async fn test_server_listen_and_respond() {
+        let mut server = __varg_http_server();
+        __varg_http_route(&mut server, "GET", "/ping", |_req| {
+            VargHttpResponse::json(200, "{\"pong\": true}")
+        });
+
+        // Bind to port 0 = OS picks a free port
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut router = Router::new();
+        for route in server.routes {
+            let handler = route.handler.clone();
+            let h = move |req: Request| {
+                let h = handler.clone();
+                async move {
+                    let varg_req = axum_request_to_varg(req).await;
+                    let varg_resp = h(varg_req);
+                    varg_response_to_axum(varg_resp)
+                }
+            };
+            router = router.route(&route.path, get(h));
+        }
+
+        // Start server in background
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        // Give server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Make a request
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("http://{}/ping", addr))
+            .send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("pong"));
     }
 }

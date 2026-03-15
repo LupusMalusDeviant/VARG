@@ -76,7 +76,8 @@ fn main() {
         }
         // Wave 15: Test runner — find @[Test] methods and run them
         "test" => {
-            test_varg_file(input_file, debug_mode);
+            let coverage = args.iter().any(|a| a == "--coverage");
+            test_varg_file(input_file, debug_mode, coverage);
         }
         _ => {
             eprintln!("Unknown command: {}", command);
@@ -96,6 +97,7 @@ fn print_usage() {
     println!("  vargc fmt <file.varg>     - Format Varg source code");
     println!("  vargc doc <file.varg>     - Generate markdown documentation from doc comments");
     println!("  vargc test <file.varg>    - Run @[Test] methods in the file");
+    println!("  vargc test <file.varg> --coverage - Run tests with code coverage report");
     println!("  vargc repl                - Interactive REPL (Read-Eval-Print Loop)");
 }
 
@@ -970,7 +972,7 @@ serde_json = "1.0"
 }
 
 /// Wave 15: Test runner — finds @[Test] methods in agents and generates a test harness
-fn test_varg_file(input_path: &str, debug_mode: bool) {
+fn test_varg_file(input_path: &str, debug_mode: bool, coverage: bool) {
     let varg_name = Path::new(input_path).file_stem().unwrap().to_str().unwrap();
 
     println!("-> Transpiling {} for testing...", input_path);
@@ -1102,22 +1104,52 @@ serde_json = "1.0"
         .arg(main_rs_path.to_str().unwrap())
         .status();
 
-    println!("-> Running tests...\n");
-    let mut cmd = Command::new("cargo");
-    cmd.arg("run");
-    cmd.arg("-q");
-    if !debug_mode {
-        cmd.arg("--release");
-    }
-    cmd.current_dir(&cache_dir);
+    if coverage {
+        println!("-> Running tests with coverage...\n");
 
-    let status = cmd.status().unwrap_or_else(|err| {
-        eprintln!("Failed to execute cargo: {}", err);
-        exit(1);
-    });
+        // Check if cargo-llvm-cov is available
+        let check = Command::new("cargo").arg("llvm-cov").arg("--version")
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        if check.is_err() || !check.unwrap().success() {
+            eprintln!("Error: cargo-llvm-cov not found.");
+            eprintln!("Install with: cargo install cargo-llvm-cov");
+            eprintln!("Also requires: rustup component add llvm-tools-preview");
+            exit(1);
+        }
 
-    if !status.success() {
-        exit(1);
+        let mut cmd = Command::new("cargo");
+        cmd.arg("llvm-cov").arg("run").arg("--text");
+        if !debug_mode {
+            cmd.arg("--release");
+        }
+        cmd.current_dir(&cache_dir);
+
+        let status = cmd.status().unwrap_or_else(|err| {
+            eprintln!("Failed to execute cargo llvm-cov: {}", err);
+            exit(1);
+        });
+
+        if !status.success() {
+            exit(1);
+        }
+    } else {
+        println!("-> Running tests...\n");
+        let mut cmd = Command::new("cargo");
+        cmd.arg("run");
+        cmd.arg("-q");
+        if !debug_mode {
+            cmd.arg("--release");
+        }
+        cmd.current_dir(&cache_dir);
+
+        let status = cmd.status().unwrap_or_else(|err| {
+            eprintln!("Failed to execute cargo: {}", err);
+            exit(1);
+        });
+
+        if !status.success() {
+            exit(1);
+        }
     }
 }
 
