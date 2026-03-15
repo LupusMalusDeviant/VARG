@@ -1,5 +1,9 @@
 # Varg
 
+<div align="center">
+  <img src="docs/varg_logo.png" alt="Varg Logo" width="300"/>
+</div>
+
 **Eine kompilierte Programmiersprache fuer autonome KI-Agenten.**
 
 Varg transpiliert nach Rust und liefert native Performance mit einer entwicklerfreundlichen C#-aehnlichen Syntax.

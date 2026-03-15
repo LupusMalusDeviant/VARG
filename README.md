@@ -1,5 +1,9 @@
 # Varg
 
+<div align="center">
+  <img src="docs/varg_logo.png" alt="Varg Logo" width="300"/>
+</div>
+
 **A compiled programming language built for autonomous AI agents.**
 
 Varg transpiles to Rust, giving you native performance with a developer-friendly C#-like syntax.

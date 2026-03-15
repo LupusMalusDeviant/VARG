@@ -44,3 +44,6 @@ Thumbs.db
 /varg-compiler/output.log
 /varg-compiler/output.txt
 /varg-compiler/check_output.txt
+
+# Test output directories
+/varg-compiler/@L_tests/
