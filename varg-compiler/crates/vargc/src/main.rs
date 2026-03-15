@@ -976,14 +976,22 @@ fn test_varg_file(input_path: &str, debug_mode: bool) {
     println!("-> Transpiling {} for testing...", input_path);
     let (mut final_rust_source, ast) = parse_and_generate(input_path);
 
-    // Collect all @[Test] methods from agents
+    // Collect all @[Test] methods and lifecycle hooks from agents
     let mut test_methods: Vec<(String, String, bool)> = Vec::new(); // (agent_name, method_name, has_fields)
+    let mut before_each: std::collections::HashMap<String, String> = std::collections::HashMap::new(); // agent_name → method_name
+    let mut after_each: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for item in &ast.items {
         if let varg_ast::ast::Item::Agent(a) = item {
             let has_fields = !a.fields.is_empty();
             for method in &a.methods {
                 if method.annotations.iter().any(|ann| ann.name == "Test") {
                     test_methods.push((a.name.clone(), method.name.clone(), has_fields));
+                }
+                if method.annotations.iter().any(|ann| ann.name == "BeforeEach") {
+                    before_each.insert(a.name.clone(), method.name.clone());
+                }
+                if method.annotations.iter().any(|ann| ann.name == "AfterEach") {
+                    after_each.insert(a.name.clone(), method.name.clone());
                 }
             }
         }
@@ -1016,11 +1024,22 @@ fn test_varg_file(input_path: &str, debug_mode: bool) {
             current_agent = agent_name.clone();
         }
 
+        // F41-7: BeforeEach/AfterEach lifecycle hooks
+        let before_call = if let Some(setup) = before_each.get(agent_name) {
+            format!("            instance.{}();\n", setup)
+        } else {
+            String::new()
+        };
+        let after_call = if let Some(teardown) = after_each.get(agent_name) {
+            format!("            instance.{}();\n", teardown)
+        } else {
+            String::new()
+        };
         final_rust_source.push_str(&format!(
             r#"
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
-            instance.{}();
-        }}));
+{}            instance.{}();
+{}        }}));
         if result.is_ok() {{
             println!("  test {}::{} ... \x1b[32mok\x1b[0m");
             passed += 1;
@@ -1029,7 +1048,7 @@ fn test_varg_file(input_path: &str, debug_mode: bool) {
             failed += 1;
         }}
 "#,
-            method_name, agent_name, method_name, agent_name, method_name
+            before_call, method_name, after_call, agent_name, method_name, agent_name, method_name
         ));
     }
     if !current_agent.is_empty() {

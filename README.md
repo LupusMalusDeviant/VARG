@@ -19,15 +19,15 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 
 | Metric | Value |
 |--------|-------|
-| Compiler LOC | 22,682 lines of Rust |
-| Test Suite | 577 tests, 0 failures |
+| Compiler LOC | 24,012 lines of Rust |
+| Test Suite | 682 tests, 0 failures |
 | Crates | 10 specialized compiler crates |
 | Token Types | 119 lexer tokens |
-| AST Variants | 25 statements, 28 expressions |
-| Builtins | 77 typechecker handlers, 99 codegen handlers |
+| AST Variants | 25 statements, 29 expressions |
+| Builtins | 94 typechecker handlers, 116 codegen handlers |
 | Security | 5 OCAP capability types |
-| Runtime Modules | 6 (crypto, db, llm, net, vector, core) |
-| Dev Waves | 16 completed development waves |
+| Runtime Modules | 10 (crypto, db, llm, net, vector, core, http-server, sqlite, websocket, mcp) |
+| Dev Waves | 17 completed development waves |
 
 ---
 
@@ -84,7 +84,8 @@ vargc run weather.varg
 - **Enums + Pattern Matching** -- exhaustive `match` with guards and wildcard
 - **Closures & Lambdas** -- `(x) => x * 2` with type inference
 - **Async/Await** -- backed by tokio runtime
-- **Error Handling** -- `Result<T, E>`, `?` operator, `try/catch`, `or` fallback
+- **Error Handling** -- `Result<T, E>`, `?` operator, `try/catch`, `or` fallback, `map_err`, `and_then`, `unwrap_or`
+- **Dependency Injection** -- contract-typed fields as `Box<dyn Trait>`, constructor injection, factory functions
 - **Pipe Operator** -- `data |> transform |> send`
 - **String Interpolation** -- `$"Hello {name}, you have {count} items"`
 - **Multiline Strings** -- `"""..."""` for prompts and templates
@@ -104,11 +105,16 @@ vargc run weather.varg
 - **Typed Tool Responses** -- `@[ToolResponse]` for structured LLM outputs
 - **LLM Provider Abstraction** -- OpenAI, Anthropic, Ollama with unified API
 
-### Standard Library (77+ builtins)
+### Standard Library (94+ builtins)
 - **Strings** -- `split`, `contains`, `starts_with`, `ends_with`, `replace`, `trim`, `to_upper`, `to_lower`, `substring`, `index_of`, `pad_left`, `pad_right`, `chars`, `reverse`, `repeat`
 - **Collections** -- `push`, `pop`, `len`, `filter`, `map`, `find`, `any`, `all`, `sort`, `contains`, `remove`, `keys`, `values`
 - **File I/O** -- `fs_read`, `fs_write`, `fs_append`, `fs_read_lines`, `fs_read_dir`
-- **HTTP** -- `fetch` (GET/POST/PUT/DELETE), `http_request` (with status, headers)
+- **HTTP Client** -- `fetch` (GET/POST/PUT/DELETE), `http_request` (with status, headers)
+- **HTTP Server** -- `http_serve`, `http_route`, `http_listen` (axum-based)
+- **Database** -- `db_open`, `db_execute`, `db_query` (SQLite driver)
+- **WebSocket** -- `ws_connect`, `ws_send`, `ws_receive`, `ws_close`
+- **SSE** -- `sse_stream`, `sse_send`, `sse_close` (Server-Sent Events)
+- **MCP Protocol** -- `mcp_connect`, `mcp_list_tools`, `mcp_call_tool`, `mcp_disconnect`
 - **JSON** -- `json_parse`, `json_get`, `json_get_int`, `json_get_bool`, `json_get_array`, `json_stringify`
 - **Shell** -- `exec`, `exec_status`
 - **Date/Time** -- `time_millis`, `time_format`, `time_parse`, `time_add`, `time_diff`
@@ -123,7 +129,8 @@ vargc run weather.varg
 - **Language Server (LSP)** -- real-time diagnostics, hover info, completions
 - **Debug Mode** -- `vargc build --debug` for fast iteration (skips cargo)
 - **Source Maps** -- error messages reference Varg line numbers, not Rust
-- **Test Framework** -- `@[Test]` annotation + `assert` / `assert_eq`
+- **Test Framework** -- `@[Test]`, `@[BeforeEach]`, `@[AfterEach]` + `assert`, `assert_eq`, `assert_ne`, `assert_true`, `assert_false`, `assert_contains`, `assert_throws`
+- **Qualified Imports** -- `import axum::Router;`, wildcards, braced imports for external crate types
 
 ---
 
@@ -156,9 +163,9 @@ agent SecureAgent {
 |------------|----------|
 | `FileAccess` | File system read/write/append |
 | `NetworkAccess` | HTTP requests, fetch |
-| `DbAccess` | SurrealDB queries |
+| `DbAccess` | SurrealDB queries, SQLite driver |
 | `LlmAccess` | LLM provider calls |
-| `SystemAccess` | Shell command execution |
+| `SystemAccess` | Shell execution, MCP protocol |
 
 ---
 
@@ -244,15 +251,15 @@ See the [`examples/`](examples/) directory:
 ## Compiler Architecture
 
 ```
-varg-compiler/crates/           22,682 LOC total
-  varg-ast/          683 LOC    Token definitions (119 types, Logos) + AST (25 stmt, 28 expr)
+varg-compiler/crates/           24,012 LOC total
+  varg-ast/          685 LOC    Token definitions (119 types, Logos) + AST (25 stmt, 29 expr)
   varg-lexer/        403 LOC    Tokenization (29 tests)
-  varg-parser/     5,965 LOC    Recursive descent parser (164 tests)
-  varg-typechecker/6,398 LOC    Semantic analysis + OCAP enforcement (190 tests)
-  varg-codegen/    5,775 LOC    AST -> Rust code generation (193 tests)
-  vargc/           1,962 LOC    CLI driver (build/run/emit-rs/test/watch)
+  varg-parser/     6,049 LOC    Recursive descent parser (168 tests)
+  varg-typechecker/6,715 LOC    Semantic analysis + OCAP + DI (197 tests)
+  varg-codegen/    6,250 LOC    AST -> Rust code generation (213 tests)
+  vargc/           1,986 LOC    CLI driver (build/run/emit-rs/test/watch/fmt)
   varg-os-types/      91 LOC    Native types: Prompt, Context, Tensor, Embedding
-  varg-runtime/      749 LOC    Runtime library (crypto, net, db, llm, vector)
+  varg-runtime/    1,177 LOC    Runtime (crypto, net, db, llm, http-server, sqlite, ws, mcp)
   varg-lsp/          641 LOC    Language Server Protocol (diagnostics, hover, completion)
   varg-playground/    15 LOC    Execution sandbox
 ```
@@ -277,21 +284,24 @@ varg-compiler/crates/           22,682 LOC total
 
 ## Test Suite
 
-577 tests across 5 core crates, all passing:
+682 tests across all crates, all passing:
 
 ```bash
 cd varg-compiler
-cargo test --lib -p varg-ast -p varg-lexer -p varg-parser -p varg-typechecker -p varg-codegen
+cargo test
 ```
 
 | Crate | Tests | Coverage |
 |-------|------:|----------|
 | varg-ast | 1 | AST construction |
 | varg-lexer | 29 | All token types, edge cases |
-| varg-parser | 164 | Every statement/expression variant |
-| varg-typechecker | 190 | Type inference, OCAP, error paths |
-| varg-codegen | 193 | End-to-end Rust generation, compilation |
-| **Total** | **577** | **0 failures** |
+| varg-parser | 168 | Every statement/expression variant, qualified imports |
+| varg-typechecker | 197 | Type inference, OCAP, DI contracts, Result methods |
+| varg-codegen | 213 | Rust generation, HTTP/DB/WS/MCP codegen, DI boxing |
+| varg-os-types | 11 | OCAP marker structs |
+| varg-runtime | 45 | HTTP server, SQLite, WebSocket, SSE, MCP client |
+| varg-lsp | 18 | Diagnostics, hover, completion |
+| **Total** | **682** | **0 failures** |
 
 ---
 
@@ -314,9 +324,11 @@ Project X/
 ## Status
 
 Varg is in active development. The compiler is functional and produces working native binaries.
-16 development waves completed, 577 tests passing.
+17 development waves completed, 682 tests passing.
 
-The language is suitable for building real agents, CLI tools, API clients, and automation scripts.
+Wave 17 (F41) added HTTP server, database drivers, WebSocket/SSE, MCP protocol, dependency injection, extended test infrastructure, and qualified crate imports -- everything needed for full-stack agent applications.
+
+The language is suitable for building real agents, CLI tools, API clients, web servers, and automation scripts.
 
 ---
 

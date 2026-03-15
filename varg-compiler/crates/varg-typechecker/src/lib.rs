@@ -181,6 +181,12 @@ pub struct TypeChecker {
     // Plan 33: Known standalone functions for fn ↔ agent interop
     known_functions: HashMap<String, MethodSignature>,
 
+    // F41-1: Imported crate names (for opaque type handling)
+    imported_crates: std::collections::HashSet<String>,
+
+    // F41-6: Agent → contracts it implements (for DI type compatibility)
+    agent_implements: HashMap<String, Vec<String>>,
+
     // Wave 12 Phase 5: Source text + current item span for error reporting
     source: Option<String>,
     current_item_span: Option<Range<usize>>,
@@ -217,6 +223,8 @@ impl TypeChecker {
             generic_structs: HashMap::new(),
             known_contracts: HashMap::new(),
             known_functions: HashMap::new(),
+            imported_crates: std::collections::HashSet::new(),
+            agent_implements: HashMap::new(),
             source: None,
             current_item_span: None,
         }
@@ -268,7 +276,7 @@ impl TypeChecker {
             "log_debug", "log_info", "log_warn", "log_error",
             "exec", "exec_status",
             "json_parse", "json_get", "json_get_int", "json_get_bool", "json_get_array", "json_stringify",
-            "assert", "assert_eq",
+            "assert", "assert_eq", "assert_ne", "assert_true", "assert_false", "assert_contains", "assert_throws",
             "set_of",
         ];
         candidates.extend(builtins.iter());
@@ -371,7 +379,19 @@ impl TypeChecker {
 
     fn check_item(&mut self, item: &Item) -> Result<(), TypeError> {
         match item {
-            Item::Import(_) | Item::ImportDecl(_) | Item::CrateImport { .. } => Ok(()), // MVP: Imports are resolved and merged by CLI earlier
+            Item::Import(_) | Item::ImportDecl(_) => Ok(()), // Merged by CLI earlier
+            Item::CrateImport { crate_name, .. } => {
+                // F41-1: Register crate name for opaque type handling
+                self.imported_crates.insert(crate_name.clone());
+                Ok(())
+            }
+            Item::UseExtern { path } => {
+                // F41-1: Register the root crate from qualified imports
+                if let Some(root) = path.first() {
+                    self.imported_crates.insert(root.clone());
+                }
+                Ok(())
+            }
             Item::Agent(agent) => {
                 // Plan 30: Register agent fields for property access resolution
                 self.agent_fields.insert(agent.name.clone(), agent.fields.clone());
@@ -407,6 +427,11 @@ impl TypeChecker {
                             contract_name: contract_name.clone(),
                         });
                     }
+                }
+
+                // F41-6: Track which agents implement which contracts (for DI compatibility)
+                if !agent.implements.is_empty() {
+                    self.agent_implements.insert(agent.name.clone(), agent.implements.clone());
                 }
 
                 // Plan 19: Store agent fields so methods can access them
@@ -1230,6 +1255,30 @@ impl TypeChecker {
                 } else if method_name == "assert_eq" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (actual, expected, message)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
+                // ===== F41-7: Extended Assertions =====
+                } else if method_name == "assert_ne" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (actual, expected, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "assert_true" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (condition, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    let cond_ty = self.infer_expression_type(&args[0])?;
+                    if cond_ty != TypeNode::Bool {
+                        return Err(TypeError::TypeMismatch { expected: "bool".to_string(), found: format!("{:?}", cond_ty) });
+                    }
+                    Ok(TypeNode::Void)
+                } else if method_name == "assert_false" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (condition, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    let cond_ty = self.infer_expression_type(&args[0])?;
+                    if cond_ty != TypeNode::Bool {
+                        return Err(TypeError::TypeMismatch { expected: "bool".to_string(), found: format!("{:?}", cond_ty) });
+                    }
+                    Ok(TypeNode::Void)
+                } else if method_name == "assert_contains" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (haystack, needle, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "assert_throws" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (closure, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
                 // ===== Wave 16: set_of() constructor =====
                 } else if method_name == "set_of" {
                     if args.is_empty() {
@@ -1285,6 +1334,65 @@ impl TypeChecker {
                 } else if method_name == "log_debug" || method_name == "log_info" || method_name == "log_warn" || method_name == "log_error" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (message)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
+                // ===== F41-2: HTTP Server Builtins =====
+                } else if method_name == "http_serve" {
+                    self.check_ocap(&CapabilityType::NetworkAccess, "http_serve")?;
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (port)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("HttpServer".to_string()))
+                } else if method_name == "http_route" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (method, path, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "http_listen" {
+                    self.check_ocap(&CapabilityType::NetworkAccess, "http_listen")?;
+                    Ok(TypeNode::Void)
+                // ===== F41-3: Database Builtins =====
+                } else if method_name == "db_open" {
+                    self.check_ocap(&CapabilityType::DbAccess, "db_open")?;
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("DbConnection".to_string()))
+                } else if method_name == "db_execute" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (conn, sql, params)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
+                } else if method_name == "db_query" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (conn, sql, params)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String))))), Box::new(TypeNode::String)))
+                // ===== F41-4: WebSocket / SSE Builtins =====
+                } else if method_name == "ws_connect" {
+                    self.check_ocap(&CapabilityType::NetworkAccess, "ws_connect")?;
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (url)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("WebSocket".to_string())), Box::new(TypeNode::String)))
+                } else if method_name == "ws_send" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (socket, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "ws_receive" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (socket)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "ws_close" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (socket)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "sse_stream" {
+                    self.check_ocap(&CapabilityType::NetworkAccess, "sse_stream")?;
+                    Ok(TypeNode::Custom("SseWriter".to_string()))
+                } else if method_name == "sse_send" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (writer, event, data)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "sse_close" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (writer)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                // ===== F41-8: MCP Client Builtins =====
+                } else if method_name == "mcp_connect" {
+                    self.check_ocap(&CapabilityType::SystemAccess, "mcp_connect")?;
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (command, args)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("McpConnection".to_string())), Box::new(TypeNode::String)))
+                } else if method_name == "mcp_list_tools" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (connection)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::Custom("McpToolInfo".to_string())))), Box::new(TypeNode::String)))
+                } else if method_name == "mcp_call_tool" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (connection, tool_name, params)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "mcp_disconnect" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (connection)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
                 // ===== Wave 12: Math Methods =====
                 } else if method_name == "abs" {
                     let caller_ty = self.infer_expression_type(caller)?;
@@ -1325,7 +1433,12 @@ impl TypeChecker {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
                     }
-                    Ok(TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string()))))
+                    // F41-5: Result<T, E>.map(fn(T) -> U) → Result<U, E>
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match caller_ty {
+                        TypeNode::Result(_, err_ty) => Ok(TypeNode::Result(Box::new(TypeNode::Custom("Dynamic".to_string())), err_ty)),
+                        _ => Ok(TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string())))),
+                    }
                 } else if method_name == "find" {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
@@ -1339,6 +1452,47 @@ impl TypeChecker {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
                     }
+                    Ok(TypeNode::Bool)
+                // ===== F41-5: Result methods (map_err, map, and_then, unwrap, is_ok, is_err) =====
+                } else if method_name == "map_err" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match caller_ty {
+                        // Result<T, E>.map_err(fn(E) -> F) → Result<T, F>
+                        // For MVP: return Result<T, Dynamic> (we don't infer closure return type)
+                        TypeNode::Result(ok_ty, _) => Ok(TypeNode::Result(ok_ty, Box::new(TypeNode::Custom("Dynamic".to_string())))),
+                        _ => Ok(TypeNode::Custom("Dynamic".to_string())),
+                    }
+                } else if method_name == "and_then" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match caller_ty {
+                        // Result<T, E>.and_then(fn(T) -> Result<U, E>) → Result<U, E>
+                        TypeNode::Result(_, err_ty) => Ok(TypeNode::Result(Box::new(TypeNode::Custom("Dynamic".to_string())), err_ty)),
+                        _ => Ok(TypeNode::Custom("Dynamic".to_string())),
+                    }
+                } else if method_name == "unwrap" {
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match caller_ty {
+                        TypeNode::Result(ok_ty, _) => Ok(*ok_ty),
+                        TypeNode::Nullable(inner) => Ok(*inner),
+                        _ => Ok(TypeNode::Custom("Dynamic".to_string())),
+                    }
+                } else if method_name == "unwrap_or" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (default value)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match caller_ty {
+                        TypeNode::Result(ok_ty, _) => Ok(*ok_ty),
+                        TypeNode::Nullable(inner) => Ok(*inner),
+                        _ => self.infer_expression_type(&args[0]),
+                    }
+                } else if method_name == "is_ok" || method_name == "is_err" || method_name == "is_some" || method_name == "is_none" {
                     Ok(TypeNode::Bool)
                 } else {
                     // Plan 33: Check known standalone functions first
@@ -1356,9 +1510,22 @@ impl TypeChecker {
                             // (already checked above, so this is truly unknown)
                             return Err(self.unknown_method_error(type_name, method_name));
                         }
+                        // F41-6: Contract-typed callers — look up method in contract definition
+                        if let Some(contract) = self.known_contracts.get(type_name) {
+                            for m in &contract.methods {
+                                if m.name == *method_name {
+                                    return Ok(m.return_ty.clone().unwrap_or(TypeNode::Void));
+                                }
+                            }
+                            return Err(self.unknown_method_error(type_name, method_name));
+                        }
                     }
-                    // Fallback for unknown types: assume void
-                    Ok(TypeNode::Void)
+                    // F41-1: Fallback for unknown/opaque types (e.g. from external crates)
+                    if !self.imported_crates.is_empty() {
+                        Ok(TypeNode::Custom("Dynamic".to_string()))
+                    } else {
+                        Ok(TypeNode::Void)
+                    }
                 }
             },
             Expression::PropertyAccess { caller, property_name } => {
@@ -1662,6 +1829,19 @@ impl TypeChecker {
             },
             (TypeNode::Custom(c), _) if c == "Dynamic" => true,
             (_, TypeNode::Custom(c)) if c == "Dynamic" => true,
+            // F41-6: Contract compatibility — agent that implements a contract matches the contract type
+            (TypeNode::Custom(contract_name), TypeNode::Custom(agent_name)) => {
+                // Check if contract_name is a known contract and agent_name implements it
+                if self.known_contracts.contains_key(contract_name) {
+                    if let Some(implements) = self.agent_implements.get(agent_name) {
+                        implements.contains(contract_name)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            },
             _ => false
         }
     }
@@ -3616,6 +3796,70 @@ mod tests {
             })],
         };
         assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ===== F41-5: Result Method Type Inference =====
+
+    #[test]
+    fn test_result_map_err_type() {
+        let mut checker = TypeChecker::new();
+        // result.map_err(fn(e) => ...) should return Result<T, Dynamic>
+        checker.env.insert("result".to_string(), TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("result".to_string())),
+            method_name: "map_err".to_string(),
+            args: vec![Expression::Lambda {
+                params: vec![FieldDecl { name: "e".to_string(), ty: TypeNode::String, default_value: None }],
+                return_ty: None,
+                body: Box::new(LambdaBody::Expression(Expression::String("mapped".to_string()))),
+            }],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        // Should be Result<Int, Dynamic>
+        if let TypeNode::Result(ok_ty, _) = ty {
+            assert_eq!(*ok_ty, TypeNode::Int);
+        } else {
+            panic!("Expected Result type, got {:?}", ty);
+        }
+    }
+
+    #[test]
+    fn test_result_unwrap_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("result".to_string(), TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("result".to_string())),
+            method_name: "unwrap".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String, "unwrap on Result<String, _> should return String");
+    }
+
+    #[test]
+    fn test_result_is_ok_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("result".to_string(), TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("result".to_string())),
+            method_name: "is_ok".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Bool, "is_ok should return Bool");
+    }
+
+    #[test]
+    fn test_result_unwrap_or_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("result".to_string(), TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("result".to_string())),
+            method_name: "unwrap_or".to_string(),
+            args: vec![Expression::String("default".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String, "unwrap_or on Result<String, _> should return String");
     }
 
     #[test]
@@ -6394,5 +6638,78 @@ mod tests {
             },
         ]};
         assert!(checker.check_block(&block).is_err(), "KV destructure on Array should fail");
+    }
+
+    // ---- F41-6: Dependency Injection Tests ----
+
+    #[test]
+    fn test_di_contract_type_compatibility() {
+        let mut checker = TypeChecker::new();
+        checker.known_contracts.insert("ILogger".to_string(), ContractDef {
+            name: "ILogger".to_string(),
+            is_public: false,
+            target_annotation: None,
+            methods: vec![MethodDecl {
+                name: "log".to_string(),
+                args: vec![FieldDecl { name: "msg".to_string(), ty: TypeNode::String, default_value: None }],
+                return_ty: Some(TypeNode::Void),
+                body: None,
+                is_public: true,
+                is_async: false,
+                annotations: vec![],
+                type_params: vec![],
+                constraints: vec![],
+            }],
+        });
+        checker.agent_implements.insert("ConsoleLogger".to_string(), vec!["ILogger".to_string()]);
+        assert!(checker.types_match(
+            &TypeNode::Custom("ILogger".to_string()),
+            &TypeNode::Custom("ConsoleLogger".to_string())
+        ), "Agent implementing contract should be type-compatible");
+    }
+
+    #[test]
+    fn test_di_non_implementing_agent_incompatible() {
+        let mut checker = TypeChecker::new();
+        checker.known_contracts.insert("ILogger".to_string(), ContractDef {
+            name: "ILogger".to_string(),
+            is_public: false,
+            target_annotation: None,
+            methods: vec![],
+        });
+        assert!(!checker.types_match(
+            &TypeNode::Custom("ILogger".to_string()),
+            &TypeNode::Custom("OtherAgent".to_string())
+        ), "Agent not implementing contract should NOT be type-compatible");
+    }
+
+    #[test]
+    fn test_di_contract_method_resolution() {
+        let mut checker = TypeChecker::new();
+        checker.known_contracts.insert("IModelClient".to_string(), ContractDef {
+            name: "IModelClient".to_string(),
+            is_public: false,
+            target_annotation: None,
+            methods: vec![MethodDecl {
+                name: "infer".to_string(),
+                args: vec![FieldDecl { name: "prompt".to_string(), ty: TypeNode::String, default_value: None }],
+                return_ty: Some(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String))),
+                body: None,
+                is_public: true,
+                is_async: false,
+                annotations: vec![],
+                type_params: vec![],
+                constraints: vec![],
+            }],
+        });
+        checker.env.insert("client".to_string(), TypeNode::Custom("IModelClient".to_string()));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("client".to_string())),
+            method_name: "infer".to_string(),
+            args: vec![Expression::String("hello".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_ok(), "Method call on contract-typed var should resolve: {:?}", result);
+        assert_eq!(result.unwrap(), TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
     }
 }

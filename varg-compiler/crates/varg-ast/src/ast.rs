@@ -22,6 +22,8 @@ pub enum Item {
     Function(FunctionDef),
     // Plan 41: External crate imports
     CrateImport { crate_name: String, version: String, features: Vec<String> },
+    // F41-1: Qualified extern path import (e.g., import axum::Router;)
+    UseExtern { path: Vec<String> },
     // Wave 13: impl blocks for structs
     Impl {
         type_name: String,

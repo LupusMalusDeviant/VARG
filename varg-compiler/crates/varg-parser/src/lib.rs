@@ -324,6 +324,48 @@ impl Parser {
                     return Ok(Item::CrateImport { crate_name, version, features });
                 }
                 let module = self.parse_identifier()?;
+                // F41-1: Check for qualified extern path import (import axum::Router;)
+                if self.peek() == Some(&Token::ColonColon) {
+                    let mut path = vec![module];
+                    while self.peek() == Some(&Token::ColonColon) {
+                        self.advance(); // consume ::
+                        // Support wildcard: import axum::*;
+                        if self.peek() == Some(&Token::Multiply) {
+                            self.advance();
+                            path.push("*".to_string());
+                            break;
+                        }
+                        // Support braced: import axum::{Router, Json};
+                        if self.peek() == Some(&Token::LBrace) {
+                            self.advance();
+                            let mut names = Vec::new();
+                            loop {
+                                names.push(self.parse_identifier()?);
+                                if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                            }
+                            self.consume(Token::RBrace)?;
+                            // Expand to multiple UseExtern items — for simplicity, emit one per name
+                            self.consume(Token::Semicolon)?;
+                            // We can only return one Item, so generate a UseExtern with {items} suffix
+                            // Store as path + braced names by appending each name
+                            let base = path.clone();
+                            // Return first, queue rest — actually, just use a compound path notation
+                            // Simple approach: return multiple items is not possible, so use a single
+                            // UseExtern per braced name via the first one and store as special case
+                            // Actually simplest: just return multiple UseExterns... but we return one Item.
+                            // Let's use the same approach as Rust: store the full path as-is
+                            // and let codegen reconstruct the `use a::{b, c};` syntax.
+                            // Store: path = ["axum"], names = ["Router", "Json"] → use axum::{Router, Json};
+                            // We'll encode this in UseExtern path as ["axum", "{Router,Json}"]
+                            let braced = format!("{{{}}}", names.join(", "));
+                            path.push(braced);
+                            return Ok(Item::UseExtern { path });
+                        }
+                        path.push(self.parse_identifier()?);
+                    }
+                    self.consume(Token::Semicolon)?;
+                    return Ok(Item::UseExtern { path });
+                }
                 // Plan 26: Extended import syntax
                 let items = if self.peek() == Some(&Token::Dot) {
                     self.advance(); // consume .
@@ -4721,6 +4763,48 @@ mod tests {
             assert_eq!(version, "1.0");
             assert_eq!(features, &vec!["full".to_string(), "macros".to_string()]);
         } else { panic!("Expected CrateImport"); }
+    }
+
+    // ===== F41-1: Qualified Extern Path Imports =====
+
+    #[test]
+    fn test_parse_use_extern_simple() {
+        let source = r#"import axum::Router;"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::UseExtern { path } = &program.items[0] {
+            assert_eq!(path, &vec!["axum".to_string(), "Router".to_string()]);
+        } else { panic!("Expected UseExtern, got {:?}", program.items[0]); }
+    }
+
+    #[test]
+    fn test_parse_use_extern_deep_path() {
+        let source = r#"import axum::routing::get;"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::UseExtern { path } = &program.items[0] {
+            assert_eq!(path, &vec!["axum".to_string(), "routing".to_string(), "get".to_string()]);
+        } else { panic!("Expected UseExtern"); }
+    }
+
+    #[test]
+    fn test_parse_use_extern_wildcard() {
+        let source = r#"import axum::extract::*;"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::UseExtern { path } = &program.items[0] {
+            assert_eq!(path, &vec!["axum".to_string(), "extract".to_string(), "*".to_string()]);
+        } else { panic!("Expected UseExtern"); }
+    }
+
+    #[test]
+    fn test_parse_use_extern_braced() {
+        let source = r#"import axum::{Router, Json};"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::UseExtern { path } = &program.items[0] {
+            assert_eq!(path, &vec!["axum".to_string(), "{Router, Json}".to_string()]);
+        } else { panic!("Expected UseExtern"); }
     }
 
     // ===== Plan 55: Parser Error Recovery Safety =====

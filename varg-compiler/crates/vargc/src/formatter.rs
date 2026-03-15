@@ -66,12 +66,16 @@ impl VargFormatter {
             }
             Item::CrateImport { crate_name, version, features } => {
                 self.push_indent();
-                let mut s = format!("crate {}(\"{}\"", crate_name, version);
+                let mut s = format!("import crate {} = \"{}\"", crate_name, version);
                 if !features.is_empty() {
-                    s.push_str(&format!(", features: [{}]", features.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join(", ")));
+                    s.push_str(&format!(" features [{}]", features.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join(", ")));
                 }
-                s.push_str(");\n");
+                s.push_str(";\n");
                 self.output.push_str(&s);
+            }
+            Item::UseExtern { path } => {
+                self.push_indent();
+                self.output.push_str(&format!("import {};\n", path.join("::")));
             }
             Item::TypeAlias { name, target } => {
                 self.push_indent();
@@ -613,6 +617,7 @@ impl VargFormatter {
             TypeNode::Array(inner) => format!("{}[]", self.format_type(inner)),
             TypeNode::List(inner) => format!("List<{}>", self.format_type(inner)),
             TypeNode::Map(k, v) => format!("map<{}, {}>", self.format_type(k), self.format_type(v)),
+            TypeNode::Set(inner) => format!("set<{}>", self.format_type(inner)),
             TypeNode::Nullable(inner) => format!("{}?", self.format_type(inner)),
             TypeNode::Result(ok, err) => format!("Result<{}, {}>", self.format_type(ok), self.format_type(err)),
             TypeNode::Tuple(types) => {
