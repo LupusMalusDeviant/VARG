@@ -1,0 +1,55 @@
+// Benchmark 2: Agent Pattern (LLM-style pipeline)
+// Simulates a typical AI agent with state, tool calls
+
+contract Processor {
+    string Process(string input);
+}
+
+fn clean_text(string text) -> string {
+    string result = "";
+    int idx = 0;
+    int len = text.length();
+    while (idx < len) {
+        string ch = text.char_at(idx);
+        if (ch != " ") {
+            result += ch;
+        }
+        idx += 1;
+    }
+    return result;
+}
+
+fn make_greeting(string name, int count) -> string {
+    return $"Hello {name}, request #{count}";
+}
+
+agent TextAgent : Processor {
+    string history;
+    int request_count;
+
+    public void Init() {
+        history = "";
+        request_count = 0;
+    }
+
+    public string Process(string input) {
+        request_count += 1;
+        string cleaned = clean_text(input);
+        string greeting = make_greeting("User", request_count);
+        history += $"{greeting}: {cleaned}\n";
+        return cleaned;
+    }
+
+    public void Run() {
+        // Simulate 1000 "requests"
+        int iter = 0;
+        while (iter < 1000) {
+            string input = $"  request  number  {iter}  ";
+            string result = Process(input);
+            iter += 1;
+        }
+
+        print $"Processed {request_count} requests";
+        print $"History length: {history.length()}";
+    }
+}

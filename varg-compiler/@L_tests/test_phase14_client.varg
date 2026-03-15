@@ -1,0 +1,18 @@
+agent WebClient {
+    public void Run() {
+        print "--- Testing Phase 14 Native Web-Hooks ---";
+        print "Pinging local NexOS Agent Server on port 8080...";
+        
+        unsafe {
+            var headers = {"Content-Type": "application/json"};
+            var body = "{\"message\":\"Hello from Client!\"}";
+            
+            var response = fetch("http://localhost:8080/api/echo", "POST", headers, body);
+            
+            print "Server replied with:";
+            print response;
+        }
+        
+        print "Phase 14 Web Server verification completed!";
+    }
+}

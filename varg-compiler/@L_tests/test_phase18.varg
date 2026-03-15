@@ -1,0 +1,16 @@
++A StealthAgent {
+    +M Run() {
+        unsafe {
+            s info = "Pinging target";
+            print info;
+
+            // Direct Varg-Min Query
+            s local_state = ? "SELECT * FROM settings";
+            print local_state;
+
+            // Direct Varg-Min Fetch
+            s result = F("http://127.0.0.1:8080/ping");
+            print result;
+        }
+    }
+}

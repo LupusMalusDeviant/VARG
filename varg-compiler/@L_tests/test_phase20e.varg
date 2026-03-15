@@ -1,0 +1,23 @@
+system agent NativeRAG {
+    public void Run() {
+        // 1. Prepare db connection and memory
+        unsafe {
+            var res = ? "SET document_1 Varg is the ultimate memory-safe operating system for LLMs.";
+            
+            // 2. Perform native 1-Line RAG
+            // The ? operator returns the string payload directly to context_from
+            var ctx = context_from(? "GET document_1");
+            
+            print prompt """
+                Calling Rag...
+            """;
+            
+            // 3. Ask it
+            stream llm_chat(ctx, "What is Varg?", "llama3");
+            
+            print prompt """
+                RAG completed !
+            """;
+        }
+    }
+}

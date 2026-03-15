@@ -1,0 +1,13 @@
+system agent ChatTest {
+    public void Run() {
+        var ctx = __varg_create_context("test_session");
+        
+        unsafe {
+            var reply1 = llm_chat(ctx, "Hello, my name is Alice.", "llama3");
+            print reply1;
+            
+            var reply2 = llm_chat(ctx, "What is my name?", "llama3");
+            print reply2;
+        }
+    }
+}

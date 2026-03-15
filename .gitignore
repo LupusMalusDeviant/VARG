@@ -28,3 +28,19 @@ Thumbs.db
 
 # Claude Agent Memory (project-specific, not shared)
 .claude/
+
+# C# Benchmarks (dev-only, not part of the language)
+/bench-csharp/bin/
+/bench-csharp/obj/
+
+# Temporary build outputs
+*.tmp
+*.bak
+*.pdb
+
+# Dev-only temp files
+/varg-compiler/build.log
+/varg-compiler/error.log
+/varg-compiler/output.log
+/varg-compiler/output.txt
+/varg-compiler/check_output.txt

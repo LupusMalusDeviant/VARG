@@ -1,0 +1,45 @@
+// Varg Agent Benchmark: What makes Varg unique
+// Demonstrates: Contracts, Agents, String Interpolation, Standalone Functions
+
+contract DataProcessor {
+    string Process(string input);
+    int GetCount();
+}
+
+fn clean_text(string text) -> string {
+    return text.trim();
+}
+
+agent ApiProcessor : DataProcessor {
+    string last_result;
+    int request_count;
+
+    public void Init() {
+        last_result = "";
+        request_count = 0;
+    }
+
+    public string Process(string input) {
+        request_count += 1;
+        string cleaned = clean_text(input);
+        last_result = $"[{request_count}] {cleaned}";
+        return last_result;
+    }
+
+    public int GetCount() {
+        return request_count;
+    }
+
+    public void Run() {
+        // Process 5000 requests
+        int i = 0;
+        while (i < 5000) {
+            string input = $"  Request {i}  ";
+            Process(input);
+            i += 1;
+        }
+
+        print $"Processed {request_count} requests";
+        print $"Last: {last_result}";
+    }
+}

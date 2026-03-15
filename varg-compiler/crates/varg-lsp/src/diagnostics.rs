@@ -62,19 +62,27 @@ pub fn compute_diagnostics(source: &str) -> Vec<Diagnostic> {
 
     // Phase 2: Type check
     let mut checker = TypeChecker::new();
-    if let Err(type_err) = checker.check_program(&program) {
-        let message = type_err.message();
+    checker.set_source(source);
+    if let Err(type_errors) = checker.check_program(&program) {
+        for type_err in &type_errors {
+            let message = type_err.message();
 
-        // TypeChecker errors don't carry spans yet — mark the whole file
-        let range = Range::new(Position::new(0, 0), offset_to_position(source, source.len()));
+            let range = if let Some(ref span) = type_err.span {
+                let start = offset_to_position(source, span.start);
+                let end = offset_to_position(source, span.end);
+                Range::new(start, end)
+            } else {
+                Range::new(Position::new(0, 0), offset_to_position(source, source.len()))
+            };
 
-        diagnostics.push(Diagnostic {
-            range,
-            severity: Some(DiagnosticSeverity::WARNING),
-            source: Some("varg-typechecker".to_string()),
-            message,
-            ..Default::default()
-        });
+            diagnostics.push(Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("varg-typechecker".to_string()),
+                message,
+                ..Default::default()
+            });
+        }
     }
 
     diagnostics

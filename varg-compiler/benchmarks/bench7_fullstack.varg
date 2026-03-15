@@ -1,0 +1,63 @@
+// Benchmark 7: Full-Stack Agent (API + Data Pipeline)
+// Tests: env(), string interpolation, pipe operator, for-in, retry, contracts
+
+contract Configurable {
+    string GetName();
+    string GetVersion();
+}
+
+agent ApiAgent : Configurable {
+    string name;
+    string version;
+    string last_request;
+    int request_count;
+
+    public void Init() {
+        name = "VargApiAgent";
+        version = "1.0.0";
+        last_request = "";
+        request_count = 0;
+    }
+
+    public string GetName() {
+        return name;
+    }
+
+    public string GetVersion() {
+        return version;
+    }
+
+    public string Fetch(string url) {
+        request_count += 1;
+        var entry = $"[{request_count}] GET {url}";
+        last_request = entry;
+        return $"response_from:{url}";
+    }
+
+    public void Run() {
+        // Environment variables
+        var api_key = env("VARG_API_KEY");
+        var base_url = env("VARG_BASE_URL");
+
+        print $"Agent: {name} v{version}";
+        print $"API Key length: {api_key.len()}";
+
+        // Data pipeline
+        var endpoints = ["/users", "/posts", "/comments"];
+
+        for endpoint in endpoints {
+            var url = $"{base_url}{endpoint}";
+            var response = Fetch(url);
+            print $"Response: {response}";
+        }
+
+        // String transformation
+        var greeting = "hello varg";
+        var upper = greeting.to_upper();
+        print $"Upper: {upper}";
+
+        // Summary
+        print $"Total requests: {request_count}";
+        print $"Last request: {last_request}";
+    }
+}

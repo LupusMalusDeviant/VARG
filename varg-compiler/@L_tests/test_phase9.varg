@@ -1,0 +1,20 @@
+@[CliCommand("start")]
+public system agent Tester {
+    @[McpTool("Filters numbers")]
+    public void TestFeatures() {
+        print "--- Testing Phase 9 Features ---";
+        
+        print "1. Control Flow";
+        int i = 0;
+        while (i < 3) {
+            print i;
+            i = i + 1;
+        }
+        
+        // MVP Array fallback logic for test 
+        // We haven't implemented Arrays yet, but we can test LINQ syntax structure
+        // Wait, what can we iterate on? 
+        // We didn't build `[1, 2, 3]` array parser literals yet..
+        // Let's just verify compiler AST generation without execution if we don't have Arrays
+    }
+}

@@ -1,0 +1,64 @@
+// Benchmark 4: For-In, Tuples, String Methods, Array Operations
+// Tests: for-in loops, tuples, string interpolation, ranges
+
+agent GenericBench {
+    int processed;
+    string output;
+
+    public void Init() {
+        processed = 0;
+        output = "";
+    }
+
+    public void Run() {
+        // For-in loop (Plan 56)
+        var numbers = [10, 20, 30, 40, 50];
+        var sum = 0;
+        for n in numbers {
+            sum += n;
+        }
+        print $"Sum: {sum}";
+
+        // Tuples
+        var coords = (10, 20);
+        print $"Coordinates: ({coords.0}, {coords.1})";
+
+        // Range for-in
+        var factorial = 1;
+        for i in 1..=10 {
+            factorial = factorial * i;
+        }
+        print $"10! = {factorial}";
+
+        // String methods
+        var text = "Hello Varg World";
+        print $"Upper: {text.to_upper()}";
+        print $"Length: {text.len()}";
+
+        // Array operations
+        var items = [5, 3, 8, 1, 9, 2, 7];
+        items.sort();
+        print $"Sorted length: {items.len()}";
+        print $"Array len: {items.len()}";
+
+        // Nested loops with for-in
+        var matrix_sum = 0;
+        for row in 0..5 {
+            for col in 0..5 {
+                matrix_sum += row * col;
+            }
+        }
+        print $"Matrix sum: {matrix_sum}";
+
+        // String building
+        var names = ["Alice", "Bob", "Charlie"];
+        var greeting = "";
+        for name in names {
+            greeting = $"{greeting}Hello {name}! ";
+        }
+        print greeting;
+
+        processed = 1;
+        output = "done";
+    }
+}

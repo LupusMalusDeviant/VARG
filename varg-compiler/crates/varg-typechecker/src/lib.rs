@@ -1,22 +1,59 @@
 use varg_ast::ast::*;
 use std::collections::HashMap;
+use std::ops::Range;
+
+/// Wave 13: Levenshtein distance for "did you mean?" suggestions
+fn levenshtein(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (m, n) = (a.len(), b.len());
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m { dp[i][0] = i; }
+    for j in 0..=n { dp[0][j] = j; }
+    for i in 1..=m {
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+        }
+    }
+    dp[m][n]
+}
+
+/// Find similar names from candidates (max_dist = 2, returns at most 3)
+fn suggest_similar(needle: &str, candidates: &[&str]) -> Vec<String> {
+    let max_dist = if needle.len() <= 3 { 1 } else { 2 };
+    let mut suggestions: Vec<(usize, String)> = candidates.iter()
+        .filter(|&&c| c != needle)
+        .filter_map(|&c| {
+            let d = levenshtein(needle, c);
+            if d <= max_dist { Some((d, c.to_string())) } else { None }
+        })
+        .collect();
+    suggestions.sort_by_key(|(d, _)| *d);
+    suggestions.into_iter().take(3).map(|(_, s)| s).collect()
+}
 
 /// Semantic errors discovered during Type Checking or OCAP validation
 #[derive(Debug, PartialEq)]
 pub enum TypeError {
     TypeMismatch { expected: String, found: String },
-    UndeclaredVariable(String),
+    UndeclaredVariable { name: String, suggestions: Vec<String> },
     IllegalOsCall { reason: String }, // OCAP Violation
     // Plan 21: Dedicated capability error for flow analysis
     MissingCapability { capability: String, operation: String },
     CapabilityConstructionOutsideUnsafe { capability: String },
     // Plan 30: Type System Hardening
-    UnknownField { type_name: String, field_name: String },
-    UnknownMethod { type_name: String, method_name: String },
+    UnknownField { type_name: String, field_name: String, suggestions: Vec<String> },
+    UnknownMethod { type_name: String, method_name: String, suggestions: Vec<String> },
     NonExhaustiveMatch { type_name: String, missing_variants: Vec<String> },
     // Plan 29: Contract Enforcement
     MissingContractMethod { agent_name: String, contract_name: String, method_name: String },
     ContractNotDefined { agent_name: String, contract_name: String },
+    // Plan 57: Generic type argument count mismatch
+    WrongTypeArgumentCount { type_name: String, expected: usize, found: usize },
+    // Plan 58: Missing return on non-void function
+    MissingReturn { function_name: String },
 }
 
 impl TypeError {
@@ -26,8 +63,12 @@ impl TypeError {
             TypeError::TypeMismatch { expected, found } => {
                 format!("type mismatch: expected `{}`, found `{}`", expected, found)
             }
-            TypeError::UndeclaredVariable(name) => {
-                format!("use of undeclared variable `{}`", name)
+            TypeError::UndeclaredVariable { name, suggestions } => {
+                let mut msg = format!("use of undeclared variable `{}`", name);
+                if let Some(first) = suggestions.first() {
+                    msg.push_str(&format!(", did you mean `{}`?", first));
+                }
+                msg
             }
             TypeError::IllegalOsCall { reason } => {
                 reason.clone()
@@ -38,11 +79,19 @@ impl TypeError {
             TypeError::CapabilityConstructionOutsideUnsafe { capability } => {
                 format!("`{}` capability token cannot be constructed outside `unsafe` block", capability)
             }
-            TypeError::UnknownField { type_name, field_name } => {
-                format!("unknown field `{}` on type `{}`", field_name, type_name)
+            TypeError::UnknownField { type_name, field_name, suggestions } => {
+                let mut msg = format!("unknown field `{}` on type `{}`", field_name, type_name);
+                if let Some(first) = suggestions.first() {
+                    msg.push_str(&format!(", did you mean `{}`?", first));
+                }
+                msg
             }
-            TypeError::UnknownMethod { type_name, method_name } => {
-                format!("unknown method `{}` on type `{}`", method_name, type_name)
+            TypeError::UnknownMethod { type_name, method_name, suggestions } => {
+                let mut msg = format!("unknown method `{}` on type `{}`", method_name, type_name);
+                if let Some(first) = suggestions.first() {
+                    msg.push_str(&format!(", did you mean `{}`?", first));
+                }
+                msg
             }
             TypeError::NonExhaustiveMatch { type_name, missing_variants } => {
                 format!("non-exhaustive match on `{}`: missing variant(s) {}", type_name, missing_variants.join(", "))
@@ -53,7 +102,41 @@ impl TypeError {
             TypeError::ContractNotDefined { agent_name, contract_name } => {
                 format!("agent `{}` implements `{}`, but contract `{}` is not defined (interface-first: define contracts before agents)", agent_name, contract_name, contract_name)
             }
+            TypeError::WrongTypeArgumentCount { type_name, expected, found } => {
+                format!("type `{}` expects {} type argument(s), but {} were provided", type_name, expected, found)
+            }
+            TypeError::MissingReturn { function_name } => {
+                format!("function `{}` has non-void return type but not all code paths return a value", function_name)
+            }
         }
+    }
+
+    /// Returns a searchable identifier hint for locating this error in source code
+    pub fn search_hint(&self) -> Option<&str> {
+        match self {
+            TypeError::UndeclaredVariable { name, .. } => Some(name.as_str()),
+            TypeError::UnknownField { field_name, .. } => Some(field_name),
+            TypeError::UnknownMethod { method_name, .. } => Some(method_name),
+            TypeError::MissingContractMethod { method_name, .. } => Some(method_name),
+            TypeError::ContractNotDefined { contract_name, .. } => Some(contract_name),
+            TypeError::MissingReturn { function_name } => Some(function_name),
+            TypeError::MissingCapability { operation, .. } => Some(operation),
+            _ => None,
+        }
+    }
+}
+
+/// A TypeError with an optional source span for error reporting
+#[derive(Debug)]
+pub struct SpannedTypeError {
+    pub error: TypeError,
+    pub span: Option<Range<usize>>,
+}
+
+impl SpannedTypeError {
+    /// Convenience: get the error message
+    pub fn message(&self) -> String {
+        self.error.message()
     }
 }
 
@@ -79,6 +162,9 @@ pub struct TypeChecker {
     // Plan 19: Agent fields available in method scope
     current_agent_fields: Vec<FieldDecl>,
 
+    // Plan 31: Current agent name for `self` type resolution
+    current_agent_name: Option<String>,
+
     // Plan 30: Registered struct fields (struct_name → fields)
     struct_fields: HashMap<String, Vec<FieldDecl>>,
     // Plan 30: Registered agent fields (agent_name → fields)
@@ -91,6 +177,13 @@ pub struct TypeChecker {
 
     // Plan 29: Known contract definitions for enforcement
     known_contracts: HashMap<String, ContractDef>,
+
+    // Plan 33: Known standalone functions for fn ↔ agent interop
+    known_functions: HashMap<String, MethodSignature>,
+
+    // Wave 12 Phase 5: Source text + current item span for error reporting
+    source: Option<String>,
+    current_item_span: Option<Range<usize>>,
 }
 
 // Plan 30: Method signature for return-type tracking
@@ -117,12 +210,85 @@ impl TypeChecker {
             available_capabilities: Vec::new(),
             current_return_ty: None,
             current_agent_fields: Vec::new(),
+            current_agent_name: None,
             struct_fields: HashMap::new(),
             agent_fields: HashMap::new(),
             method_signatures: HashMap::new(),
             generic_structs: HashMap::new(),
             known_contracts: HashMap::new(),
+            known_functions: HashMap::new(),
+            source: None,
+            current_item_span: None,
         }
+    }
+
+    /// Wave 13: Build UndeclaredVariable error with did-you-mean suggestions
+    fn undeclared_variable_error(&self, name: &str) -> TypeError {
+        let candidates: Vec<&str> = self.env.keys().map(|s| s.as_str()).collect();
+        let suggestions = suggest_similar(name, &candidates);
+        TypeError::UndeclaredVariable { name: name.to_string(), suggestions }
+    }
+
+    /// Wave 13: Build UnknownField error with did-you-mean suggestions
+    fn unknown_field_error(&self, type_name: &str, field_name: &str) -> TypeError {
+        let mut candidates = Vec::new();
+        if let Some(fields) = self.struct_fields.get(type_name) {
+            candidates.extend(fields.iter().map(|f| f.name.as_str()));
+        }
+        if let Some(fields) = self.agent_fields.get(type_name) {
+            candidates.extend(fields.iter().map(|f| f.name.as_str()));
+        }
+        let suggestions = suggest_similar(field_name, &candidates);
+        TypeError::UnknownField { type_name: type_name.to_string(), field_name: field_name.to_string(), suggestions }
+    }
+
+    /// Wave 13: Build UnknownMethod error with did-you-mean suggestions
+    fn unknown_method_error(&self, type_name: &str, method_name: &str) -> TypeError {
+        let mut candidates = Vec::new();
+        if let Some(methods) = self.method_signatures.get(type_name) {
+            candidates.extend(methods.keys().map(|s| s.as_str()));
+        }
+        // Also include builtin method names
+        let builtins = [
+            "len", "length", "contains", "starts_with", "ends_with",
+            "to_upper", "to_lower", "trim", "substring", "char_at",
+            "index_of", "split", "replace", "push", "pop", "first",
+            "last", "reverse", "is_empty", "keys", "values", "remove",
+            "sort", "join", "count", "filter", "map", "flat_map", "find",
+            "any", "all", "abs", "sqrt", "floor", "ceil", "round",
+            "min", "max", "parse_int", "parse_float", "to_string",
+            "contains_key", "send", "request", "env", "fetch", "http_request",
+            "llm_infer", "llm_chat", "encrypt", "decrypt",
+            "file_read", "file_write", "time_now",
+            "fs_read", "fs_write", "fs_read_dir", "fs_append", "fs_read_lines",
+            "create_dir", "delete_file",
+            "path_exists", "path_join", "path_parent", "path_extension", "path_stem",
+            "regex_match", "regex_find_all", "regex_replace",
+            "sleep", "timestamp", "time_millis", "time_format", "time_parse", "time_add", "time_diff",
+            "log_debug", "log_info", "log_warn", "log_error",
+            "exec", "exec_status",
+            "json_parse", "json_get", "json_get_int", "json_get_bool", "json_get_array", "json_stringify",
+            "assert", "assert_eq",
+            "set_of",
+        ];
+        candidates.extend(builtins.iter());
+        let suggestions = suggest_similar(method_name, &candidates);
+        TypeError::UnknownMethod { type_name: type_name.to_string(), method_name: method_name.to_string(), suggestions }
+    }
+
+    /// Set source text for span-based error reporting
+    pub fn set_source(&mut self, source: &str) {
+        self.source = Some(source.to_string());
+    }
+
+    /// Find the byte offset of a name in the source (for error span approximation)
+    fn find_name_span(&self, name: &str) -> Option<Range<usize>> {
+        if let Some(ref src) = self.source {
+            if let Some(pos) = src.find(name) {
+                return Some(pos..pos + name.len());
+            }
+        }
+        None
     }
 
     /// Check if the current scope has a specific capability token
@@ -174,16 +340,38 @@ impl TypeChecker {
         Ok(())
     }
 
-    pub fn check_program(&mut self, program: &Program) -> Result<(), TypeError> {
+    /// Wave 12: Multi-error — collects all errors instead of stopping at first
+    pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<SpannedTypeError>> {
+        let mut errors = Vec::new();
         for item in &program.items {
-            self.check_item(item)?;
+            // Set current item span for error context
+            self.current_item_span = match item {
+                Item::Agent(a) => self.find_name_span(&a.name),
+                Item::Contract(c) => self.find_name_span(&c.name),
+                Item::Struct(s) => self.find_name_span(&s.name),
+                Item::Enum(e) => self.find_name_span(&e.name),
+                Item::Function(f) => self.find_name_span(&f.name),
+                Item::PromptTemplate(p) => self.find_name_span(&p.name),
+                _ => None,
+            };
+            if let Err(e) = self.check_item(item) {
+                // Try to get a more specific span from the error's search hint
+                let span = e.search_hint()
+                    .and_then(|hint| self.find_name_span(hint))
+                    .or_else(|| self.current_item_span.clone());
+                errors.push(SpannedTypeError { error: e, span });
+            }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     fn check_item(&mut self, item: &Item) -> Result<(), TypeError> {
         match item {
-            Item::Import(_) | Item::ImportDecl(_) => Ok(()), // MVP: Imports are resolved and merged by CLI earlier
+            Item::Import(_) | Item::ImportDecl(_) | Item::CrateImport { .. } => Ok(()), // MVP: Imports are resolved and merged by CLI earlier
             Item::Agent(agent) => {
                 // Plan 30: Register agent fields for property access resolution
                 self.agent_fields.insert(agent.name.clone(), agent.fields.clone());
@@ -201,8 +389,10 @@ impl TypeChecker {
                 for contract_name in &agent.implements {
                     if let Some(contract) = self.known_contracts.get(contract_name).cloned() {
                         for required_method in &contract.methods {
+                            // Wave 13: Skip check if contract method has a default implementation
+                            let has_default = required_method.body.is_some();
                             let agent_has_method = agent.methods.iter().any(|m| m.name == required_method.name);
-                            if !agent_has_method {
+                            if !agent_has_method && !has_default {
                                 return Err(TypeError::MissingContractMethod {
                                     agent_name: agent.name.clone(),
                                     contract_name: contract_name.clone(),
@@ -221,15 +411,24 @@ impl TypeChecker {
 
                 // Plan 19: Store agent fields so methods can access them
                 self.current_agent_fields = agent.fields.clone();
+                // Plan 31: Store agent name so `self` can be resolved
+                self.current_agent_name = Some(agent.name.clone());
                 for method in &agent.methods {
                     self.check_method(method)?;
                 }
                 self.current_agent_fields.clear();
+                self.current_agent_name = None;
                 Ok(())
             },
             Item::Contract(contract) => {
                 // Plan 29: Register contract for enforcement
                 self.known_contracts.insert(contract.name.clone(), contract.clone());
+                // Wave 13: Type-check default method bodies
+                for method in &contract.methods {
+                    if method.body.is_some() {
+                        self.check_method(method)?;
+                    }
+                }
                 Ok(())
             },
             Item::Struct(s) => {
@@ -253,6 +452,11 @@ impl TypeChecker {
             },
             // Plan 25: Standalone functions — type-check like methods
             Item::Function(f) => {
+                // Plan 33: Register standalone function for fn ↔ agent interop
+                self.known_functions.insert(f.name.clone(), MethodSignature {
+                    return_ty: f.return_ty.clone(),
+                    args: f.params.clone(),
+                });
                 self.env.clear();
                 self.available_capabilities.clear();
                 for param in &f.params {
@@ -263,7 +467,48 @@ impl TypeChecker {
                 }
                 self.current_return_ty = f.return_ty.clone();
                 self.check_block(&f.body)?;
+                // Plan 58: Validate all code paths return for non-void functions
+                if let Some(ref ret_ty) = f.return_ty {
+                    if *ret_ty != TypeNode::Void && !Self::block_always_returns(&f.body) {
+                        self.current_return_ty = None;
+                        return Err(TypeError::MissingReturn { function_name: f.name.clone() });
+                    }
+                }
                 self.current_return_ty = None;
+                Ok(())
+            },
+            // Wave 13: impl blocks for structs
+            Item::Impl { type_name, type_params: _, methods } => {
+                // Validate that the struct exists
+                if !self.struct_fields.contains_key(type_name) {
+                    return Err(TypeError::IllegalOsCall {
+                        reason: format!("impl for unknown type `{}`", type_name),
+                    });
+                }
+                // Register methods on the type
+                let mut method_sigs = self.method_signatures.remove(type_name).unwrap_or_default();
+                for method in methods {
+                    method_sigs.insert(method.name.clone(), MethodSignature {
+                        return_ty: method.return_ty.clone(),
+                        args: method.args.clone(),
+                    });
+                }
+                self.method_signatures.insert(type_name.clone(), method_sigs);
+
+                // Set up context for type-checking method bodies (like agent methods)
+                let saved_fields = self.current_agent_fields.clone();
+                let saved_name = self.current_agent_name.clone();
+                if let Some(fields) = self.struct_fields.get(type_name) {
+                    self.current_agent_fields = fields.clone();
+                }
+                self.current_agent_name = Some(type_name.clone());
+
+                for method in methods {
+                    self.check_method(method)?;
+                }
+
+                self.current_agent_fields = saved_fields;
+                self.current_agent_name = saved_name;
                 Ok(())
             },
             // Plan 23: Prompt templates — validate param types
@@ -304,7 +549,7 @@ impl TypeChecker {
         for constraint in &method.constraints {
             if !method.type_params.contains(&constraint.type_param) {
                 return Err(TypeError::TypeMismatch {
-                    expected: format!("declared type parameter for constraint `where {}: {}`", constraint.type_param, constraint.bound),
+                    expected: format!("declared type parameter for constraint `where {}: {}`", constraint.type_param, constraint.bounds.join(" + ")),
                     found: format!("undeclared type parameter `{}`", constraint.type_param),
                 });
             }
@@ -322,6 +567,11 @@ impl TypeChecker {
             }
         }
 
+        // Plan 31: Register `self` in method scope for self-calls
+        if let Some(ref agent_name) = self.current_agent_name {
+            self.env.insert("self".to_string(), TypeNode::Custom(agent_name.clone()));
+        }
+
         // Plan 19: Register agent fields in method scope
         for field in &self.current_agent_fields.clone() {
             self.env.insert(field.name.clone(), field.ty.clone());
@@ -337,6 +587,13 @@ impl TypeChecker {
 
         if let Some(body) = &method.body {
             self.check_block(body)?;
+            // Plan 58: Validate all code paths return for non-void methods
+            if let Some(ref ret_ty) = method.return_ty {
+                if *ret_ty != TypeNode::Void && !Self::block_always_returns(body) {
+                    self.current_return_ty = None;
+                    return Err(TypeError::MissingReturn { function_name: method.name.clone() });
+                }
+            }
         }
 
         self.current_return_ty = None;
@@ -349,6 +606,13 @@ impl TypeChecker {
         for stmt in &block.statements {
             match stmt {
                 Statement::Let { name, ty, value } => {
+                    // Plan 59: OCAP — capability tokens can only be constructed in unsafe blocks
+                    if let Some(TypeNode::Capability(ref cap)) = ty {
+                        if !self.in_unsafe_block {
+                            let cap_name = format!("{:?}", cap);
+                            return Err(TypeError::CapabilityConstructionOutsideUnsafe { capability: cap_name });
+                        }
+                    }
                     let val_type = self.infer_expression_type(value)?;
                     if let Some(expected_ty) = ty {
                         if !self.types_match(expected_ty, &val_type) {
@@ -364,7 +628,7 @@ impl TypeChecker {
                     }
                 },
                 Statement::Assign { name, value } => {
-                    let expected_ty = self.env.get(name).cloned().ok_or_else(|| TypeError::UndeclaredVariable(name.clone()))?;
+                    let expected_ty = self.env.get(name).cloned().ok_or_else(|| self.undeclared_variable_error(name))?;
                     let val_type = self.infer_expression_type(value)?;
                     if !self.types_match(&expected_ty, &val_type) {
                         return Err(TypeError::TypeMismatch {
@@ -427,15 +691,39 @@ impl TypeChecker {
                     self.check_block(&Block { statements: vec![*update.clone()] })?;
                     self.check_block(body)?;
                 },
-                Statement::Foreach { item_name, collection, body } => {
+                Statement::Foreach { item_name, value_name, collection, body } => {
                      let coll_ty = self.infer_expression_type(collection)?;
-                     // Extract inner type from Array/List, fall back to Dynamic
-                     let item_ty = match &coll_ty {
-                         TypeNode::Array(inner) => *inner.clone(),
-                         TypeNode::List(inner) => *inner.clone(),
-                         _ => TypeNode::Custom("Dynamic".to_string()),
-                     };
-                     self.env.insert(item_name.clone(), item_ty);
+                     // Wave 16: Map iteration with (key, value) destructuring
+                     if let Some(val_name) = value_name {
+                         match &coll_ty {
+                             TypeNode::Map(key_ty, val_ty) => {
+                                 self.env.insert(item_name.clone(), *key_ty.clone());
+                                 self.env.insert(val_name.clone(), *val_ty.clone());
+                             }
+                             // Also handle Generic("map", [K, V]) from parser
+                             TypeNode::Generic(name, args) if name == "map" && args.len() == 2 => {
+                                 self.env.insert(item_name.clone(), args[0].clone());
+                                 self.env.insert(val_name.clone(), args[1].clone());
+                             }
+                             _ => {
+                                 return Err(TypeError::TypeMismatch {
+                                     expected: "map<K, V>".to_string(),
+                                     found: format!("{:?}", coll_ty),
+                                 });
+                             }
+                         }
+                     } else {
+                         // Extract inner type from Array/List/Map(keys), fall back to Dynamic
+                         let item_ty = match &coll_ty {
+                             TypeNode::Array(inner) => *inner.clone(),
+                             TypeNode::List(inner) => *inner.clone(),
+                             TypeNode::Set(inner) => *inner.clone(),
+                             TypeNode::Map(key_ty, _) => *key_ty.clone(),
+                             TypeNode::Generic(name, args) if name == "map" && args.len() == 2 => args[0].clone(),
+                             _ => TypeNode::Custom("Dynamic".to_string()),
+                         };
+                         self.env.insert(item_name.clone(), item_ty);
+                     }
                      self.check_block(body)?;
                 },
                 Statement::Stream(expr) => {
@@ -591,6 +879,7 @@ impl TypeChecker {
             TypeNode::TypeVar(name) => subs.get(name).cloned().unwrap_or_else(|| ty.clone()),
             TypeNode::Array(inner) => TypeNode::Array(Box::new(Self::substitute_type(inner, subs))),
             TypeNode::List(inner) => TypeNode::List(Box::new(Self::substitute_type(inner, subs))),
+            TypeNode::Set(inner) => TypeNode::Set(Box::new(Self::substitute_type(inner, subs))),
             TypeNode::Map(k, v) => TypeNode::Map(
                 Box::new(Self::substitute_type(k, subs)),
                 Box::new(Self::substitute_type(v, subs)),
@@ -604,10 +893,60 @@ impl TypeChecker {
         }
     }
 
+    /// Plan 58: Check if a block always returns a value on all code paths
+    fn block_always_returns(block: &Block) -> bool {
+        if block.statements.is_empty() {
+            return false;
+        }
+        match block.statements.last().unwrap() {
+            Statement::Return(Some(_)) => true,
+            Statement::If { then_block, else_block: Some(else_b), .. } => {
+                Self::block_always_returns(then_block) && Self::block_always_returns(else_b)
+            },
+            Statement::Match { arms, .. } => {
+                if arms.is_empty() { return false; }
+                // All arms must return AND there must be a wildcard or exhaustive coverage
+                let has_wildcard = arms.iter().any(|arm| matches!(arm.pattern, Pattern::Wildcard));
+                has_wildcard && arms.iter().all(|arm| Self::block_always_returns(&arm.body))
+            },
+            _ => false,
+        }
+    }
+
     fn infer_expression_type(&mut self, expr: &Expression) -> Result<TypeNode, TypeError> {
         match expr {
             Expression::Int(_) => Ok(TypeNode::Int),
+            Expression::Float(_) => Ok(TypeNode::Float),  // Plan 42
             Expression::String(_) => Ok(TypeNode::String),
+            // Plan 35: Interpolated strings are always String type
+            Expression::InterpolatedString(parts) => {
+                for part in parts {
+                    if let InterpolationPart::Expression(expr) = part {
+                        self.infer_expression_type(expr)?;
+                    }
+                }
+                Ok(TypeNode::String)
+            },
+            // Plan 37: Range expressions — both sides must be Int
+            Expression::Range { start, end, .. } => {
+                let start_ty = self.infer_expression_type(start)?;
+                let end_ty = self.infer_expression_type(end)?;
+                if start_ty != TypeNode::Int {
+                    return Err(TypeError::TypeMismatch { expected: "Int".to_string(), found: format!("{:?}", start_ty) });
+                }
+                if end_ty != TypeNode::Int {
+                    return Err(TypeError::TypeMismatch { expected: "Int".to_string(), found: format!("{:?}", end_ty) });
+                }
+                Ok(TypeNode::Array(Box::new(TypeNode::Int)))
+            },
+            // Plan 38: Tuple literal
+            Expression::TupleLiteral(elements) => {
+                let mut types = Vec::new();
+                for elem in elements {
+                    types.push(self.infer_expression_type(elem)?);
+                }
+                Ok(TypeNode::Tuple(types))
+            },
             Expression::Null => Ok(TypeNode::Nullable(Box::new(TypeNode::Custom("Dynamic".to_string())))),
             Expression::PromptLiteral(_) => Ok(TypeNode::Prompt),
             Expression::Bool(_) => Ok(TypeNode::Bool),
@@ -615,7 +954,7 @@ impl TypeChecker {
                 if let Some(ty) = self.env.get(name) {
                     Ok(ty.clone())
                 } else {
-                    Err(TypeError::UndeclaredVariable(name.clone()))
+                    Err(self.undeclared_variable_error(name))
                 }
             },
             Expression::BinaryOp { left, operator, right } => {
@@ -656,6 +995,13 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 to 4 arguments (url, [method], [headers], [body])".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::String)
+                // ===== Wave 15: HTTP Response with Status =====
+                } else if method_name == "http_request" {
+                    self.check_ocap(&CapabilityType::NetworkAccess, "http_request")?;
+                    if args.len() < 1 || args.len() > 4 {
+                        return Err(TypeError::TypeMismatch { expected: "1 to 4 arguments (url, [method], [headers], [body])".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
                 } else if method_name == "llm_infer" {
                     self.check_ocap(&CapabilityType::LlmAccess, "llm_infer")?;
                     if args.len() < 1 || args.len() > 2 {
@@ -727,7 +1073,7 @@ impl TypeChecker {
                     }
                     Ok(TypeNode::String)
                 // ===== Wave 5: String Methods (caller.method() style) =====
-                } else if method_name == "len" {
+                } else if method_name == "len" || method_name == "length" {
                     Ok(TypeNode::Int)
                 } else if method_name == "contains" || method_name == "starts_with" || method_name == "ends_with" {
                     if args.len() != 1 {
@@ -767,14 +1113,31 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (item)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::Void)
-                } else if method_name == "pop" {
-                    Ok(TypeNode::Custom("Dynamic".to_string()))
+                } else if method_name == "pop" || method_name == "first" || method_name == "last" {
+                    // Plan 54: Infer element type from collection
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match &caller_ty {
+                        TypeNode::Array(inner) | TypeNode::List(inner) => Ok(*inner.clone()),
+                        _ => Ok(TypeNode::Custom("Dynamic".to_string())),
+                    }
                 } else if method_name == "reverse" {
                     Ok(TypeNode::Void)
                 } else if method_name == "is_empty" || method_name == "contains_key" {
                     Ok(TypeNode::Bool)
-                } else if method_name == "keys" || method_name == "values" {
-                    Ok(TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string()))))
+                } else if method_name == "keys" {
+                    // Plan 54: Infer key type from map
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match &caller_ty {
+                        TypeNode::Map(key, _) => Ok(TypeNode::Array(key.clone())),
+                        _ => Ok(TypeNode::Array(Box::new(TypeNode::String))),
+                    }
+                } else if method_name == "values" {
+                    // Plan 54: Infer value type from map
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match &caller_ty {
+                        TypeNode::Map(_, val) => Ok(TypeNode::Array(val.clone())),
+                        _ => Ok(TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string())))),
+                    }
                 } else if method_name == "remove" {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) });
@@ -791,7 +1154,197 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "at least 1 argument (method name)".to_string(), found: "0 arguments".to_string() });
                     }
                     Ok(TypeNode::String) // MVP: all responses are String
+                // ===== Plan 52: Environment Variables =====
+                } else if method_name == "env" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::String)
+                // ===== Wave 13: Stdlib Expansion — fs =====
+                // ===== Wave 14: Fallible builtins return Result<T, String> =====
+                } else if method_name == "fs_read" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_read")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "fs_write" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (path, data)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_write")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "fs_read_dir" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_read_dir")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::String))), Box::new(TypeNode::String)))
+                } else if method_name == "create_dir" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "create_dir")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "delete_file" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "delete_file")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                // ===== Wave 15: fs_append + fs_read_lines =====
+                } else if method_name == "fs_append" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (path, data)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_append")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "fs_read_lines" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_read_lines")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::String))), Box::new(TypeNode::String)))
+                // ===== Wave 15: Shell Command Execution =====
+                } else if method_name == "exec" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (command)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::SystemAccess, "exec")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "exec_status" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (command)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::SystemAccess, "exec_status")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
+                // ===== Wave 15: Typed JSON =====
+                } else if method_name == "json_parse" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (json_string)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::JsonValue), Box::new(TypeNode::String)))
+                } else if method_name == "json_get" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "json_get_int" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "json_get_bool" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "json_get_array" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "json_stringify" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (json)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== Wave 15: Test Framework — assert builtins =====
+                } else if method_name == "assert" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (condition, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    let cond_ty = self.infer_expression_type(&args[0])?;
+                    if cond_ty != TypeNode::Bool {
+                        return Err(TypeError::TypeMismatch { expected: "bool".to_string(), found: format!("{:?}", cond_ty) });
+                    }
+                    Ok(TypeNode::Void)
+                } else if method_name == "assert_eq" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (actual, expected, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                // ===== Wave 16: set_of() constructor =====
+                } else if method_name == "set_of" {
+                    if args.is_empty() {
+                        Ok(TypeNode::Set(Box::new(TypeNode::Custom("Dynamic".to_string()))))
+                    } else {
+                        let first_ty = self.infer_expression_type(&args[0])?;
+                        Ok(TypeNode::Set(Box::new(first_ty)))
+                    }
+                // ===== Wave 13: Stdlib Expansion — path =====
+                } else if method_name == "path_exists" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "path_join" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (a, b)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "path_parent" || method_name == "path_extension" || method_name == "path_stem" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== Wave 13: Stdlib Expansion — regex =====
+                } else if method_name == "regex_match" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (pattern, string)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Bool), Box::new(TypeNode::String)))
+                } else if method_name == "regex_find_all" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (pattern, string)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::String))), Box::new(TypeNode::String)))
+                } else if method_name == "regex_replace" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (pattern, string, replacement)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                // ===== Wave 13: Stdlib Expansion — time =====
+                } else if method_name == "sleep" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (ms)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "timestamp" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== Wave 16: Date/Time Builtins =====
+                } else if method_name == "time_millis" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "time_format" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (millis, pattern)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "time_parse" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (string, pattern)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
+                } else if method_name == "time_add" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (millis, delta_ms)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "time_diff" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (a_millis, b_millis)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                // ===== Wave 16: Logging =====
+                } else if method_name == "log_debug" || method_name == "log_info" || method_name == "log_warn" || method_name == "log_error" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                // ===== Wave 12: Math Methods =====
+                } else if method_name == "abs" {
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    Ok(caller_ty) // abs preserves int/float
+                } else if method_name == "sqrt" || method_name == "floor" || method_name == "ceil" || method_name == "round" {
+                    Ok(TypeNode::Float)
+                } else if method_name == "min" || method_name == "max" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    Ok(caller_ty)
+                // ===== Wave 12: String Parsing Methods =====
+                } else if method_name == "parse_int" {
+                    Ok(TypeNode::Int)
+                } else if method_name == "parse_float" {
+                    Ok(TypeNode::Float)
+                } else if method_name == "to_string" {
+                    Ok(TypeNode::String)
+                // ===== Wave 12: Collection Methods =====
+                } else if method_name == "sort" {
+                    Ok(TypeNode::Void) // in-place sort
+                } else if method_name == "join" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (separator)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::String)
+                } else if method_name == "count" {
+                    Ok(TypeNode::Int)
+                // ===== Wave 12: Iterator Methods =====
+                } else if method_name == "filter" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    Ok(caller_ty) // filter preserves collection type
+                } else if method_name == "map" || method_name == "flat_map" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string()))))
+                } else if method_name == "find" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match &caller_ty {
+                        TypeNode::Array(inner) | TypeNode::List(inner) => Ok(TypeNode::Nullable(inner.clone())),
+                        _ => Ok(TypeNode::Nullable(Box::new(TypeNode::Custom("Dynamic".to_string())))),
+                    }
+                } else if method_name == "any" || method_name == "all" {
+                    if args.len() != 1 {
+                        return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::Bool)
                 } else {
+                    // Plan 33: Check known standalone functions first
+                    if let Some(sig) = self.known_functions.get(method_name.as_str()) {
+                        return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
+                    }
                     // Plan 30: Look up method signatures on known types
                     let caller_ty = self.infer_expression_type(caller)?;
                     if let TypeNode::Custom(ref type_name) = caller_ty {
@@ -799,11 +1352,9 @@ impl TypeChecker {
                             if let Some(sig) = methods.get(method_name.as_str()) {
                                 return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
                             }
-                            // Known type but unknown method → error
-                            return Err(TypeError::UnknownMethod {
-                                type_name: type_name.clone(),
-                                method_name: method_name.clone(),
-                            });
+                            // Known type but unknown method → check standalone fns before erroring
+                            // (already checked above, so this is truly unknown)
+                            return Err(self.unknown_method_error(type_name, method_name));
                         }
                     }
                     // Fallback for unknown types: assume void
@@ -827,10 +1378,7 @@ impl TypeChecker {
                             return Ok(field.ty.clone());
                         }
                         // Known struct but unknown field → error
-                        return Err(TypeError::UnknownField {
-                            type_name: type_name.clone(),
-                            field_name: property_name.clone(),
-                        });
+                        return Err(self.unknown_field_error(type_name, property_name));
                     }
                     // Check agent fields
                     if let Some(fields) = self.agent_fields.get(type_name) {
@@ -838,15 +1386,20 @@ impl TypeChecker {
                             return Ok(field.ty.clone());
                         }
                         // Known agent but unknown field → error
-                        return Err(TypeError::UnknownField {
-                            type_name: type_name.clone(),
-                            field_name: property_name.clone(),
-                        });
+                        return Err(self.unknown_field_error(type_name, property_name));
                     }
                 }
                 // Plan 28: Generic struct field access with type substitution
                 if let TypeNode::Generic(ref struct_name, ref type_args) = caller_ty {
                     if let Some(struct_def) = self.generic_structs.get(struct_name).cloned() {
+                        // Plan 57: Validate type argument count before substitution
+                        if type_args.len() != struct_def.type_params.len() {
+                            return Err(TypeError::WrongTypeArgumentCount {
+                                type_name: struct_name.clone(),
+                                expected: struct_def.type_params.len(),
+                                found: type_args.len(),
+                            });
+                        }
                         // Build substitution map: zip(type_params, type_args)
                         let subs: HashMap<String, TypeNode> = struct_def.type_params.iter()
                             .zip(type_args.iter())
@@ -855,9 +1408,13 @@ impl TypeChecker {
                         if let Some(field) = struct_def.fields.iter().find(|f| f.name == *property_name) {
                             return Ok(Self::substitute_type(&field.ty, &subs));
                         }
+                        let generic_type_name = format!("{}<{}>", struct_name, type_args.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(", "));
+                        let field_suggestions: Vec<&str> = struct_def.fields.iter().map(|f| f.name.as_str()).collect();
+                        let suggestions = suggest_similar(property_name, &field_suggestions);
                         return Err(TypeError::UnknownField {
-                            type_name: format!("{}<{}>", struct_name, type_args.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(", ")),
+                            type_name: generic_type_name,
                             field_name: property_name.clone(),
+                            suggestions,
                         });
                     }
                 }
@@ -964,6 +1521,95 @@ impl TypeChecker {
                     Ok(default_ty)
                 }
             },
+            // Wave 11: If-expression — returns type of then-block's last expr
+            Expression::IfExpr { condition, then_block, else_block: _ } => {
+                let cond_ty = self.infer_expression_type(condition)?;
+                if cond_ty != TypeNode::Bool {
+                    return Err(TypeError::TypeMismatch {
+                        expected: "bool".to_string(),
+                        found: format!("{:?}", cond_ty),
+                    });
+                }
+                // Infer type from last expression in then-block
+                if let Some(Statement::Expr(last_expr)) = then_block.statements.last() {
+                    self.infer_expression_type(last_expr)
+                } else if let Some(Statement::Return(Some(ret_expr))) = then_block.statements.last() {
+                    self.infer_expression_type(ret_expr)
+                } else {
+                    Ok(TypeNode::Void)
+                }
+            },
+            // Wave 11: Type casting — expr as Type
+            Expression::Cast { expr, target_type } => {
+                // Validate the source expression type-checks
+                let _source_ty = self.infer_expression_type(expr)?;
+                // The result type is always the target type
+                Ok(target_type.clone())
+            },
+            // Wave 12: Struct literal — Point { x: 5, y: 10 }
+            Expression::StructLiteral { type_name, fields } => {
+                // Clone known names to avoid borrow conflict
+                let known_names: Option<Vec<String>> = self.struct_fields.get(type_name)
+                    .map(|sf| sf.iter().map(|f| f.name.clone()).collect());
+                if let Some(ref names) = known_names {
+                    for (field_name, value) in fields {
+                        if !names.iter().any(|n| n == field_name) {
+                            return Err(self.unknown_field_error(type_name, field_name));
+                        }
+                        let _val_ty = self.infer_expression_type(value)?;
+                    }
+                } else {
+                    // Unknown struct — still type-check values
+                    for (_field_name, value) in fields {
+                        let _val_ty = self.infer_expression_type(value)?;
+                    }
+                }
+                Ok(TypeNode::Custom(type_name.clone()))
+            },
+            // Wave 12: Enum variant construction — Shape::Circle(5) or Ok(value)
+            Expression::EnumConstruct { enum_name, variant_name, args } => {
+                // Type-check all arguments
+                for arg in args {
+                    let _arg_ty = self.infer_expression_type(arg)?;
+                }
+                // Bare variants: Ok/Err → Result, Some → Option
+                if enum_name.is_empty() {
+                    match variant_name.as_str() {
+                        "Ok" | "Err" => {
+                            let inner = if args.is_empty() {
+                                TypeNode::Void
+                            } else {
+                                self.infer_expression_type(&args[0])?
+                            };
+                            if variant_name == "Ok" {
+                                Ok(TypeNode::Result(Box::new(inner), Box::new(TypeNode::Error)))
+                            } else {
+                                Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(inner)))
+                            }
+                        },
+                        "Some" => {
+                            let inner = if args.is_empty() {
+                                TypeNode::Void
+                            } else {
+                                self.infer_expression_type(&args[0])?
+                            };
+                            Ok(TypeNode::Nullable(Box::new(inner)))
+                        },
+                        _ => Ok(TypeNode::Custom(variant_name.clone())),
+                    }
+                } else {
+                    // Qualified: validate enum exists
+                    if let Some(variants) = self.enum_defs.get(enum_name) {
+                        if !variants.iter().any(|v| v.name == *variant_name) {
+                            return Err(TypeError::TypeMismatch {
+                                expected: format!("valid variant of enum `{}`", enum_name),
+                                found: variant_name.clone(),
+                            });
+                        }
+                    }
+                    Ok(TypeNode::Custom(enum_name.clone()))
+                }
+            },
         }
     }
 
@@ -994,6 +1640,9 @@ impl TypeChecker {
             },
             (TypeNode::Map(k1, v1), TypeNode::Map(k2, v2)) => {
                 self.types_match(k1, k2) && self.types_match(v1, v2)
+            },
+            (TypeNode::Set(inner1), TypeNode::Set(inner2)) => {
+                self.types_match(inner1, inner2)
             },
             // Nullable: null can be assigned to any nullable type, and T matches T?
             (TypeNode::Nullable(inner), TypeNode::Nullable(actual_inner)) => {
@@ -1026,7 +1675,7 @@ mod tests {
     fn test_ocap_query_violation() {
         // Attempting to run a query without `unsafe` should fail!
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Hacker".to_string(),
                 is_system: false,
@@ -1043,8 +1692,7 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Expr(Expression::Query(SurrealQueryNode { raw_query: "SELECT secret FROM users".to_string() }))
                         ]
                     })
@@ -1056,7 +1704,7 @@ mod tests {
         let result = checker.check_program(&program);
         
         assert!(result.is_err());
-        let msg = result.unwrap_err().message();
+        let msg = result.unwrap_err().into_iter().next().unwrap().message();
         assert!(msg.contains("query") || msg.contains("DbAccess"));
     }
 
@@ -1064,7 +1712,7 @@ mod tests {
     fn test_valid_unsafe_query() {
         // Same logic but wrapped in `unsafe { }`
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "DbManager".to_string(),
                 is_system: true,
@@ -1081,8 +1729,7 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::UnsafeBlock(Block {
                                 statements: vec![
                                     Statement::Expr(Expression::Query(SurrealQueryNode { raw_query: "SELECT * FROM public".to_string() }))
@@ -1103,7 +1750,7 @@ mod tests {
     fn test_type_mismatch() {
         // int x = "hello";
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Buggy".to_string(),
                 is_system: false,
@@ -1120,13 +1767,11 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let { 
                                 name: "x".to_string(), 
                                 ty: Some(TypeNode::Int), 
-                                value: Expression::String("hello".to_string()) 
-                            }
+                                value: Expression::String("hello".to_string()) }
                         ]
                     })
                 }]
@@ -1135,13 +1780,13 @@ mod tests {
 
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
-        assert_eq!(result, Err(TypeError::TypeMismatch { expected: "Int".to_string(), found: "String".to_string() }));
+        assert!(matches!(&result.unwrap_err()[0].error, TypeError::TypeMismatch { expected, found } if expected == "Int" && found == "String"));
     }
 
     #[test]
     fn test_ocap_fetch_violation() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "WebScraper".to_string(),
                 is_system: false,
@@ -1158,16 +1803,14 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let {
                                 name: "res".to_string(),
                                 ty: None,
                                 value: Expression::MethodCall {
                                     caller: Box::new(Expression::Identifier("self".to_string())),
                                     method_name: "fetch".to_string(),
-                                    args: vec![Expression::String("https://api.github.com".to_string())]
-                                }
+                                    args: vec![Expression::String("https://api.github.com".to_string())] }
                             }
                         ]
                     })
@@ -1179,14 +1822,14 @@ mod tests {
         let result = checker.check_program(&program);
         
         assert!(result.is_err());
-        let msg = result.unwrap_err().message();
+        let msg = result.unwrap_err().into_iter().next().unwrap().message();
         assert!(msg.contains("fetch") && msg.contains("NetworkAccess"));
     }
 
     #[test]
     fn test_cli_command_invalid_args() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "CliAgent".to_string(),
                 is_system: false,
@@ -1204,10 +1847,7 @@ mod tests {
                     }],
                     type_params: vec![],
                     constraints: vec![],
-                    args: vec![FieldDecl {
-                        name: "complex_arg".to_string(),
-                        ty: TypeNode::Prompt, // Not allowed for CLI input directly
-                    }],
+                    args: vec![FieldDecl { name: "complex_arg".to_string(), ty: TypeNode::Prompt, default_value: None }], // Not allowed for CLI input directly
                     return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![] })
                 }]
@@ -1218,11 +1858,15 @@ mod tests {
         let result = checker.check_program(&program);
         
         assert!(result.is_err());
-        if let Err(TypeError::TypeMismatch { expected, found }) = result {
-            assert!(expected.contains("Primitive type"));
-            assert!(found.contains("Prompt"));
+        if let Err(ref errs) = result {
+            if let TypeError::TypeMismatch { expected, found } = &errs[0].error {
+                assert!(expected.contains("Primitive type"));
+                assert!(found.contains("Prompt"));
+            } else {
+                panic!("Expected TypeMismatch error for invalid CLI args!");
+            }
         } else {
-            panic!("Expected TypeMismatch error for invalid CLI args!");
+            panic!("Expected error!");
         }
     }
 
@@ -1231,7 +1875,7 @@ mod tests {
     #[test]
     fn test_undeclared_variable() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1248,23 +1892,21 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Expr(Expression::Identifier("nonexistent".to_string()))
-                        ]
-                    })
+                        ] })
                 }]
             })]
         };
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
-        assert_eq!(result, Err(TypeError::UndeclaredVariable("nonexistent".to_string())));
+        assert!(matches!(&result.unwrap_err()[0].error, TypeError::UndeclaredVariable { name, .. } if name == "nonexistent"));
     }
 
     #[test]
     fn test_assign_to_undeclared() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1281,12 +1923,10 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Assign {
                                 name: "missing".to_string(),
-                                value: Expression::Int(42),
-                            }
+                                value: Expression::Int(42) }
                         ]
                     })
                 }]
@@ -1294,13 +1934,13 @@ mod tests {
         };
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
-        assert_eq!(result, Err(TypeError::UndeclaredVariable("missing".to_string())));
+        assert!(matches!(&result.unwrap_err()[0].error, TypeError::UndeclaredVariable { name, .. } if name == "missing"));
     }
 
     #[test]
     fn test_while_non_bool_condition() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1317,8 +1957,7 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::While {
                                 condition: Expression::Int(42), // Not a bool!
                                 body: Block { statements: vec![] },
@@ -1330,13 +1969,13 @@ mod tests {
         };
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
-        assert_eq!(result, Err(TypeError::TypeMismatch { expected: "Bool".to_string(), found: "Int".to_string() }));
+        assert!(matches!(&result.unwrap_err()[0].error, TypeError::TypeMismatch { expected, found } if expected == "Bool" && found == "Int"));
     }
 
     #[test]
     fn test_if_non_bool_condition() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1353,8 +1992,7 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::If {
                                 condition: Expression::String("not bool".to_string()),
                                 then_block: Block { statements: vec![] },
@@ -1367,14 +2005,14 @@ mod tests {
         };
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
-        assert_eq!(result, Err(TypeError::TypeMismatch { expected: "Bool".to_string(), found: "String".to_string() }));
+        assert!(matches!(&result.unwrap_err()[0].error, TypeError::TypeMismatch { expected, found } if expected == "Bool" && found == "String"));
     }
 
     #[test]
     fn test_var_type_inference() {
         // var x = 42; → x should be Int
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1391,8 +2029,7 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let { name: "x".to_string(), ty: None, value: Expression::Int(42) },
                             // Now assign a string to x → should fail
                             Statement::Assign { name: "x".to_string(), value: Expression::String("oops".to_string()) },
@@ -1409,7 +2046,7 @@ mod tests {
     #[test]
     fn test_ocap_llm_infer_violation() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1426,13 +2063,11 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "llm_infer".to_string(),
-                                args: vec![Expression::String("hello".to_string())],
-                            })
+                                args: vec![Expression::String("hello".to_string())] })
                         ]
                     })
                 }]
@@ -1441,14 +2076,14 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        let msg = result.unwrap_err().message();
+        let msg = result.unwrap_err().into_iter().next().unwrap().message();
         assert!(msg.contains("llm_infer") && msg.contains("LlmAccess"));
     }
 
     #[test]
     fn test_ocap_file_read_violation() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1465,13 +2100,11 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "file_read".to_string(),
-                                args: vec![Expression::String("/etc/passwd".to_string())],
-                            })
+                                args: vec![Expression::String("/etc/passwd".to_string())] })
                         ]
                     })
                 }]
@@ -1480,14 +2113,14 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        let msg = result.unwrap_err().message();
+        let msg = result.unwrap_err().into_iter().next().unwrap().message();
         assert!(msg.contains("file_read") && msg.contains("FileAccess"));
     }
 
     #[test]
     fn test_ocap_file_write_violation() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1504,16 +2137,14 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "file_write".to_string(),
                                 args: vec![
                                     Expression::String("/tmp/test".to_string()),
                                     Expression::String("data".to_string()),
-                                ],
-                            })
+                                ] })
                         ]
                     })
                 }]
@@ -1522,14 +2153,14 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        let msg = result.unwrap_err().message();
+        let msg = result.unwrap_err().into_iter().next().unwrap().message();
         assert!(msg.contains("file_write") && msg.contains("FileAccess"));
     }
 
     #[test]
     fn test_array_literal_type_inference() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1546,8 +2177,7 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let {
                                 name: "items".to_string(),
                                 ty: Some(TypeNode::Array(Box::new(TypeNode::Int))),
@@ -1555,8 +2185,7 @@ mod tests {
                                     Expression::Int(1),
                                     Expression::Int(2),
                                     Expression::Int(3),
-                                ]),
-                            }
+                                ]) }
                         ]
                     })
                 }]
@@ -1569,7 +2198,7 @@ mod tests {
     #[test]
     fn test_map_literal_type_inference() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1586,15 +2215,13 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let {
                                 name: "config".to_string(),
                                 ty: Some(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String))),
                                 value: Expression::MapLiteral(vec![
                                     (Expression::String("key".to_string()), Expression::String("val".to_string())),
-                                ]),
-                            }
+                                ]) }
                         ]
                     })
                 }]
@@ -1607,7 +2234,7 @@ mod tests {
     #[test]
     fn test_type_alias_registration() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::TypeAlias { name: "UserId".to_string(), target: TypeNode::String },
             ]
@@ -1621,7 +2248,7 @@ mod tests {
     #[test]
     fn test_valid_unsafe_file_read() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: true,
@@ -1638,15 +2265,13 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::UnsafeBlock(Block {
                                 statements: vec![
                                     Statement::Expr(Expression::MethodCall {
                                         caller: Box::new(Expression::Identifier("self".to_string())),
                                         method_name: "file_read".to_string(),
-                                        args: vec![Expression::String("/tmp/data".to_string())],
-                                    })
+                                        args: vec![Expression::String("/tmp/data".to_string())] })
                                 ]
                             })
                         ]
@@ -1662,7 +2287,7 @@ mod tests {
     fn test_method_args_registered_in_scope() {
         // Method args should be usable in the body
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1677,13 +2302,11 @@ mod tests {
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
-                    args: vec![FieldDecl { name: "msg".to_string(), ty: TypeNode::String }],
+                    args: vec![FieldDecl { name: "msg".to_string(), ty: TypeNode::String, default_value: None }],
                     return_ty: Some(TypeNode::String),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::Identifier("msg".to_string())))
-                        ]
-                    })
+                        ] })
                 }]
             })]
         };
@@ -1694,7 +2317,7 @@ mod tests {
     #[test]
     fn test_try_catch_registers_error_var() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1711,18 +2334,14 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::TryCatch {
                                 try_block: Block {
-                                    statements: vec![Statement::Throw(Expression::String("oops".to_string()))]
-                                },
+                                    statements: vec![Statement::Throw(Expression::String("oops".to_string()))] },
                                 catch_var: "err".to_string(),
-                                catch_block: Block {
-                                    statements: vec![
+                                catch_block: Block { statements: vec![
                                         Statement::Print(Expression::Identifier("err".to_string()))
-                                    ]
-                                },
+                                    ] },
                             }
                         ]
                     })
@@ -1739,7 +2358,7 @@ mod tests {
     fn test_nullable_null_assignment() {
         // string? name = null; → OK
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1756,13 +2375,11 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let {
                                 name: "name".to_string(),
                                 ty: Some(TypeNode::Nullable(Box::new(TypeNode::String))),
-                                value: Expression::Null,
-                            }
+                                value: Expression::Null }
                         ]
                     })
                 }]
@@ -1777,7 +2394,7 @@ mod tests {
     fn test_nullable_value_assignment() {
         // string? name = "hello"; → OK (non-null value can be assigned to nullable)
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1794,13 +2411,11 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let {
                                 name: "name".to_string(),
                                 ty: Some(TypeNode::Nullable(Box::new(TypeNode::String))),
-                                value: Expression::String("hello".to_string()),
-                            }
+                                value: Expression::String("hello".to_string()) }
                         ]
                     })
                 }]
@@ -1815,7 +2430,7 @@ mod tests {
     fn test_non_nullable_null_assignment_fails() {
         // string name = null; → ERROR (can't assign null to non-nullable)
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1832,13 +2447,11 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let {
                                 name: "name".to_string(),
                                 ty: Some(TypeNode::String),
-                                value: Expression::Null,
-                            }
+                                value: Expression::Null }
                         ]
                     })
                 }]
@@ -1853,7 +2466,7 @@ mod tests {
     fn test_enum_registration() {
         // enum Status { Active, Inactive } → registered in checker
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Enum(EnumDef {
                     name: "Status".to_string(),
@@ -1897,7 +2510,7 @@ mod tests {
     fn test_ocap_capability_token_grants_fetch() {
         // Method with NetworkAccess token should be able to call fetch without unsafe
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "ApiClient".to_string(),
                 is_system: false,
@@ -1912,15 +2525,13 @@ mod tests {
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
-                    args: vec![FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess) }],
+                    args: vec![FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess), default_value: None }],
                     return_ty: Some(TypeNode::String),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "fetch".to_string(),
-                                args: vec![Expression::String("https://api.example.com".to_string())],
-                            }))
+                                args: vec![Expression::String("https://api.example.com".to_string())] }))
                         ]
                     })
                 }]
@@ -1934,7 +2545,7 @@ mod tests {
     fn test_ocap_capability_token_grants_file_read() {
         // FileAccess token should grant file_read permission
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "FileReader".to_string(),
                 is_system: false,
@@ -1949,15 +2560,13 @@ mod tests {
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
-                    args: vec![FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess) }],
+                    args: vec![FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess), default_value: None }],
                     return_ty: Some(TypeNode::String),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "file_read".to_string(),
-                                args: vec![Expression::String("config.json".to_string())],
-                            }))
+                                args: vec![Expression::String("config.json".to_string())] }))
                         ]
                     })
                 }]
@@ -1971,7 +2580,7 @@ mod tests {
     fn test_ocap_wrong_capability_still_denied() {
         // FileAccess token should NOT grant fetch (needs NetworkAccess)
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -1986,15 +2595,13 @@ mod tests {
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
-                    args: vec![FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess) }],
+                    args: vec![FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess), default_value: None }],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "fetch".to_string(),
-                                args: vec![Expression::String("https://evil.com".to_string())],
-                            })
+                                args: vec![Expression::String("https://evil.com".to_string())] })
                         ]
                     })
                 }]
@@ -2003,14 +2610,14 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        let msg = result.unwrap_err().message();
+        let msg = result.unwrap_err().into_iter().next().unwrap().message();
         assert!(msg.contains("NetworkAccess"));
     }
 
     #[test]
     fn test_ocap_llm_access_token_grants_llm_infer() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "AiAgent".to_string(),
                 is_system: false,
@@ -2025,15 +2632,13 @@ mod tests {
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
-                    args: vec![FieldDecl { name: "llm".to_string(), ty: TypeNode::Capability(CapabilityType::LlmAccess) }],
+                    args: vec![FieldDecl { name: "llm".to_string(), ty: TypeNode::Capability(CapabilityType::LlmAccess), default_value: None }],
                     return_ty: Some(TypeNode::String),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "llm_infer".to_string(),
-                                args: vec![Expression::String("What is 2+2?".to_string())],
-                            }))
+                                args: vec![Expression::String("What is 2+2?".to_string())] }))
                         ]
                     })
                 }]
@@ -2046,7 +2651,7 @@ mod tests {
     #[test]
     fn test_ocap_db_access_token_grants_query() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "DbReader".to_string(),
                 is_system: false,
@@ -2061,10 +2666,9 @@ mod tests {
                     annotations: vec![],
                     type_params: vec![],
                     constraints: vec![],
-                    args: vec![FieldDecl { name: "db".to_string(), ty: TypeNode::Capability(CapabilityType::DbAccess) }],
+                    args: vec![FieldDecl { name: "db".to_string(), ty: TypeNode::Capability(CapabilityType::DbAccess), default_value: None }],
                     return_ty: Some(TypeNode::String),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::Query(SurrealQueryNode { raw_query: "SELECT * FROM users".to_string() })))
                         ]
                     })
@@ -2080,7 +2684,7 @@ mod tests {
     #[test]
     fn test_match_statement_valid() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -2097,18 +2701,19 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let { name: "x".to_string(), ty: None, value: Expression::Int(42) },
                             Statement::Match {
                                 subject: Expression::Identifier("x".to_string()),
                                 arms: vec![
                                     MatchArm {
                                         pattern: Pattern::Literal(Expression::Int(1)),
+                                        guard: None,
                                         body: Block { statements: vec![Statement::Print(Expression::String("one".to_string()))] },
                                     },
                                     MatchArm {
                                         pattern: Pattern::Wildcard,
+                                        guard: None,
                                         body: Block { statements: vec![Statement::Print(Expression::String("other".to_string()))] },
                                     },
                                 ],
@@ -2125,7 +2730,7 @@ mod tests {
     #[test]
     fn test_match_variant_with_bindings() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -2142,22 +2747,21 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let { name: "val".to_string(), ty: None, value: Expression::Int(10) },
                             Statement::Match {
                                 subject: Expression::Identifier("val".to_string()),
                                 arms: vec![
                                     MatchArm {
                                         pattern: Pattern::Variant("Some".to_string(), vec!["inner".to_string()]),
-                                        body: Block {
-                                            statements: vec![
+                                        guard: None,
+                                        body: Block { statements: vec![
                                                 Statement::Print(Expression::Identifier("inner".to_string()))
-                                            ]
-                                        },
+                                            ] },
                                     },
                                     MatchArm {
                                         pattern: Pattern::Wildcard,
+                                        guard: None,
                                         body: Block { statements: vec![] },
                                     },
                                 ],
@@ -2176,7 +2780,7 @@ mod tests {
     #[test]
     fn test_lambda_expression_valid() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -2193,15 +2797,14 @@ mod tests {
                     constraints: vec![],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
-                    body: Some(Block {
-                        statements: vec![
+                    body: Some(Block { statements: vec![
                             Statement::Let {
                                 name: "add".to_string(),
                                 ty: None,
                                 value: Expression::Lambda {
                                     params: vec![
-                                        FieldDecl { name: "a".to_string(), ty: TypeNode::Int },
-                                        FieldDecl { name: "b".to_string(), ty: TypeNode::Int },
+                                        FieldDecl { name: "a".to_string(), ty: TypeNode::Int, default_value: None },
+                                        FieldDecl { name: "b".to_string(), ty: TypeNode::Int, default_value: None },
                                     ],
                                     return_ty: Some(Box::new(TypeNode::Int)),
                                     body: Box::new(LambdaBody::Expression(
@@ -2227,7 +2830,7 @@ mod tests {
         // Lambda should infer as Func type
         let mut checker = TypeChecker::new();
         let lambda_expr = Expression::Lambda {
-            params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::String }],
+            params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::String, default_value: None }],
             return_ty: Some(Box::new(TypeNode::Int)),
             body: Box::new(LambdaBody::Expression(Expression::Int(42))),
         };
@@ -2240,12 +2843,10 @@ mod tests {
     #[test]
     fn test_destructure_tuple_binds_variables() {
         let mut checker = TypeChecker::new();
-        let block = Block {
-            statements: vec![
+        let block = Block { statements: vec![
                 Statement::LetDestructure {
                     pattern: DestructurePattern::Tuple(vec!["x".to_string(), "y".to_string()]),
-                    value: Expression::Identifier("some_tuple".to_string()),
-                },
+                    value: Expression::Identifier("some_tuple".to_string()) },
             ],
         };
         // Register "some_tuple" so it doesn't fail on undeclared
@@ -2259,15 +2860,13 @@ mod tests {
     #[test]
     fn test_destructure_struct_binds_variables() {
         let mut checker = TypeChecker::new();
-        let block = Block {
-            statements: vec![
+        let block = Block { statements: vec![
                 Statement::LetDestructure {
                     pattern: DestructurePattern::Struct(vec![
                         ("name".to_string(), None),
                         ("age".to_string(), Some("a".to_string())),
                     ]),
-                    value: Expression::Identifier("person".to_string()),
-                },
+                    value: Expression::Identifier("person".to_string()) },
             ],
         };
         checker.env.insert("person".to_string(), TypeNode::Custom("Person".to_string()));
@@ -2280,12 +2879,10 @@ mod tests {
     #[test]
     fn test_destructure_tuple_value_must_be_valid() {
         let mut checker = TypeChecker::new();
-        let block = Block {
-            statements: vec![
+        let block = Block { statements: vec![
                 Statement::LetDestructure {
                     pattern: DestructurePattern::Tuple(vec!["x".to_string()]),
-                    value: Expression::Identifier("nonexistent".to_string()),
-                },
+                    value: Expression::Identifier("nonexistent".to_string()) },
             ],
         };
         // Should fail because "nonexistent" is not declared
@@ -2306,20 +2903,21 @@ mod tests {
         // Register the subject variable as the enum type
         checker.env.insert("res".to_string(), TypeNode::Custom("Result".to_string()));
 
-        let block = Block {
-            statements: vec![
+        let block = Block { statements: vec![
                 Statement::Match {
                     subject: Expression::Identifier("res".to_string()),
                     arms: vec![
                         MatchArm {
                             pattern: Pattern::Variant("Ok".to_string(), vec!["val".to_string()]),
+                            guard: None,
                             body: Block { statements: vec![
                                 // val should be usable (bound as String from the enum variant)
                                 Statement::Print(Expression::Identifier("val".to_string())),
-                            ]},
+                            ] },
                         },
                         MatchArm {
                             pattern: Pattern::Wildcard,
+                            guard: None,
                             body: Block { statements: vec![] },
                         },
                     ],
@@ -2336,10 +2934,10 @@ mod tests {
         // Register a variable as Array<Int>
         checker.env.insert("nums".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
 
-        let block = Block {
-            statements: vec![
+        let block = Block { statements: vec![
                 Statement::Foreach {
                     item_name: "n".to_string(),
+                    value_name: None,
                     collection: Expression::Identifier("nums".to_string()),
                     body: Block { statements: vec![
                         // Use n in a context that requires Int (comparison with Int)
@@ -2349,8 +2947,7 @@ mod tests {
                             value: Expression::BinaryOp {
                                 left: Box::new(Expression::Identifier("n".to_string())),
                                 operator: BinaryOperator::Mul,
-                                right: Box::new(Expression::Int(2)),
-                            },
+                                right: Box::new(Expression::Int(2)) },
                         },
                     ]},
                 },
@@ -2363,7 +2960,7 @@ mod tests {
     fn test_generic_constraint_undeclared_type_param_fails() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -2378,7 +2975,7 @@ mod tests {
                     annotations: vec![],
                     type_params: vec!["T".to_string()],
                     constraints: vec![
-                        GenericConstraint { type_param: "U".to_string(), bound: "Comparable".to_string() },
+                        GenericConstraint { type_param: "U".to_string(), bounds: vec!["Comparable".to_string()] },
                     ],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
@@ -2395,7 +2992,7 @@ mod tests {
     fn test_generic_constraint_valid_type_param_passes() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false,
@@ -2410,7 +3007,7 @@ mod tests {
                     annotations: vec![],
                     type_params: vec!["T".to_string()],
                     constraints: vec![
-                        GenericConstraint { type_param: "T".to_string(), bound: "Comparable".to_string() },
+                        GenericConstraint { type_param: "T".to_string(), bounds: vec!["Comparable".to_string()] },
                     ],
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
@@ -2539,6 +3136,8 @@ mod tests {
     #[test]
     fn test_collection_method_types() {
         let mut checker = TypeChecker::new();
+        // Plan 54: Declare arr as Map<string,int> so keys()/values() can infer types
+        checker.env.insert("arr".to_string(), TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Int)));
         let caller = Box::new(Expression::Identifier("arr".to_string()));
 
         // .push(1) → Void
@@ -2570,8 +3169,7 @@ mod tests {
             Statement::Const {
                 name: "MAX".to_string(),
                 ty: Some(TypeNode::Int),
-                value: Expression::Int(100),
-            },
+                value: Expression::Int(100) },
         ]};
         assert!(checker.check_block(&block).is_ok());
     }
@@ -2582,7 +3180,7 @@ mod tests {
     fn test_return_type_correct_passes() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2595,7 +3193,7 @@ mod tests {
                     args: vec![], return_ty: Some(TypeNode::String),
                     body: Some(Block { statements: vec![
                         Statement::Return(Some(Expression::String("hello".to_string())))
-                    ]}),
+                    ] }),
                 }],
             })],
         };
@@ -2606,7 +3204,7 @@ mod tests {
     fn test_return_type_mismatch_fails() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2620,7 +3218,7 @@ mod tests {
                     body: Some(Block { statements: vec![
                         // Return String when Int expected → should FAIL
                         Statement::Return(Some(Expression::String("oops".to_string())))
-                    ]}),
+                    ] }),
                 }],
             })],
         };
@@ -2631,7 +3229,7 @@ mod tests {
     fn test_return_void_allows_anything() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2644,7 +3242,7 @@ mod tests {
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
                         Statement::Return(Some(Expression::Int(42)))
-                    ]}),
+                    ] }),
                 }],
             })],
         };
@@ -2658,7 +3256,7 @@ mod tests {
     fn test_spawn_returns_agent_handle() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2675,8 +3273,7 @@ mod tests {
                             ty: None,
                             value: Expression::Spawn {
                                 agent_name: "Worker".to_string(),
-                                args: vec![],
-                            },
+                                args: vec![] },
                         },
                     ]}),
                 }],
@@ -2690,7 +3287,7 @@ mod tests {
     fn test_send_validates_args() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2708,8 +3305,7 @@ mod tests {
                             args: vec![
                                 Expression::String("Process".to_string()),
                                 Expression::String("data".to_string()),
-                            ],
-                        }),
+                            ] }),
                     ]}),
                 }],
             })],
@@ -2721,7 +3317,7 @@ mod tests {
     fn test_request_returns_string() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2742,8 +3338,7 @@ mod tests {
                                 args: vec![
                                     Expression::String("Process".to_string()),
                                     Expression::String("data".to_string()),
-                                ],
-                            },
+                                ] },
                         },
                     ]}),
                 }],
@@ -2766,14 +3361,14 @@ mod tests {
                     source: SelectSource::Agent(Expression::Identifier("worker".to_string())),
                     body: Block { statements: vec![
                         Statement::Print(Expression::Identifier("msg".to_string())),
-                    ]},
+                    ] },
                 },
                 SelectArm {
                     var_name: "_timeout".to_string(),
                     source: SelectSource::Timeout(Expression::Int(5000)),
                     body: Block { statements: vec![
                         Statement::Print(Expression::String("timed out".to_string())),
-                    ]},
+                    ] },
                 },
             ]},
         ]};
@@ -2787,7 +3382,7 @@ mod tests {
         // Method with NetworkAccess param can call fetch
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2798,15 +3393,14 @@ mod tests {
                     name: "Run".to_string(), is_public: true,
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![
-                        FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess) },
+                        FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess), default_value: None },
                     ],
                     return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
                         Statement::Expr(Expression::MethodCall {
                             caller: Box::new(Expression::Identifier("self".to_string())),
                             method_name: "fetch".to_string(),
-                            args: vec![Expression::String("https://example.com".to_string())],
-                        }),
+                            args: vec![Expression::String("https://example.com".to_string())] }),
                     ]}),
                 }],
             })],
@@ -2819,7 +3413,7 @@ mod tests {
         // Method without capability param cannot call fetch
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2835,19 +3429,22 @@ mod tests {
                         Statement::Expr(Expression::MethodCall {
                             caller: Box::new(Expression::Identifier("self".to_string())),
                             method_name: "fetch".to_string(),
-                            args: vec![Expression::String("https://example.com".to_string())],
-                        }),
+                            args: vec![Expression::String("https://example.com".to_string())] }),
                     ]}),
                 }],
             })],
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        if let Err(TypeError::MissingCapability { capability, operation }) = result {
-            assert_eq!(capability, "NetworkAccess");
-            assert_eq!(operation, "fetch");
+        if let Err(ref errs) = result {
+            if let TypeError::MissingCapability { capability, operation } = &errs[0].error {
+                assert_eq!(capability, "NetworkAccess");
+                assert_eq!(operation, "fetch");
+            } else {
+                panic!("Expected MissingCapability error, got {:?}", result);
+            }
         } else {
-            panic!("Expected MissingCapability error, got {:?}", result);
+            panic!("Expected error, got {:?}", result);
         }
     }
 
@@ -2856,7 +3453,7 @@ mod tests {
         // Method with multiple capability params can call multiple ops
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2867,17 +3464,16 @@ mod tests {
                     name: "Run".to_string(), is_public: true,
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![
-                        FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess) },
-                        FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess) },
-                        FieldDecl { name: "db".to_string(), ty: TypeNode::Capability(CapabilityType::DbAccess) },
+                        FieldDecl { name: "net".to_string(), ty: TypeNode::Capability(CapabilityType::NetworkAccess), default_value: None },
+                        FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess), default_value: None },
+                        FieldDecl { name: "db".to_string(), ty: TypeNode::Capability(CapabilityType::DbAccess), default_value: None },
                     ],
                     return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
                         Statement::Expr(Expression::MethodCall {
                             caller: Box::new(Expression::Identifier("self".to_string())),
                             method_name: "fetch".to_string(),
-                            args: vec![Expression::String("url".to_string())],
-                        }),
+                            args: vec![Expression::String("url".to_string())] }),
                         Statement::Expr(Expression::MethodCall {
                             caller: Box::new(Expression::Identifier("self".to_string())),
                             method_name: "file_read".to_string(),
@@ -2898,7 +3494,7 @@ mod tests {
         // Unsafe block bypasses all capability checks
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -2915,8 +3511,7 @@ mod tests {
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "fetch".to_string(),
-                                args: vec![Expression::String("url".to_string())],
-                            }),
+                                args: vec![Expression::String("url".to_string())] }),
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "file_read".to_string(),
@@ -2957,12 +3552,12 @@ mod tests {
     fn test_prompt_param_types_valid() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::PromptTemplate(PromptTemplateDef {
                 name: "greet".to_string(),
                 params: vec![
-                    FieldDecl { name: "name".to_string(), ty: TypeNode::String },
-                    FieldDecl { name: "count".to_string(), ty: TypeNode::Int },
+                    FieldDecl { name: "name".to_string(), ty: TypeNode::String, default_value: None },
+                    FieldDecl { name: "count".to_string(), ty: TypeNode::Int, default_value: None },
                 ],
                 body: "Hello {name}, you have {count} items.".to_string(),
             })],
@@ -2974,11 +3569,11 @@ mod tests {
     fn test_prompt_param_types_invalid() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::PromptTemplate(PromptTemplateDef {
                 name: "bad".to_string(),
                 params: vec![
-                    FieldDecl { name: "data".to_string(), ty: TypeNode::Array(Box::new(TypeNode::String)) },
+                    FieldDecl { name: "data".to_string(), ty: TypeNode::Array(Box::new(TypeNode::String)), default_value: None },
                 ],
                 body: "Data: {data}".to_string(),
             })],
@@ -2993,7 +3588,7 @@ mod tests {
         // expr? on Result<String, Error> should infer as String
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -3014,8 +3609,7 @@ mod tests {
                             ty: Some(TypeNode::String),
                             value: Expression::TryPropagate(
                                 Box::new(Expression::String("hello".to_string()))
-                            ),
-                        },
+                            ) },
                         Statement::Return(Some(Expression::Identifier("data".to_string()))),
                     ]}),
                 }],
@@ -3029,7 +3623,7 @@ mod tests {
         // expr or "default" should type-check
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
                 name: "Test".to_string(),
                 is_system: false, is_public: false,
@@ -3050,8 +3644,7 @@ mod tests {
                             ty: Some(TypeNode::String),
                             value: Expression::OrDefault {
                                 expr: Box::new(Expression::String("test".to_string())),
-                                default: Box::new(Expression::String("fallback".to_string())),
-                            },
+                                default: Box::new(Expression::String("fallback".to_string())) },
                         },
                         Statement::Return(Some(Expression::Identifier("data".to_string()))),
                     ]}),
@@ -3068,15 +3661,15 @@ mod tests {
     fn test_struct_field_type_resolved() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Struct(StructDef {
                     name: "User".to_string(),
                     is_public: false,
                     type_params: vec![],
                     fields: vec![
-                        FieldDecl { name: "name".to_string(), ty: TypeNode::String },
-                        FieldDecl { name: "age".to_string(), ty: TypeNode::Int },
+                        FieldDecl { name: "name".to_string(), ty: TypeNode::String, default_value: None },
+                        FieldDecl { name: "age".to_string(), ty: TypeNode::Int, default_value: None },
                     ],
                 }),
                 Item::Agent(AgentDef {
@@ -3085,13 +3678,12 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl { name: "u".to_string(), ty: TypeNode::Custom("User".to_string()) }],
+                        args: vec![FieldDecl { name: "u".to_string(), ty: TypeNode::Custom("User".to_string()), default_value: None }],
                         return_ty: Some(TypeNode::String),
                         body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::PropertyAccess {
                                 caller: Box::new(Expression::Identifier("u".to_string())),
-                                property_name: "name".to_string(),
-                            })),
+                                property_name: "name".to_string() })),
                         ]}),
                     }],
                 }),
@@ -3104,14 +3696,14 @@ mod tests {
     fn test_unknown_struct_field_error() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Struct(StructDef {
                     name: "User".to_string(),
                     is_public: false,
                     type_params: vec![],
                     fields: vec![
-                        FieldDecl { name: "name".to_string(), ty: TypeNode::String },
+                        FieldDecl { name: "name".to_string(), ty: TypeNode::String, default_value: None },
                     ],
                 }),
                 Item::Agent(AgentDef {
@@ -3120,13 +3712,12 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl { name: "u".to_string(), ty: TypeNode::Custom("User".to_string()) }],
+                        args: vec![FieldDecl { name: "u".to_string(), ty: TypeNode::Custom("User".to_string()), default_value: None }],
                         return_ty: Some(TypeNode::Void),
                         body: Some(Block { statements: vec![
                             Statement::Expr(Expression::PropertyAccess {
                                 caller: Box::new(Expression::Identifier("u".to_string())),
-                                property_name: "invalid".to_string(),
-                            }),
+                                property_name: "invalid".to_string() }),
                         ]}),
                     }],
                 }),
@@ -3134,8 +3725,8 @@ mod tests {
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        match result.unwrap_err() {
-            TypeError::UnknownField { type_name, field_name } => {
+        match &result.unwrap_err()[0].error {
+            TypeError::UnknownField { type_name, field_name, .. } => {
                 assert_eq!(type_name, "User");
                 assert_eq!(field_name, "invalid");
             },
@@ -3147,14 +3738,14 @@ mod tests {
     fn test_agent_field_type_resolved() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Agent(AgentDef {
                     name: "Worker".to_string(), is_system: false, is_public: false,
                     target_annotation: None, annotations: vec![],
                     implements: vec![],
                     fields: vec![
-                        FieldDecl { name: "status".to_string(), ty: TypeNode::String },
+                        FieldDecl { name: "status".to_string(), ty: TypeNode::String, default_value: None },
                     ],
                     methods: vec![],
                 }),
@@ -3164,13 +3755,12 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl { name: "w".to_string(), ty: TypeNode::Custom("Worker".to_string()) }],
+                        args: vec![FieldDecl { name: "w".to_string(), ty: TypeNode::Custom("Worker".to_string()), default_value: None }],
                         return_ty: Some(TypeNode::String),
                         body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::PropertyAccess {
                                 caller: Box::new(Expression::Identifier("w".to_string())),
-                                property_name: "status".to_string(),
-                            })),
+                                property_name: "status".to_string() })),
                         ]}),
                     }],
                 }),
@@ -3184,7 +3774,7 @@ mod tests {
     fn test_method_return_type_tracked() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Agent(AgentDef {
                     name: "Helper".to_string(), is_system: false, is_public: false,
@@ -3195,7 +3785,7 @@ mod tests {
                         args: vec![], return_ty: Some(TypeNode::String),
                         body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::String("hello".to_string()))),
-                        ]}),
+                        ] }),
                     }],
                 }),
                 Item::Agent(AgentDef {
@@ -3204,7 +3794,7 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl { name: "h".to_string(), ty: TypeNode::Custom("Helper".to_string()) }],
+                        args: vec![FieldDecl { name: "h".to_string(), ty: TypeNode::Custom("Helper".to_string()), default_value: None }],
                         return_ty: Some(TypeNode::String),
                         body: Some(Block { statements: vec![
                             // var x = h.Greet(); — should infer as String, not Void
@@ -3214,8 +3804,7 @@ mod tests {
                                 value: Expression::MethodCall {
                                     caller: Box::new(Expression::Identifier("h".to_string())),
                                     method_name: "Greet".to_string(),
-                                    args: vec![],
-                                },
+                                    args: vec![] },
                             },
                             Statement::Return(Some(Expression::Identifier("x".to_string()))),
                         ]}),
@@ -3230,7 +3819,7 @@ mod tests {
     fn test_unknown_method_error() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Agent(AgentDef {
                     name: "Helper".to_string(), is_system: false, is_public: false,
@@ -3241,7 +3830,7 @@ mod tests {
                         args: vec![], return_ty: Some(TypeNode::String),
                         body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::String("hi".to_string()))),
-                        ]}),
+                        ] }),
                     }],
                 }),
                 Item::Agent(AgentDef {
@@ -3250,14 +3839,13 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl { name: "h".to_string(), ty: TypeNode::Custom("Helper".to_string()) }],
+                        args: vec![FieldDecl { name: "h".to_string(), ty: TypeNode::Custom("Helper".to_string()), default_value: None }],
                         return_ty: Some(TypeNode::Void),
                         body: Some(Block { statements: vec![
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("h".to_string())),
                                 method_name: "Invalid".to_string(),
-                                args: vec![],
-                            }),
+                                args: vec![] }),
                         ]}),
                     }],
                 }),
@@ -3265,8 +3853,8 @@ mod tests {
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        match result.unwrap_err() {
-            TypeError::UnknownMethod { type_name, method_name } => {
+        match &result.unwrap_err()[0].error {
+            TypeError::UnknownMethod { type_name, method_name, .. } => {
                 assert_eq!(type_name, "Helper");
                 assert_eq!(method_name, "Invalid");
             },
@@ -3279,7 +3867,7 @@ mod tests {
     fn test_match_exhaustive_all_variants() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Enum(EnumDef {
                     name: "Color".to_string(), is_public: false,
@@ -3295,15 +3883,15 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()) }],
+                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()), default_value: None }],
                         return_ty: Some(TypeNode::Void),
                         body: Some(Block { statements: vec![
                             Statement::Match {
                                 subject: Expression::Identifier("c".to_string()),
                                 arms: vec![
-                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), body: Block { statements: vec![] } },
-                                    MatchArm { pattern: Pattern::Variant("Green".to_string(), vec![]), body: Block { statements: vec![] } },
-                                    MatchArm { pattern: Pattern::Variant("Blue".to_string(), vec![]), body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), guard: None, body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Variant("Green".to_string(), vec![]), guard: None, body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Variant("Blue".to_string(), vec![]), guard: None, body: Block { statements: vec![] } },
                                 ],
                             },
                         ]}),
@@ -3318,7 +3906,7 @@ mod tests {
     fn test_match_non_exhaustive_error() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Enum(EnumDef {
                     name: "Color".to_string(), is_public: false,
@@ -3334,13 +3922,13 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()) }],
+                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()), default_value: None }],
                         return_ty: Some(TypeNode::Void),
                         body: Some(Block { statements: vec![
                             Statement::Match {
                                 subject: Expression::Identifier("c".to_string()),
                                 arms: vec![
-                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), guard: None, body: Block { statements: vec![] } },
                                     // Missing Green and Blue!
                                 ],
                             },
@@ -3351,7 +3939,7 @@ mod tests {
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        match result.unwrap_err() {
+        match &result.unwrap_err()[0].error {
             TypeError::NonExhaustiveMatch { type_name, missing_variants } => {
                 assert_eq!(type_name, "Color");
                 assert!(missing_variants.contains(&"Green".to_string()));
@@ -3365,7 +3953,7 @@ mod tests {
     fn test_match_wildcard_covers_all() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Enum(EnumDef {
                     name: "Color".to_string(), is_public: false,
@@ -3381,14 +3969,14 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()) }],
+                        args: vec![FieldDecl { name: "c".to_string(), ty: TypeNode::Custom("Color".to_string()), default_value: None }],
                         return_ty: Some(TypeNode::Void),
                         body: Some(Block { statements: vec![
                             Statement::Match {
                                 subject: Expression::Identifier("c".to_string()),
                                 arms: vec![
-                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), body: Block { statements: vec![] } },
-                                    MatchArm { pattern: Pattern::Wildcard, body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), guard: None, body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Wildcard, guard: None, body: Block { statements: vec![] } },
                                 ],
                             },
                         ]}),
@@ -3404,7 +3992,7 @@ mod tests {
         // Match on a non-enum type should not trigger exhaustiveness check
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Agent(AgentDef {
                     name: "App".to_string(), is_system: false, is_public: false,
@@ -3418,7 +4006,7 @@ mod tests {
                             Statement::Match {
                                 subject: Expression::Int(42),
                                 arms: vec![
-                                    MatchArm { pattern: Pattern::Literal(Expression::Int(1)), body: Block { statements: vec![] } },
+                                    MatchArm { pattern: Pattern::Literal(Expression::Int(1)), guard: None, body: Block { statements: vec![] } },
                                 ],
                             },
                         ]}),
@@ -3434,21 +4022,20 @@ mod tests {
     fn test_fn_param_types_checked() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Function(FunctionDef {
                 name: "add".to_string(),
                 is_public: false,
                 params: vec![
-                    FieldDecl { name: "a".to_string(), ty: TypeNode::Int },
-                    FieldDecl { name: "b".to_string(), ty: TypeNode::Int },
+                    FieldDecl { name: "a".to_string(), ty: TypeNode::Int, default_value: None },
+                    FieldDecl { name: "b".to_string(), ty: TypeNode::Int, default_value: None },
                 ],
                 return_ty: Some(TypeNode::Int),
                 body: Block { statements: vec![
                     Statement::Return(Some(Expression::BinaryOp {
                         left: Box::new(Expression::Identifier("a".to_string())),
                         operator: BinaryOperator::Add,
-                        right: Box::new(Expression::Identifier("b".to_string())),
-                    })),
+                        right: Box::new(Expression::Identifier("b".to_string())) })),
                 ]},
             })],
         };
@@ -3459,7 +4046,7 @@ mod tests {
     fn test_fn_return_type_validated() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Function(FunctionDef {
                 name: "bad".to_string(),
                 is_public: false,
@@ -3468,7 +4055,7 @@ mod tests {
                 body: Block { statements: vec![
                     // return "hello" but declared -> int = mismatch
                     Statement::Return(Some(Expression::String("hello".to_string()))),
-                ]},
+                ] },
             })],
         };
         let result = checker.check_program(&program);
@@ -3480,14 +4067,14 @@ mod tests {
     fn test_generic_struct_field_type_resolved() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Struct(StructDef {
                     name: "Box".to_string(),
                     is_public: false,
                     type_params: vec!["T".to_string()],
                     fields: vec![
-                        FieldDecl { name: "value".to_string(), ty: TypeNode::TypeVar("T".to_string()) },
+                        FieldDecl { name: "value".to_string(), ty: TypeNode::TypeVar("T".to_string()), default_value: None },
                     ],
                 }),
                 Item::Agent(AgentDef {
@@ -3496,17 +4083,13 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl {
-                            name: "box_val".to_string(),
-                            ty: TypeNode::Generic("Box".to_string(), vec![TypeNode::Int]),
-                        }],
+                        args: vec![FieldDecl { name: "box_val".to_string(), ty: TypeNode::Generic("Box".to_string(), vec![TypeNode::Int]), default_value: None }],
                         return_ty: Some(TypeNode::Int),
                         body: Some(Block { statements: vec![
                             // return box_val.value → should resolve T to Int
                             Statement::Return(Some(Expression::PropertyAccess {
                                 caller: Box::new(Expression::Identifier("box_val".to_string())),
-                                property_name: "value".to_string(),
-                            })),
+                                property_name: "value".to_string() })),
                         ]}),
                     }],
                 }),
@@ -3519,15 +4102,15 @@ mod tests {
     fn test_generic_unknown_field_error() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Struct(StructDef {
                     name: "Pair".to_string(),
                     is_public: false,
                     type_params: vec!["T".to_string()],
                     fields: vec![
-                        FieldDecl { name: "first".to_string(), ty: TypeNode::TypeVar("T".to_string()) },
-                        FieldDecl { name: "second".to_string(), ty: TypeNode::TypeVar("T".to_string()) },
+                        FieldDecl { name: "first".to_string(), ty: TypeNode::TypeVar("T".to_string()), default_value: None },
+                        FieldDecl { name: "second".to_string(), ty: TypeNode::TypeVar("T".to_string()), default_value: None },
                     ],
                 }),
                 Item::Agent(AgentDef {
@@ -3536,16 +4119,12 @@ mod tests {
                     methods: vec![MethodDecl {
                         name: "Run".to_string(), is_public: true, is_async: false,
                         annotations: vec![], type_params: vec![], constraints: vec![],
-                        args: vec![FieldDecl {
-                            name: "p".to_string(),
-                            ty: TypeNode::Generic("Pair".to_string(), vec![TypeNode::String]),
-                        }],
+                        args: vec![FieldDecl { name: "p".to_string(), ty: TypeNode::Generic("Pair".to_string(), vec![TypeNode::String]), default_value: None }],
                         return_ty: Some(TypeNode::Void),
                         body: Some(Block { statements: vec![
                             Statement::Expr(Expression::PropertyAccess {
                                 caller: Box::new(Expression::Identifier("p".to_string())),
-                                property_name: "invalid".to_string(),
-                            }),
+                                property_name: "invalid".to_string() }),
                         ]}),
                     }],
                 }),
@@ -3553,7 +4132,7 @@ mod tests {
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TypeError::UnknownField { .. }));
+        assert!(matches!(&result.unwrap_err()[0].error, TypeError::UnknownField { .. }));
     }
 
     #[test]
@@ -3581,7 +4160,7 @@ mod tests {
     fn test_contract_enforcement_success() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Contract(ContractDef {
                     name: "Greeter".to_string(), is_public: false,
@@ -3603,7 +4182,7 @@ mod tests {
                         args: vec![], return_ty: Some(TypeNode::String),
                         body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::String("hello".to_string()))),
-                        ]}),
+                        ] }),
                     }],
                 }),
             ],
@@ -3615,7 +4194,7 @@ mod tests {
     fn test_contract_missing_method_error() {
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Contract(ContractDef {
                     name: "Worker".to_string(), is_public: false,
@@ -3650,7 +4229,7 @@ mod tests {
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        match result.unwrap_err() {
+        match &result.unwrap_err()[0].error {
             TypeError::MissingContractMethod { agent_name, contract_name, method_name } => {
                 assert_eq!(agent_name, "MyWorker");
                 assert_eq!(contract_name, "Worker");
@@ -3665,7 +4244,7 @@ mod tests {
         // Agent references contract that hasn't been defined yet
         let mut checker = TypeChecker::new();
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 // Agent comes BEFORE contract — should fail
                 Item::Agent(AgentDef {
@@ -3683,12 +4262,2137 @@ mod tests {
         };
         let result = checker.check_program(&program);
         assert!(result.is_err());
-        match result.unwrap_err() {
+        match &result.unwrap_err()[0].error {
             TypeError::ContractNotDefined { agent_name, contract_name } => {
                 assert_eq!(agent_name, "EarlyAgent");
                 assert_eq!(contract_name, "LateContract");
             },
             e => panic!("Expected ContractNotDefined, got {:?}", e),
         }
+    }
+
+    // ---- Plan 37: Range Expression Tests ----
+
+    #[test]
+    fn test_range_expression_type() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "T".to_string(), is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![], implements: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true, is_async: false,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Foreach {
+                            item_name: "i".to_string(),
+                            value_name: None,
+                            collection: Expression::Range {
+                                start: Box::new(Expression::Int(0)),
+                                end: Box::new(Expression::Int(10)),
+                                inclusive: false },
+                            body: Block { statements: vec![Statement::Print(Expression::Identifier("i".to_string()))] },
+                        }
+                    ]}),
+                }],
+            })],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_ok(), "Range 0..10 should typecheck: {:?}", result);
+    }
+
+    #[test]
+    fn test_range_inclusive_type() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "T".to_string(), is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![], implements: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true, is_async: false,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Foreach {
+                            item_name: "i".to_string(),
+                            value_name: None,
+                            collection: Expression::Range {
+                                start: Box::new(Expression::Int(0)),
+                                end: Box::new(Expression::Int(10)),
+                                inclusive: true },
+                            body: Block { statements: vec![Statement::Print(Expression::Identifier("i".to_string()))] },
+                        }
+                    ]}),
+                }],
+            })],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_ok(), "Range 0..=10 should typecheck: {:?}", result);
+    }
+
+    // ---- Plan 38: Tuple Tests ----
+
+    #[test]
+    fn test_tuple_literal_type() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "T".to_string(), is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![], implements: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(), is_public: true, is_async: false,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "t".to_string(),
+                            ty: None,
+                            value: Expression::TupleLiteral(vec![
+                                Expression::Int(1),
+                                Expression::String("hi".to_string()),
+                            ]) },
+                    ]}),
+                }],
+            })],
+        };
+        let result = checker.check_program(&program);
+        assert!(result.is_ok(), "Tuple literal should typecheck: {:?}", result);
+    }
+
+    // ---- Plan 39: Trait Bounds Tests ----
+
+    #[test]
+    fn test_multiple_trait_bounds_valid() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                implements: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Process".to_string(),
+                    is_public: true, is_async: false,
+                    annotations: vec![],
+                    type_params: vec!["T".to_string()],
+                    constraints: vec![
+                        GenericConstraint { type_param: "T".to_string(), bounds: vec!["Display".to_string(), "Clone".to_string()] },
+                    ],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![] }),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_multiple_trait_bounds_invalid_type_param() {
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                implements: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Process".to_string(),
+                    is_public: true, is_async: false,
+                    annotations: vec![],
+                    type_params: vec!["T".to_string()],
+                    constraints: vec![
+                        GenericConstraint { type_param: "X".to_string(), bounds: vec!["Display".to_string(), "Clone".to_string()] },
+                    ],
+                    args: vec![],
+                    return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![] }),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    // ===== Plan 52: env() builtin =====
+
+    #[test]
+    fn test_env_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "env".to_string(),
+            args: vec![Expression::String("HOME".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_env_wrong_arg_count() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "env".to_string(),
+            args: vec![],
+        };
+        assert!(checker.infer_expression_type(&expr).is_err());
+    }
+
+    // ===== Plan 54: Collection Method Type Inference =====
+
+    #[test]
+    fn test_pop_returns_int_from_int_array() {
+        let mut checker = TypeChecker::new();
+        // Declare a variable of type Array(Int)
+        checker.env.insert("nums".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("nums".to_string())),
+            method_name: "pop".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Int, "pop() on Array<int> should return int");
+    }
+
+    #[test]
+    fn test_pop_returns_string_from_string_array() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("names".to_string(), TypeNode::Array(Box::new(TypeNode::String)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("names".to_string())),
+            method_name: "pop".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String, "pop() on Array<string> should return string");
+    }
+
+    #[test]
+    fn test_first_returns_element_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "first".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Int, "first() on Array<int> should return int");
+    }
+
+    #[test]
+    fn test_last_returns_element_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::String)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "last".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String, "last() on Array<string> should return string");
+    }
+
+    #[test]
+    fn test_keys_returns_typed_array() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("data".to_string(), TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("data".to_string())),
+            method_name: "keys".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::String)), "keys() on Map<string,int> should return Array<string>");
+    }
+
+    #[test]
+    fn test_values_returns_typed_array() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("data".to_string(), TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("data".to_string())),
+            method_name: "values".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::Int)), "values() on Map<string,int> should return Array<int>");
+    }
+
+    // ===== Plan 57: Generic Type Argument Count Validation =====
+
+    #[test]
+    fn test_generic_correct_arg_count() {
+        let mut checker = TypeChecker::new();
+        checker.generic_structs.insert("Pair".to_string(), StructDef {
+            name: "Pair".to_string(), is_public: true,
+            type_params: vec!["K".to_string(), "V".to_string()],
+            fields: vec![
+                FieldDecl { name: "key".to_string(), ty: TypeNode::TypeVar("K".to_string()), default_value: None },
+                FieldDecl { name: "val".to_string(), ty: TypeNode::TypeVar("V".to_string()), default_value: None },
+            ],
+        });
+        checker.env.insert("p".to_string(), TypeNode::Generic("Pair".to_string(), vec![TypeNode::String, TypeNode::Int]));
+        let expr = Expression::PropertyAccess {
+            caller: Box::new(Expression::Identifier("p".to_string())),
+            property_name: "key".to_string(),
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_generic_too_many_args() {
+        let mut checker = TypeChecker::new();
+        checker.generic_structs.insert("Box".to_string(), StructDef {
+            name: "Box".to_string(), is_public: true,
+            type_params: vec!["T".to_string()],
+            fields: vec![FieldDecl { name: "value".to_string(), ty: TypeNode::TypeVar("T".to_string()), default_value: None }],
+        });
+        // Box has 1 type param but we give 2
+        checker.env.insert("b".to_string(), TypeNode::Generic("Box".to_string(), vec![TypeNode::Int, TypeNode::String]));
+        let expr = Expression::PropertyAccess {
+            caller: Box::new(Expression::Identifier("b".to_string())),
+            property_name: "value".to_string(),
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err(), "Too many type args should error");
+        if let Err(TypeError::WrongTypeArgumentCount { expected, found, .. }) = result {
+            assert_eq!(expected, 1);
+            assert_eq!(found, 2);
+        } else { panic!("Expected WrongTypeArgumentCount, got: {:?}", result); }
+    }
+
+    #[test]
+    fn test_generic_too_few_args() {
+        let mut checker = TypeChecker::new();
+        checker.generic_structs.insert("Pair".to_string(), StructDef {
+            name: "Pair".to_string(), is_public: true,
+            type_params: vec!["K".to_string(), "V".to_string()],
+            fields: vec![
+                FieldDecl { name: "key".to_string(), ty: TypeNode::TypeVar("K".to_string()), default_value: None },
+            ],
+        });
+        // Pair has 2 type params but we give 1
+        checker.env.insert("p".to_string(), TypeNode::Generic("Pair".to_string(), vec![TypeNode::Int]));
+        let expr = Expression::PropertyAccess {
+            caller: Box::new(Expression::Identifier("p".to_string())),
+            property_name: "key".to_string(),
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err(), "Too few type args should error");
+        if let Err(TypeError::WrongTypeArgumentCount { expected, found, .. }) = result {
+            assert_eq!(expected, 2);
+            assert_eq!(found, 1);
+        } else { panic!("Expected WrongTypeArgumentCount, got: {:?}", result); }
+    }
+
+    // ===== Plan 58: Return Path Analysis =====
+
+    #[test]
+    fn test_return_path_simple_return() {
+        let mut checker = TypeChecker::new();
+        let func = Item::Function(FunctionDef {
+            name: "get_value".to_string(),
+            is_public: true,
+            params: vec![],
+            return_ty: Some(TypeNode::Int),
+            body: Block { statements: vec![
+                Statement::Return(Some(Expression::Int(42))),
+            ]},
+        });
+        assert!(checker.check_item(&func).is_ok(), "Function with return should pass");
+    }
+
+    #[test]
+    fn test_return_path_missing_return() {
+        let mut checker = TypeChecker::new();
+        let func = Item::Function(FunctionDef {
+            name: "get_value".to_string(),
+            is_public: true,
+            params: vec![],
+            return_ty: Some(TypeNode::Int),
+            body: Block { statements: vec![
+                Statement::Let { name: "x".to_string(), ty: None, value: Expression::Int(42) },
+            ]},
+        });
+        let result = checker.check_item(&func);
+        assert!(result.is_err(), "Function without return should fail");
+        assert!(matches!(result, Err(TypeError::MissingReturn { .. })));
+    }
+
+    #[test]
+    fn test_return_path_if_else_both() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Bool);
+        let func = Item::Function(FunctionDef {
+            name: "pick".to_string(),
+            is_public: true,
+            params: vec![],
+            return_ty: Some(TypeNode::Int),
+            body: Block { statements: vec![
+                Statement::If {
+                    condition: Expression::Bool(true),
+                    then_block: Block { statements: vec![
+                        Statement::Return(Some(Expression::Int(1))),
+                    ]},
+                    else_block: Some(Block { statements: vec![
+                        Statement::Return(Some(Expression::Int(2))),
+                    ]}),
+                },
+            ]},
+        });
+        assert!(checker.check_item(&func).is_ok(), "If/else both returning should pass");
+    }
+
+    #[test]
+    fn test_return_path_if_only_no_else() {
+        let mut checker = TypeChecker::new();
+        let func = Item::Function(FunctionDef {
+            name: "maybe".to_string(),
+            is_public: true,
+            params: vec![],
+            return_ty: Some(TypeNode::Int),
+            body: Block { statements: vec![
+                Statement::If {
+                    condition: Expression::Bool(true),
+                    then_block: Block { statements: vec![
+                        Statement::Return(Some(Expression::Int(1))),
+                    ]},
+                    else_block: None,
+                },
+            ]},
+        });
+        let result = checker.check_item(&func);
+        assert!(result.is_err(), "If without else should fail for non-void return");
+    }
+
+    #[test]
+    fn test_return_path_void_no_return_ok() {
+        let mut checker = TypeChecker::new();
+        let func = Item::Function(FunctionDef {
+            name: "do_stuff".to_string(),
+            is_public: true,
+            params: vec![],
+            return_ty: Some(TypeNode::Void),
+            body: Block { statements: vec![
+                Statement::Let { name: "x".to_string(), ty: None, value: Expression::Int(42) },
+            ]},
+        });
+        assert!(checker.check_item(&func).is_ok(), "Void function without return should pass");
+    }
+
+    // ===== Plan 59: OCAP Construction Validation =====
+
+    #[test]
+    fn test_capability_let_in_unsafe_ok() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        checker.env.insert("token".to_string(), TypeNode::Capability(CapabilityType::NetworkAccess));
+        let block = Block { statements: vec![
+            Statement::Let {
+                name: "net".to_string(),
+                ty: Some(TypeNode::Capability(CapabilityType::NetworkAccess)),
+                value: Expression::Identifier("token".to_string()),
+            },
+        ]};
+        // Inside unsafe block should be OK
+        assert!(checker.check_block(&block).is_ok());
+    }
+
+    #[test]
+    fn test_capability_let_outside_unsafe_error() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = false;
+        let block = Block { statements: vec![
+            Statement::Let {
+                name: "net".to_string(),
+                ty: Some(TypeNode::Capability(CapabilityType::NetworkAccess)),
+                value: Expression::Identifier("token".to_string()),
+            },
+        ]};
+        let result = checker.check_block(&block);
+        assert!(result.is_err(), "Capability construction outside unsafe should error");
+        assert!(matches!(result, Err(TypeError::CapabilityConstructionOutsideUnsafe { .. })));
+    }
+
+    #[test]
+    fn test_capability_as_param_not_construction() {
+        // Capability as method parameter type is NOT construction — should not error
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = false;
+        // Simulating having a capability in env (passed as param, not constructed)
+        checker.env.insert("net_cap".to_string(), TypeNode::Capability(CapabilityType::NetworkAccess));
+        checker.available_capabilities.push(CapabilityType::NetworkAccess);
+        // Using the capability should be fine
+        let block = Block { statements: vec![
+            Statement::Let {
+                name: "x".to_string(),
+                ty: None, // No explicit Capability type — just using the value
+                value: Expression::Identifier("net_cap".to_string()),
+            },
+        ]};
+        assert!(checker.check_block(&block).is_ok(), "Using capability var should not trigger construction check");
+    }
+
+    // ===== Wave 11: Type Casting =====
+
+    #[test]
+    fn test_cast_returns_target_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Int);
+        let expr = Expression::Cast {
+            expr: Box::new(Expression::Identifier("x".to_string())),
+            target_type: TypeNode::Float,
+        };
+        let result = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(result, TypeNode::Float);
+    }
+
+    #[test]
+    fn test_cast_int_to_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::Cast {
+            expr: Box::new(Expression::Int(42)),
+            target_type: TypeNode::String,
+        };
+        let result = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(result, TypeNode::String);
+    }
+
+    // ===== Wave 11: If-Expression Type =====
+
+    #[test]
+    fn test_if_expr_returns_then_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::IfExpr {
+            condition: Box::new(Expression::Bool(true)),
+            then_block: Block { statements: vec![Statement::Expr(Expression::Int(42))] },
+            else_block: Block { statements: vec![Statement::Expr(Expression::Int(0))] },
+        };
+        let result = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(result, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_if_expr_requires_bool_condition() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::IfExpr {
+            condition: Box::new(Expression::Int(1)),
+            then_block: Block { statements: vec![Statement::Expr(Expression::Int(42))] },
+            else_block: Block { statements: vec![Statement::Expr(Expression::Int(0))] },
+        };
+        assert!(checker.infer_expression_type(&expr).is_err(), "Non-bool condition should fail");
+    }
+
+    // ===== Realistic TypeChecker Use Case Tests =====
+
+    #[test]
+    fn test_realistic_agent_method_return_types() {
+        // Agent with typed methods — type system validates returns
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "Calculator".to_string(),
+                is_system: false, is_public: true,
+                target_annotation: None, annotations: vec![],
+                implements: vec![],
+                fields: vec![
+                    FieldDecl { name: "total".to_string(), ty: TypeNode::Int, default_value: None },
+                ],
+                methods: vec![
+                    MethodDecl {
+                        name: "Add".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None }],
+                        return_ty: Some(TypeNode::Int),
+                        body: Some(Block { statements: vec![
+                            Statement::Assign {
+                                name: "total".to_string(),
+                                value: Expression::BinaryOp {
+                                    left: Box::new(Expression::Identifier("total".to_string())),
+                                    operator: BinaryOperator::Add,
+                                    right: Box::new(Expression::Identifier("x".to_string())),
+                                },
+                            },
+                            Statement::Return(Some(Expression::Identifier("total".to_string()))),
+                        ]}),
+                    },
+                ],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_realistic_contract_enforcement_wrong_return() {
+        // Contract says string, agent returns int — must fail
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Contract(ContractDef {
+                    name: "Formatter".to_string(),
+                    is_public: true, target_annotation: None,
+                    methods: vec![MethodDecl {
+                        name: "Format".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![FieldDecl { name: "val".to_string(), ty: TypeNode::Int, default_value: None }],
+                        return_ty: Some(TypeNode::String),
+                        body: None,
+                    }],
+                }),
+                Item::Agent(AgentDef {
+                    name: "BadFormatter".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec!["Formatter".to_string()],
+                    fields: vec![],
+                    methods: vec![
+                        // Missing the Format method entirely
+                    ],
+                }),
+            ],
+        };
+        // Should fail because agent doesn't implement required Format method
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_realistic_foreach_type_inference() {
+        // foreach item in items — item should be typed from array element
+        let mut checker = TypeChecker::new();
+        checker.env.insert("scores".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let block = Block { statements: vec![
+            Statement::Foreach {
+                item_name: "score".to_string(),
+                value_name: None,
+                collection: Expression::Identifier("scores".to_string()),
+                body: Block { statements: vec![
+                    // score should be int, using it in arithmetic should work
+                    Statement::Let {
+                        name: "doubled".to_string(),
+                        ty: None,
+                        value: Expression::BinaryOp {
+                            left: Box::new(Expression::Identifier("score".to_string())),
+                            operator: BinaryOperator::Mul,
+                            right: Box::new(Expression::Int(2)),
+                        },
+                    },
+                ]},
+            },
+        ]};
+        assert!(checker.check_block(&block).is_ok());
+    }
+
+    #[test]
+    fn test_realistic_match_exhaustiveness() {
+        // Enum with 3 variants, match only covers 2 — must error
+        let mut checker = TypeChecker::new();
+        checker.enum_defs.insert("Color".to_string(), vec![
+            EnumVariant { name: "Red".to_string(), fields: vec![] },
+            EnumVariant { name: "Green".to_string(), fields: vec![] },
+            EnumVariant { name: "Blue".to_string(), fields: vec![] },
+        ]);
+        checker.env.insert("c".to_string(), TypeNode::Custom("Color".to_string()));
+        let block = Block { statements: vec![
+            Statement::Match {
+                subject: Expression::Identifier("c".to_string()),
+                arms: vec![
+                    MatchArm { pattern: Pattern::Variant("Red".to_string(), vec![]), guard: None, body: Block { statements: vec![] } },
+                    MatchArm { pattern: Pattern::Variant("Green".to_string(), vec![]), guard: None, body: Block { statements: vec![] } },
+                    // Missing Blue!
+                ],
+            },
+        ]};
+        assert!(checker.check_block(&block).is_err(), "Non-exhaustive match should fail");
+    }
+
+    #[test]
+    fn test_realistic_match_with_wildcard_exhaustive() {
+        // Wildcard _ covers remaining variants — should pass
+        let mut checker = TypeChecker::new();
+        checker.enum_defs.insert("Status".to_string(), vec![
+            EnumVariant { name: "Ok".to_string(), fields: vec![] },
+            EnumVariant { name: "Err".to_string(), fields: vec![("msg".to_string(), TypeNode::String)] },
+            EnumVariant { name: "Pending".to_string(), fields: vec![] },
+        ]);
+        checker.env.insert("s".to_string(), TypeNode::Custom("Status".to_string()));
+        let block = Block { statements: vec![
+            Statement::Match {
+                subject: Expression::Identifier("s".to_string()),
+                arms: vec![
+                    MatchArm { pattern: Pattern::Variant("Ok".to_string(), vec![]), guard: None, body: Block { statements: vec![] } },
+                    MatchArm { pattern: Pattern::Wildcard, guard: None, body: Block { statements: vec![] } },
+                ],
+            },
+        ]};
+        assert!(checker.check_block(&block).is_ok());
+    }
+
+    #[test]
+    fn test_realistic_ocap_fetch_without_capability() {
+        // Calling fetch() without NetworkAccess — must fail
+        let mut checker = TypeChecker::new();
+        let block = Block { statements: vec![
+            Statement::Expr(Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "fetch".to_string(),
+                args: vec![Expression::String("https://api.com".to_string())],
+            }),
+        ]};
+        assert!(checker.check_block(&block).is_err(), "fetch without NetworkAccess should fail");
+    }
+
+    #[test]
+    fn test_realistic_ocap_fetch_with_capability() {
+        // Calling fetch() with NetworkAccess in scope — should pass
+        let mut checker = TypeChecker::new();
+        checker.available_capabilities.push(CapabilityType::NetworkAccess);
+        let block = Block { statements: vec![
+            Statement::Expr(Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "fetch".to_string(),
+                args: vec![Expression::String("https://api.com".to_string())],
+            }),
+        ]};
+        assert!(checker.check_block(&block).is_ok());
+    }
+
+    #[test]
+    fn test_realistic_binary_op_type_checking() {
+        // int + int = int, string + string = string, int + string = string
+        let mut checker = TypeChecker::new();
+        // int + int → int
+        let expr1 = Expression::BinaryOp {
+            left: Box::new(Expression::Int(1)),
+            operator: BinaryOperator::Add,
+            right: Box::new(Expression::Int(2)),
+        };
+        assert_eq!(checker.infer_expression_type(&expr1).unwrap(), TypeNode::Int);
+
+        // string + string → string
+        let expr2 = Expression::BinaryOp {
+            left: Box::new(Expression::String("hello".to_string())),
+            operator: BinaryOperator::Add,
+            right: Box::new(Expression::String(" world".to_string())),
+        };
+        assert_eq!(checker.infer_expression_type(&expr2).unwrap(), TypeNode::String);
+
+        // comparison → bool
+        let expr3 = Expression::BinaryOp {
+            left: Box::new(Expression::Int(1)),
+            operator: BinaryOperator::Gt,
+            right: Box::new(Expression::Int(2)),
+        };
+        assert_eq!(checker.infer_expression_type(&expr3).unwrap(), TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_realistic_try_propagate_with_result() {
+        // expr? on Result<string, Error> should unwrap to string
+        let mut checker = TypeChecker::new();
+        checker.env.insert("response".to_string(), TypeNode::Result(
+            Box::new(TypeNode::String),
+            Box::new(TypeNode::Error),
+        ));
+        let expr = Expression::TryPropagate(Box::new(Expression::Identifier("response".to_string())));
+        let result = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(result, TypeNode::String);
+    }
+
+    #[test]
+    fn test_realistic_or_default_with_result() {
+        // result or "fallback" on Result<string, Error>
+        let mut checker = TypeChecker::new();
+        checker.env.insert("maybe".to_string(), TypeNode::Result(
+            Box::new(TypeNode::String),
+            Box::new(TypeNode::Error),
+        ));
+        let expr = Expression::OrDefault {
+            expr: Box::new(Expression::Identifier("maybe".to_string())),
+            default: Box::new(Expression::String("fallback".to_string())),
+        };
+        let result = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(result, TypeNode::String);
+    }
+
+    #[test]
+    fn test_realistic_lambda_in_filter() {
+        // (int x) => x > 5 — lambda type inference
+        let mut checker = TypeChecker::new();
+        let expr = Expression::Lambda {
+            params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None }],
+            return_ty: None,
+            body: Box::new(LambdaBody::Expression(Expression::BinaryOp {
+                left: Box::new(Expression::Identifier("x".to_string())),
+                operator: BinaryOperator::Gt,
+                right: Box::new(Expression::Int(5)),
+            })),
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_ok(), "Lambda should type-check: {:?}", result);
+    }
+
+    #[test]
+    fn test_realistic_undeclared_variable_in_method() {
+        // Using undeclared variable should error
+        let mut checker = TypeChecker::new();
+        let block = Block { statements: vec![
+            Statement::Let {
+                name: "x".to_string(),
+                ty: None,
+                value: Expression::BinaryOp {
+                    left: Box::new(Expression::Identifier("undefined_var".to_string())),
+                    operator: BinaryOperator::Add,
+                    right: Box::new(Expression::Int(1)),
+                },
+            },
+        ]};
+        assert!(checker.check_block(&block).is_err(), "Undeclared variable should fail");
+    }
+
+    #[test]
+    fn test_realistic_if_condition_must_be_bool() {
+        // if x + 1 { ... } — non-bool condition must fail
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Int);
+        let block = Block { statements: vec![
+            Statement::If {
+                condition: Expression::BinaryOp {
+                    left: Box::new(Expression::Identifier("x".to_string())),
+                    operator: BinaryOperator::Add,
+                    right: Box::new(Expression::Int(1)),
+                },
+                then_block: Block { statements: vec![] },
+                else_block: None,
+            },
+        ]};
+        assert!(checker.check_block(&block).is_err(), "Non-bool if condition should fail");
+    }
+
+    #[test]
+    fn test_realistic_while_condition_must_be_bool() {
+        // while x { ... } where x is int — must fail
+        let mut checker = TypeChecker::new();
+        checker.env.insert("counter".to_string(), TypeNode::Int);
+        let block = Block { statements: vec![
+            Statement::While {
+                condition: Expression::Identifier("counter".to_string()),
+                body: Block { statements: vec![] },
+            },
+        ]};
+        assert!(checker.check_block(&block).is_err(), "Non-bool while condition should fail");
+    }
+
+    #[test]
+    fn test_realistic_cast_chain() {
+        // (x as float) as int — chained cast should return int
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Int);
+        let expr = Expression::Cast {
+            expr: Box::new(Expression::Cast {
+                expr: Box::new(Expression::Identifier("x".to_string())),
+                target_type: TypeNode::Float,
+            }),
+            target_type: TypeNode::Int,
+        };
+        let result = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(result, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_realistic_generic_struct_with_type_params() {
+        // Struct with generic type params — verify struct registration
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Struct(StructDef {
+                    name: "Container".to_string(),
+                    is_public: true,
+                    type_params: vec!["T".to_string()],
+                    fields: vec![FieldDecl { name: "value".to_string(), ty: TypeNode::TypeVar("T".to_string()), default_value: None }],
+                }),
+                Item::Agent(AgentDef {
+                    name: "Test".to_string(),
+                    is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec![],
+                    fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Let {
+                                name: "x".to_string(),
+                                ty: Some(TypeNode::Int),
+                                value: Expression::Int(42),
+                            },
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        assert!(checker.check_program(&program).is_ok());
+        // Verify the generic struct was registered
+        assert!(checker.generic_structs.contains_key("Container"));
+    }
+
+    // ===== Wave 12: TypeChecker Method Validation Tests =====
+
+    #[test]
+    fn test_abs_preserves_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Int);
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("x".to_string())),
+            method_name: "abs".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Int);
+
+        checker.env.insert("f".to_string(), TypeNode::Float);
+        let expr2 = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("f".to_string())),
+            method_name: "abs".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr2).unwrap(), TypeNode::Float);
+    }
+
+    #[test]
+    fn test_sqrt_returns_float() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Float);
+        for method in &["sqrt", "floor", "ceil", "round"] {
+            let expr = Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("x".to_string())),
+                method_name: method.to_string(),
+                args: vec![],
+            };
+            assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Float,
+                "{} should return Float", method);
+        }
+    }
+
+    #[test]
+    fn test_min_max_validate_args() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Int);
+        // Valid: 1 arg
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("x".to_string())),
+            method_name: "min".to_string(),
+            args: vec![Expression::Int(5)],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Int);
+        // Invalid: 0 args
+        let bad = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("x".to_string())),
+            method_name: "max".to_string(),
+            args: vec![],
+        };
+        assert!(checker.infer_expression_type(&bad).is_err());
+    }
+
+    #[test]
+    fn test_parse_int_float_return_types() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("s".to_string(), TypeNode::String);
+        let expr_int = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("s".to_string())),
+            method_name: "parse_int".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr_int).unwrap(), TypeNode::Int);
+
+        let expr_float = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("s".to_string())),
+            method_name: "parse_float".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr_float).unwrap(), TypeNode::Float);
+    }
+
+    #[test]
+    fn test_to_string_returns_string() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Int);
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("x".to_string())),
+            method_name: "to_string".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::String);
+    }
+
+    #[test]
+    fn test_sort_returns_void() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "sort".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Void);
+    }
+
+    #[test]
+    fn test_join_returns_string() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::String)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "join".to_string(),
+            args: vec![Expression::String(", ".to_string())],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::String);
+        // Invalid: 0 args
+        let bad = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "join".to_string(),
+            args: vec![],
+        };
+        assert!(checker.infer_expression_type(&bad).is_err());
+    }
+
+    #[test]
+    fn test_count_returns_int() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "count".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Int);
+    }
+
+    #[test]
+    fn test_filter_preserves_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "filter".to_string(),
+            args: vec![Expression::Lambda {
+                params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None }],
+                return_ty: None,
+                body: Box::new(LambdaBody::Expression(Expression::Bool(true))),
+            }],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Array(Box::new(TypeNode::Int)));
+    }
+
+    #[test]
+    fn test_map_returns_dynamic_array() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "map".to_string(),
+            args: vec![Expression::Lambda {
+                params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None }],
+                return_ty: None,
+                body: Box::new(LambdaBody::Expression(Expression::String("a".to_string()))),
+            }],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string()))));
+    }
+
+    #[test]
+    fn test_find_returns_nullable_element() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("items".to_string())),
+            method_name: "find".to_string(),
+            args: vec![Expression::Lambda {
+                params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None }],
+                return_ty: None,
+                body: Box::new(LambdaBody::Expression(Expression::Bool(true))),
+            }],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Nullable(Box::new(TypeNode::Int)));
+    }
+
+    #[test]
+    fn test_any_all_return_bool() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let closure = Expression::Lambda {
+            params: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None }],
+            return_ty: None,
+            body: Box::new(LambdaBody::Expression(Expression::Bool(true))),
+        };
+        for method in &["any", "all"] {
+            let expr = Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("items".to_string())),
+                method_name: method.to_string(),
+                args: vec![closure.clone()],
+            };
+            assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Bool,
+                "{} should return Bool", method);
+        }
+    }
+
+    #[test]
+    fn test_iterator_methods_require_one_arg() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        for method in &["filter", "map", "flat_map", "find", "any", "all"] {
+            let bad = Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("items".to_string())),
+                method_name: method.to_string(),
+                args: vec![],
+            };
+            assert!(checker.infer_expression_type(&bad).is_err(),
+                "{} should fail with 0 args", method);
+        }
+    }
+
+    // ===== Wave 12: Multi-Error TypeChecker Tests =====
+
+    #[test]
+    fn test_multi_error_collects_multiple_agent_errors() {
+        // Two agents with separate errors — both should be reported
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "Agent1".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec!["NonexistentContract".to_string()],
+                    fields: vec![],
+                    methods: vec![],
+                }),
+                Item::Agent(AgentDef {
+                    name: "Agent2".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec!["AlsoNonexistent".to_string()],
+                    fields: vec![],
+                    methods: vec![],
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.len() >= 2, "Expected at least 2 errors, got {}: {:?}", errors.len(), errors);
+    }
+
+    #[test]
+    fn test_multi_error_no_errors_returns_ok() {
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "GoodAgent".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec![],
+                    fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![],
+                        constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Print(Expression::String("hello".to_string())),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    // ===== Wave 12: Struct Literal TypeChecker Tests =====
+
+    #[test]
+    fn test_struct_literal_type_inference() {
+        let mut checker = TypeChecker::new();
+        checker.struct_fields.insert("Point".to_string(), vec![
+            FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None },
+            FieldDecl { name: "y".to_string(), ty: TypeNode::Int, default_value: None },
+        ]);
+        let expr = Expression::StructLiteral {
+            type_name: "Point".to_string(),
+            fields: vec![
+                ("x".to_string(), Expression::Int(5)),
+                ("y".to_string(), Expression::Int(10)),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Custom("Point".to_string()));
+    }
+
+    #[test]
+    fn test_struct_literal_unknown_field_error() {
+        let mut checker = TypeChecker::new();
+        checker.struct_fields.insert("Point".to_string(), vec![
+            FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None },
+        ]);
+        let expr = Expression::StructLiteral {
+            type_name: "Point".to_string(),
+            fields: vec![
+                ("z".to_string(), Expression::Int(5)),
+            ],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TypeError::UnknownField { .. }));
+    }
+
+    // ===== Wave 12: Enum Construct TypeChecker Tests =====
+
+    #[test]
+    fn test_bare_ok_returns_result_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::EnumConstruct {
+            enum_name: String::new(),
+            variant_name: "Ok".to_string(),
+            args: vec![Expression::String("success".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert!(matches!(ty, TypeNode::Result(_, _)));
+    }
+
+    #[test]
+    fn test_bare_some_returns_nullable_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::EnumConstruct {
+            enum_name: String::new(),
+            variant_name: "Some".to_string(),
+            args: vec![Expression::Int(42)],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert!(matches!(ty, TypeNode::Nullable(_)));
+    }
+
+    #[test]
+    fn test_qualified_enum_construct_validates() {
+        let mut checker = TypeChecker::new();
+        checker.enum_defs.insert("Color".to_string(), vec![
+            EnumVariant { name: "Red".to_string(), fields: vec![] },
+            EnumVariant { name: "Blue".to_string(), fields: vec![] },
+        ]);
+        // Valid variant
+        let expr = Expression::EnumConstruct {
+            enum_name: "Color".to_string(),
+            variant_name: "Red".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Custom("Color".to_string()));
+
+        // Invalid variant
+        let bad = Expression::EnumConstruct {
+            enum_name: "Color".to_string(),
+            variant_name: "Green".to_string(),
+            args: vec![],
+        };
+        assert!(checker.infer_expression_type(&bad).is_err());
+    }
+
+    // ===== Wave 12 Phase 5: Source Span Tests =====
+
+    #[test]
+    fn test_spanned_error_has_span_for_undeclared_variable() {
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "SpanAgent".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec![],
+                    fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![],
+                        constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Expr(Expression::Identifier("unknown_var".to_string())),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        checker.set_source("agent SpanAgent { public void Run() { unknown_var; } }");
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        // Span should point to "unknown_var" in the source
+        assert!(errors[0].span.is_some(), "Expected span to be set");
+        let span = errors[0].span.as_ref().unwrap();
+        assert_eq!(&"agent SpanAgent { public void Run() { unknown_var; } }"[span.start..span.end], "unknown_var");
+    }
+
+    #[test]
+    fn test_spanned_error_falls_back_to_item_span() {
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "FallbackAgent".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec![],
+                    fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![],
+                        constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Int),
+                        body: Some(Block { statements: vec![
+                            Statement::Let {
+                                name: "x".to_string(),
+                                ty: Some(TypeNode::Int),
+                                value: Expression::String("oops".to_string()),
+                            },
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        checker.set_source("agent FallbackAgent { public int Run() { let int x = \"oops\"; } }");
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        // Should have a span (falls back to item name since TypeMismatch has no search_hint)
+        assert!(errors[0].span.is_some(), "Expected fallback span");
+    }
+
+    #[test]
+    fn test_spanned_error_none_without_source() {
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "NoSource".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec![],
+                    fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![],
+                        constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Expr(Expression::Identifier("missing".to_string())),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        // No set_source call
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].span.is_none(), "Expected no span when source is not set");
+    }
+
+    // ===== Wave 13: Did-You-Mean Suggestion Tests =====
+
+    #[test]
+    fn test_levenshtein_distance() {
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("hello", "hello"), 0);
+        assert_eq!(levenshtein("abc", "ab"), 1);
+        assert_eq!(levenshtein("lenght", "length"), 2); // transposition = 2 edits
+        assert_eq!(levenshtein("naem", "name"), 2);
+    }
+
+    #[test]
+    fn test_suggest_similar_finds_close_match() {
+        let candidates = vec!["name", "age", "email", "address"];
+        let suggestions = suggest_similar("naem", &candidates);
+        assert!(suggestions.contains(&"name".to_string()), "Should suggest 'name' for 'naem': {:?}", suggestions);
+    }
+
+    #[test]
+    fn test_suggest_similar_no_match_for_distant_name() {
+        let candidates = vec!["name", "age", "email"];
+        let suggestions = suggest_similar("zzzzzzzzz", &candidates);
+        assert!(suggestions.is_empty(), "Should have no suggestions for completely different name");
+    }
+
+    #[test]
+    fn test_undeclared_variable_with_suggestion() {
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Agent(AgentDef {
+                    name: "SuggestAgent".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec![],
+                    fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![],
+                        constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Let { name: "counter".to_string(), ty: Some(TypeNode::Int), value: Expression::Int(0) },
+                            // Typo: "conter" instead of "counter"
+                            Statement::Expr(Expression::Identifier("conter".to_string())),
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        let err = &result.unwrap_err()[0].error;
+        let msg = err.message();
+        assert!(msg.contains("did you mean"), "Error should contain suggestion: {}", msg);
+        assert!(msg.contains("counter"), "Error should suggest 'counter': {}", msg);
+    }
+
+    #[test]
+    fn test_unknown_field_with_suggestion() {
+        let mut checker = TypeChecker::new();
+        checker.struct_fields.insert("User".to_string(), vec![
+            FieldDecl { name: "name".to_string(), ty: TypeNode::String, default_value: None },
+            FieldDecl { name: "email".to_string(), ty: TypeNode::String, default_value: None },
+        ]);
+        let expr = Expression::PropertyAccess {
+            caller: Box::new(Expression::Identifier("u".to_string())),
+            property_name: "naem".to_string(),
+        };
+        checker.env.insert("u".to_string(), TypeNode::Custom("User".to_string()));
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("did you mean"), "Error should contain suggestion: {}", msg);
+        assert!(msg.contains("name"), "Error should suggest 'name': {}", msg);
+    }
+
+    #[test]
+    fn test_unknown_method_with_suggestion() {
+        let mut checker = TypeChecker::new();
+        let mut methods = HashMap::new();
+        methods.insert("Calculate".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::Int),
+            args: vec![],
+        });
+        checker.method_signatures.insert("MathHelper".to_string(), methods);
+        checker.env.insert("m".to_string(), TypeNode::Custom("MathHelper".to_string()));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("m".to_string())),
+            method_name: "Calculte".to_string(),
+            args: vec![],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("did you mean"), "Error should contain suggestion: {}", msg);
+        assert!(msg.contains("Calculate"), "Error should suggest 'Calculate': {}", msg);
+    }
+
+    #[test]
+    fn test_builtin_method_suggestion() {
+        // Typo on a builtin method
+        let mut checker = TypeChecker::new();
+        checker.env.insert("arr".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("arr".to_string())),
+            method_name: "lenght".to_string(),
+            args: vec![],
+        };
+        let result = checker.infer_expression_type(&expr);
+        // For Custom types with registered methods, unknown methods get suggestions
+        checker.env.insert("obj".to_string(), TypeNode::Custom("MyType".to_string()));
+        // Register type with some methods so UnknownMethod triggers
+        checker.method_signatures.insert("MyType".to_string(), HashMap::new());
+        let expr2 = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("obj".to_string())),
+            method_name: "lenght".to_string(),
+            args: vec![],
+        };
+        let result2 = checker.infer_expression_type(&expr2);
+        assert!(result2.is_err());
+        let msg = result2.unwrap_err().message();
+        assert!(msg.contains("did you mean"), "Error should contain builtin suggestion: {}", msg);
+        assert!(msg.contains("length"), "Error should suggest 'length': {}", msg);
+    }
+
+    // ===== Wave 13: Contract Default Implementation Tests =====
+
+    #[test]
+    fn test_contract_default_impl_agent_can_skip() {
+        // Contract with default method — agent doesn't need to implement it
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Contract(ContractDef {
+                    name: "Logger".to_string(),
+                    is_public: false,
+                    target_annotation: None,
+                    methods: vec![
+                        MethodDecl {
+                            name: "log".to_string(),
+                            is_public: true, is_async: false,
+                            annotations: vec![], type_params: vec![], constraints: vec![],
+                            args: vec![FieldDecl { name: "msg".to_string(), ty: TypeNode::String, default_value: None }],
+                            return_ty: Some(TypeNode::Void),
+                            body: None, // abstract — must be implemented
+                        },
+                        MethodDecl {
+                            name: "format".to_string(),
+                            is_public: true, is_async: false,
+                            annotations: vec![], type_params: vec![], constraints: vec![],
+                            args: vec![FieldDecl { name: "msg".to_string(), ty: TypeNode::String, default_value: None }],
+                            return_ty: Some(TypeNode::String),
+                            body: Some(Block { statements: vec![
+                                Statement::Return(Some(Expression::Identifier("msg".to_string()))),
+                            ]}), // default implementation
+                        },
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "MyLogger".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec!["Logger".to_string()],
+                    fields: vec![],
+                    methods: vec![
+                        // Only implements `log`, skips `format` (has default)
+                        MethodDecl {
+                            name: "log".to_string(),
+                            is_public: true, is_async: false,
+                            annotations: vec![], type_params: vec![], constraints: vec![],
+                            args: vec![FieldDecl { name: "msg".to_string(), ty: TypeNode::String, default_value: None }],
+                            return_ty: Some(TypeNode::Void),
+                            body: Some(Block { statements: vec![
+                                Statement::Print(Expression::Identifier("msg".to_string())),
+                            ]}),
+                        },
+                    ],
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok(), "Agent should be able to skip methods with defaults");
+    }
+
+    #[test]
+    fn test_contract_no_default_still_required() {
+        // Contract without default — agent MUST implement
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Contract(ContractDef {
+                    name: "Runnable".to_string(),
+                    is_public: false,
+                    target_annotation: None,
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: None, // no default
+                    }],
+                }),
+                Item::Agent(AgentDef {
+                    name: "LazyAgent".to_string(),
+                    is_system: false, is_public: true,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec!["Runnable".to_string()],
+                    fields: vec![],
+                    methods: vec![], // Missing Run!
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err(), "Should error when required method is missing");
+    }
+
+    // ===== Wave 13: impl Blocks for Structs =====
+
+    #[test]
+    fn test_impl_block_registers_methods() {
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Struct(StructDef {
+                    name: "Point".to_string(),
+                    is_public: false,
+                    type_params: vec![],
+                    fields: vec![
+                        FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None },
+                        FieldDecl { name: "y".to_string(), ty: TypeNode::Int, default_value: None },
+                    ],
+                }),
+                Item::Impl {
+                    type_name: "Point".to_string(),
+                    type_params: vec![],
+                    methods: vec![MethodDecl {
+                        name: "sum".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Int),
+                        body: Some(Block { statements: vec![
+                            Statement::Return(Some(Expression::BinaryOp {
+                                left: Box::new(Expression::PropertyAccess {
+                                    caller: Box::new(Expression::Identifier("self".to_string())),
+                                    property_name: "x".to_string(),
+                                }),
+                                operator: BinaryOperator::Add,
+                                right: Box::new(Expression::PropertyAccess {
+                                    caller: Box::new(Expression::Identifier("self".to_string())),
+                                    property_name: "y".to_string(),
+                                }),
+                            }))
+                        ]}),
+                    }],
+                },
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_impl_block_method_call_on_struct() {
+        // Test that after impl, we can call the method on a struct variable
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Struct(StructDef {
+                    name: "Counter".to_string(),
+                    is_public: false,
+                    type_params: vec![],
+                    fields: vec![
+                        FieldDecl { name: "count".to_string(), ty: TypeNode::Int, default_value: None },
+                    ],
+                }),
+                Item::Impl {
+                    type_name: "Counter".to_string(),
+                    type_params: vec![],
+                    methods: vec![MethodDecl {
+                        name: "get_count".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Int),
+                        body: Some(Block { statements: vec![
+                            Statement::Return(Some(Expression::PropertyAccess {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                property_name: "count".to_string(),
+                            }))
+                        ]}),
+                    }],
+                },
+                Item::Agent(AgentDef {
+                    name: "App".to_string(),
+                    is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![],
+                    implements: vec![],
+                    fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Let {
+                                name: "c".to_string(),
+                                ty: Some(TypeNode::Custom("Counter".to_string())),
+                                value: Expression::StructLiteral {
+                                    type_name: "Counter".to_string(),
+                                    fields: vec![("count".to_string(), Expression::Int(5))],
+                                },
+                            },
+                            Statement::Let {
+                                name: "val".to_string(),
+                                ty: None,
+                                value: Expression::MethodCall {
+                                    caller: Box::new(Expression::Identifier("c".to_string())),
+                                    method_name: "get_count".to_string(),
+                                    args: vec![],
+                                },
+                            },
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_impl_block_nonexistent_struct_error() {
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Impl {
+                    type_name: "Ghost".to_string(),
+                    type_params: vec![],
+                    methods: vec![MethodDecl {
+                        name: "boo".to_string(),
+                        is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![] }),
+                    }],
+                },
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err(), "impl for nonexistent struct should fail");
+    }
+
+    // ===== Wave 13: Stdlib Expansion Tests =====
+
+    #[test]
+    fn test_stdlib_fs_read_requires_capability() {
+        let mut checker = TypeChecker::new();
+        // Without FileAccess capability, fs_read should fail
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_read".to_string(),
+            args: vec![Expression::String("test.txt".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_stdlib_fs_read_with_capability() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true; // unsafe bypasses OCAP
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_read".to_string(),
+            args: vec![Expression::String("test.txt".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        // Wave 14: fs_read now returns Result<String, String>
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
+    }
+
+    // ===== Wave 15: fs_append + fs_read_lines =====
+
+    #[test]
+    fn test_stdlib_fs_append_type() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_append".to_string(),
+            args: vec![Expression::String("log.txt".to_string()), Expression::String("line\n".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_fs_read_lines_type() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_read_lines".to_string(),
+            args: vec![Expression::String("data.txt".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::String))), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_fs_append_requires_capability() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_append".to_string(),
+            args: vec![Expression::String("log.txt".to_string()), Expression::String("data".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err(), "fs_append without FileAccess should fail");
+    }
+
+    // ===== Wave 15: Shell Command Execution =====
+
+    #[test]
+    fn test_stdlib_exec_type() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "exec".to_string(),
+            args: vec![Expression::String("echo hello".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_exec_status_type() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "exec_status".to_string(),
+            args: vec![Expression::String("ls".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_exec_requires_system_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "exec".to_string(),
+            args: vec![Expression::String("echo hello".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err(), "exec without SystemAccess should fail");
+    }
+
+    // ===== Wave 15: Test Framework — assert builtins =====
+
+    #[test]
+    fn test_stdlib_assert_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "assert".to_string(),
+            args: vec![Expression::Bool(true), Expression::String("should pass".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Void);
+    }
+
+    #[test]
+    fn test_stdlib_assert_requires_bool_condition() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "assert".to_string(),
+            args: vec![Expression::String("not bool".to_string()), Expression::String("msg".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err(), "assert with non-bool condition should fail");
+    }
+
+    #[test]
+    fn test_stdlib_assert_eq_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "assert_eq".to_string(),
+            args: vec![Expression::Int(5), Expression::Int(5), Expression::String("should match".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Void);
+    }
+
+    // ===== Wave 15: Typed JSON =====
+
+    #[test]
+    fn test_stdlib_json_parse_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "json_parse".to_string(),
+            args: vec![Expression::String("{\"key\": \"value\"}".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::JsonValue), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_json_get_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "json_get".to_string(),
+            args: vec![Expression::Identifier("json".to_string()), Expression::String("/name".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_stdlib_json_get_int_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "json_get_int".to_string(),
+            args: vec![Expression::Identifier("json".to_string()), Expression::String("/age".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_stdlib_json_get_array_type() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "json_get_array".to_string(),
+            args: vec![Expression::Identifier("json".to_string()), Expression::String("/tags".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::String)));
+    }
+
+    // ===== Wave 15: HTTP Response with Status =====
+
+    #[test]
+    fn test_stdlib_http_request_type() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "http_request".to_string(),
+            args: vec![Expression::String("https://api.example.com".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_http_request_requires_network_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "http_request".to_string(),
+            args: vec![Expression::String("https://api.example.com".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err(), "http_request without NetworkAccess should fail");
+    }
+
+    #[test]
+    fn test_stdlib_path_exists_returns_bool() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "path_exists".to_string(),
+            args: vec![Expression::String("/tmp".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_stdlib_path_join_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "path_join".to_string(),
+            args: vec![Expression::String("/home".to_string()), Expression::String("user".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_stdlib_regex_match_returns_result_bool() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "regex_match".to_string(),
+            args: vec![Expression::String("\\d+".to_string()), Expression::String("abc123".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        // Wave 14: regex_match returns Result<Bool, String>
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::Bool), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_regex_find_all_returns_result_array() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "regex_find_all".to_string(),
+            args: vec![Expression::String("\\d+".to_string()), Expression::String("a1b2c3".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        // Wave 14: regex_find_all returns Result<string[], String>
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::String))), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_regex_replace_returns_result_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "regex_replace".to_string(),
+            args: vec![
+                Expression::String("\\d+".to_string()),
+                Expression::String("a1b2".to_string()),
+                Expression::String("X".to_string()),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        // Wave 14: regex_replace returns Result<String, String>
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_sleep_returns_void() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sleep".to_string(),
+            args: vec![Expression::Int(1000)],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Void);
+    }
+
+    #[test]
+    fn test_stdlib_timestamp_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "timestamp".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_stdlib_fs_read_dir_returns_result_string_array() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_read_dir".to_string(),
+            args: vec![Expression::String("/tmp".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        // Wave 14: fs_read_dir returns Result<string[], String>
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::String))), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_stdlib_path_parent_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "path_parent".to_string(),
+            args: vec![Expression::String("/home/user/file.txt".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_stdlib_wrong_arg_count() {
+        let mut checker = TypeChecker::new();
+        // fs_read with 0 args should fail
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "path_join".to_string(),
+            args: vec![Expression::String("only_one".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_err(), "path_join needs 2 args");
+    }
+
+    // ===== Wave 16: for (k, v) in map =====
+
+    #[test]
+    fn test_foreach_map_kv_destructure() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("config".to_string(), TypeNode::Map(
+            Box::new(TypeNode::String), Box::new(TypeNode::Int),
+        ));
+        let block = Block { statements: vec![
+            Statement::Foreach {
+                item_name: "key".to_string(),
+                value_name: Some("val".to_string()),
+                collection: Expression::Identifier("config".to_string()),
+                body: Block { statements: vec![
+                    // key should be string, val should be int
+                    Statement::Let {
+                        name: "msg".to_string(),
+                        ty: Some(TypeNode::String),
+                        value: Expression::Identifier("key".to_string()),
+                    },
+                    Statement::Let {
+                        name: "num".to_string(),
+                        ty: Some(TypeNode::Int),
+                        value: Expression::Identifier("val".to_string()),
+                    },
+                ]},
+            },
+        ]};
+        assert!(checker.check_block(&block).is_ok(), "Map KV destructure should typecheck");
+    }
+
+    #[test]
+    fn test_foreach_kv_on_non_map_fails() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
+        let block = Block { statements: vec![
+            Statement::Foreach {
+                item_name: "k".to_string(),
+                value_name: Some("v".to_string()),
+                collection: Expression::Identifier("items".to_string()),
+                body: Block { statements: vec![] },
+            },
+        ]};
+        assert!(checker.check_block(&block).is_err(), "KV destructure on Array should fail");
     }
 }

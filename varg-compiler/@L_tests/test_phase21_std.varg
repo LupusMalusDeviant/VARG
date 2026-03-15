@@ -1,0 +1,26 @@
+system agent StdTester {
+    public void Run() {
+        print "Testing std functions...";
+        
+        unsafe {
+            file_write("varg_test_std.txt", "   Hello Varg   ");
+            var content = file_read("varg_test_std.txt");
+            
+            var trimmed = str_trim(content);
+            print "Trimmed:";
+            print trimmed;
+            
+            var replaced = str_replace(trimmed, "Varg", "World");
+            print "Replaced:";
+            print replaced;
+            
+            var splitted = str_split(replaced, " ");
+            print "Splitted:";
+            print splitted;
+        }
+        
+        var t = time_now();
+        print "Current Timestamp:";
+        print t;
+    }
+}

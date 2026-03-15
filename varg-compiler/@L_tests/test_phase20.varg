@@ -1,0 +1,14 @@
+system agent Persona {
+    public void Run() {
+        string user_name = "Alice";
+        int memory_size = 128;
+        
+        Prompt my_prompt = prompt """
+            Du bist ein hilfsbereiter Assistent.
+            Der aktuelle Benutzer heißt ${user_name}.
+            Dein Context-Limit ist ${memory_size} Tokens.
+        """;
+        
+        print my_prompt.text;
+    }
+}

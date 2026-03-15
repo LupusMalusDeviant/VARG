@@ -1,0 +1,25 @@
+agent WebService {
+    public void Run() {
+        print "WebService Agent is booting up...";
+        print "It will automatically start an async Axum server on port 8080!";
+    }
+
+    @[ApiEndpoint("POST /api/echo")]
+    public string Echo(string body) {
+        print "--> Received HTTP POST Request!";
+        
+        // Parse the incoming body dynamically
+        var req = from_json(body);
+        
+        // Manipulate
+        req.insert("status", "Success from NexOS Server");
+        req.insert("processed_by", "WebService Agent");
+        
+        // Send back
+        var response = to_json(req);
+        print "--> Sending HTTP Response:";
+        print response;
+        
+        return response;
+    }
+}

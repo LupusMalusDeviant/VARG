@@ -338,4 +338,66 @@ mod tests {
         assert_eq!(lexer.next().unwrap().0, Ok(Token::RParen));
         assert_eq!(lexer.next(), None);
     }
+
+    // Plan 37: Range tokens
+    #[test]
+    fn test_range_tokens() {
+        let mut lexer = Lexer::new("0..10");
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::IntLiteral(0)));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::DotDot));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::IntLiteral(10)));
+        assert_eq!(lexer.next(), None);
+    }
+
+    #[test]
+    fn test_range_inclusive_tokens() {
+        let mut lexer = Lexer::new("0..=10");
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::IntLiteral(0)));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::DotDotEquals));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::IntLiteral(10)));
+        assert_eq!(lexer.next(), None);
+    }
+
+    #[test]
+    fn test_dot_still_works() {
+        let mut lexer = Lexer::new("a.b");
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Identifier("a".to_string())));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Dot));
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::Identifier("b".to_string())));
+        assert_eq!(lexer.next(), None);
+    }
+
+    // ---- Plan 42: Float Literal Tests ----
+
+    #[test]
+    fn test_float_literal() {
+        let mut lexer = Lexer::new("3.14");
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::FloatLiteral(3.14)));
+        assert_eq!(lexer.next(), None);
+    }
+
+    #[test]
+    fn test_float_type_token() {
+        let mut lexer = Lexer::new("float");
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::TypeFloat));
+    }
+
+    #[test]
+    fn test_int_not_float() {
+        let mut lexer = Lexer::new("42");
+        assert_eq!(lexer.next().unwrap().0, Ok(Token::IntLiteral(42)));
+    }
+
+    // ===== Wave 16: Multiline Strings =====
+
+    #[test]
+    fn test_multiline_string_literal() {
+        let source = "\"\"\"hello\nworld\"\"\"";
+        let mut lexer = Lexer::new(source);
+        let tok = lexer.next().unwrap().0.unwrap();
+        assert!(matches!(tok, Token::MultilineStringLiteral(_)), "Expected MultilineStringLiteral, got {:?}", tok);
+        if let Token::MultilineStringLiteral(s) = tok {
+            assert!(s.contains("hello\nworld"));
+        }
+    }
 }

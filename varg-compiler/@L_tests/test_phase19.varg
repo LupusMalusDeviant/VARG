@@ -1,0 +1,14 @@
++A ToolAgent {
+    @[CliCommand("add", "Adds two numbers")]
+    public string Add(i x, i y) {
+        i sum = x + y;
+        print sum;
+        return "Calculated";
+    }
+
+    @[McpTool("echo_word")]
+    public string Echo(s word) {
+        print word;
+        return word;
+    }
+}

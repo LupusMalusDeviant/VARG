@@ -1,0 +1,13 @@
+@target("NPU") public contract MemoryProvider {
+    public Result<string, Error> Fetch(Prompt q);
+}
+
+system agent VectorStore {
+    public void Init() {
+        string p = "/sys/fs/surreal/mem";
+        unsafe {
+            query "DEFINE TABLE memories SCHEMAFULL";
+        }
+        return;
+    }
+}

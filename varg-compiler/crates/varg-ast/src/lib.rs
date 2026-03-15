@@ -4,9 +4,13 @@ pub mod ast;
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(skip r"[ \t\r\n\f]+")] // Skip whitespace
-#[logos(skip r"//.*")]       // Skip single-line comments
+#[logos(skip r"//([^/\n].*)?")]  // Skip single-line comments (but NOT /// doc comments)
 #[logos(skip r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/")] // Skip multi-line comments
 pub enum Token {
+    // ---- Doc Comments (Wave 13) ----
+    #[regex(r"///[^\n]*", |lex| lex.slice()[3..].trim().to_string(), priority = 10)]
+    DocComment(String),
+
     // ---- Keywords ----
     #[token("contract")] Contract,
     #[token("agent")] Agent,
@@ -57,6 +61,8 @@ pub enum Token {
     #[token("await")] Await,
     #[token("const")] Const,
     #[token("fn", priority = 3)] Fn,
+    #[token("impl", priority = 3)] Impl,  // Wave 13: impl blocks for structs
+    #[token("as", priority = 3)] As,
 
     // ---- LINQ / Queries ----
     #[token("from")] From,
@@ -67,6 +73,9 @@ pub enum Token {
 
     // ---- Type Inference / Output ----
     #[token("var")] Var,
+    #[token("let")] Let,           // Plan 45: let as alias for var
+    #[token("mut", priority = 3)] Mut,  // Plan 45: accepted but ignored (vars are mutable by default)
+    #[token("pub", priority = 3)] Pub,  // Plan 45: pub as alias for public
     #[token("print")] Print,
 
     // ---- Annotations ----
@@ -82,6 +91,7 @@ pub enum Token {
     // ---- Primitive Types ----
     #[token("string")] TypeString,
     #[token("int")] TypeInt,
+    #[token("float")] TypeFloat,  // Plan 42: Float type
     #[token("ulong")] TypeUlong,
     #[token("bool")] TypeBool,
     #[token("void")] TypeVoid,
@@ -91,6 +101,14 @@ pub enum Token {
     #[token("#![no_std]")] NoStd,
 
     // ---- Literals ----
+    // Wave 16: Multiline strings with triple quotes """..."""
+    #[regex(r#""""([^"]|"[^"]|""[^"])*""""#, |lex| lex.slice().to_string(), priority = 5)]
+    MultilineStringLiteral(String),
+
+    // Interpolated strings: $"Hello {name}!" (Plan 35)
+    #[regex(r#"\$"(?:[^"\\]|\\.)*""#, |lex| lex.slice().to_string())]
+    InterpolatedStringLiteral(String),
+
     // Strings (extremely simplified for now, captures "anything" or 'anything')
     #[regex(r#""(?:[^"\\]|\\.)*""#, |lex| lex.slice().to_string())]
     StringLiteral(String),
@@ -99,7 +117,10 @@ pub enum Token {
     #[regex(r#"prompt\s*"""([^"]|"[^"]|""[^"])*""""#, |lex| lex.slice().to_string())]
     PromptLiteralToken(String),
 
-    // Numbers (Integers)
+    // Numbers (Plan 42: Float literals must come before Int to get priority via longest-match)
+    #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse().ok())]
+    FloatLiteral(f64),
+
     #[regex(r"[0-9]+", |lex| lex.slice().parse().ok())]
     IntLiteral(i64),
 
@@ -116,6 +137,7 @@ pub enum Token {
     #[token("[")] LBracket,
     #[token("]")] RBracket,
     #[token(";")] Semicolon,
+    #[token("::")] ColonColon,  // Wave 12: Enum path separator
     #[token(":")] Colon,
     #[token(",")] Comma,
     #[token(".")] Dot,
@@ -148,6 +170,10 @@ pub enum Token {
     #[token("->")] Arrow,
     #[token("|>")] Pipe,
 
+    // ---- Plan 37: Range Expressions ----
+    #[token("..=")] DotDotEquals,
+    #[token("..")] DotDot,
+
     // ---- Wave 6: LLM-Native Features ----
     #[token("retry")] Retry,
     #[token("fallback")] Fallback,
@@ -160,16 +186,13 @@ pub enum Token {
     #[token("or", priority = 3)] OrKeyword,
 
     // ---- Varg-Min (KI-Optimized Shorthands) ----
+    // Note: Single-letter shorthands (s, i, b, m, F) removed in Plan 32
+    // because they blocked normal variable names. Multi-char shorthands kept.
     #[token("+A")] PlusA,
     #[token("-A")] MinusA,
     #[token("+M")] PlusM,
     #[token("+V")] PlusV,
     #[token("?")] QuestionMark,
-    #[token("F", priority = 3)] FButton,
-    #[token("s", priority = 3)] TypeStringShort,
-    #[token("i", priority = 3)] TypeIntShort,
-    #[token("b", priority = 3)] TypeBoolShort,
-    #[token("m", priority = 3)] TypeMapShort,
 
     // ---- Identifiers ----
     #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]

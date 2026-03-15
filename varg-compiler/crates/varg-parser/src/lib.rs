@@ -69,6 +69,37 @@ impl Parser {
         self.tokens.get(self.pos).map(|(tok, _)| tok)
     }
 
+    /// Plan 47: Recursively resolve Custom("T") → TypeVar("T") for declared type params
+    fn resolve_type_vars(ty: &TypeNode, type_params: &[String]) -> TypeNode {
+        match ty {
+            TypeNode::Custom(name) if type_params.contains(name) => {
+                TypeNode::TypeVar(name.clone())
+            }
+            TypeNode::List(inner) => {
+                TypeNode::List(Box::new(Self::resolve_type_vars(inner, type_params)))
+            }
+            TypeNode::Map(k, v) => {
+                TypeNode::Map(
+                    Box::new(Self::resolve_type_vars(k, type_params)),
+                    Box::new(Self::resolve_type_vars(v, type_params)),
+                )
+            }
+            TypeNode::Nullable(inner) => {
+                TypeNode::Nullable(Box::new(Self::resolve_type_vars(inner, type_params)))
+            }
+            TypeNode::Tuple(types) => {
+                TypeNode::Tuple(types.iter().map(|t| Self::resolve_type_vars(t, type_params)).collect())
+            }
+            TypeNode::Generic(base, params) => {
+                TypeNode::Generic(
+                    base.clone(),
+                    params.iter().map(|t| Self::resolve_type_vars(t, type_params)).collect(),
+                )
+            }
+            other => other.clone(),
+        }
+    }
+
     fn is_variable_declaration_start(&mut self) -> bool {
         let saved_pos = self.pos;
         let is_decl = match self.parse_type() {
@@ -90,6 +121,63 @@ impl Parser {
             }),
             None => Err(ParseError::UnexpectedEof),
         }
+    }
+
+    // Plan 35: Parse interpolated string $"Hello {name}!" into parts
+    fn parse_interpolated_string(&mut self, raw: &str) -> Result<Expression, ParseError> {
+        // raw = $"Hello {name}, age {age}!"
+        // Strip $" prefix and " suffix
+        let inner = &raw[2..raw.len()-1];
+        let mut parts = Vec::new();
+        let mut current_literal = String::new();
+        let mut chars = inner.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '{' {
+                // Flush accumulated literal
+                if !current_literal.is_empty() {
+                    parts.push(InterpolationPart::Literal(current_literal.clone()));
+                    current_literal.clear();
+                }
+                // Collect expression text until matching '}'
+                let mut expr_text = String::new();
+                let mut depth = 1;
+                while let Some(inner_ch) = chars.next() {
+                    if inner_ch == '{' { depth += 1; }
+                    if inner_ch == '}' { depth -= 1; if depth == 0 { break; } }
+                    expr_text.push(inner_ch);
+                }
+                // Parse the expression text through a mini-parser
+                let mut mini_parser = Parser::new(&expr_text);
+                let expr = mini_parser.parse_expression()
+                    .map_err(|_| ParseError::UnexpectedToken {
+                        expected: format!("valid expression in interpolation: {}", expr_text),
+                        found: None,
+                        span: self.current_span(),
+                    })?;
+                parts.push(InterpolationPart::Expression(expr));
+            } else if ch == '\\' {
+                // Handle escape sequences
+                if let Some(next) = chars.next() {
+                    match next {
+                        'n' => current_literal.push('\n'),
+                        't' => current_literal.push('\t'),
+                        '\\' => current_literal.push('\\'),
+                        '"' => current_literal.push('"'),
+                        '{' => current_literal.push('{'),
+                        '}' => current_literal.push('}'),
+                        _ => { current_literal.push('\\'); current_literal.push(next); }
+                    }
+                }
+            } else {
+                current_literal.push(ch);
+            }
+        }
+        // Flush remaining literal
+        if !current_literal.is_empty() {
+            parts.push(InterpolationPart::Literal(current_literal));
+        }
+        Ok(Expression::InterpolatedString(parts))
     }
 
     fn parse_identifier(&mut self) -> Result<String, ParseError> {
@@ -148,10 +236,32 @@ impl Parser {
         }
 
         let mut items = Vec::new();
+        let mut docs = std::collections::HashMap::new();
         while self.peek().is_some() {
-            items.push(self.parse_item()?);
+            // Wave 13: Collect doc comments before items
+            let mut doc_lines = Vec::new();
+            while let Some(Token::DocComment(text)) = self.peek() {
+                doc_lines.push(text.clone());
+                self.advance();
+            }
+            if self.peek().is_none() { break; }
+            let item = self.parse_item()?;
+            if !doc_lines.is_empty() {
+                let item_name = match &item {
+                    Item::Agent(a) => Some(a.name.clone()),
+                    Item::Contract(c) => Some(c.name.clone()),
+                    Item::Struct(s) => Some(s.name.clone()),
+                    Item::Enum(e) => Some(e.name.clone()),
+                    Item::Function(f) => Some(f.name.clone()),
+                    _ => None,
+                };
+                if let Some(name) = item_name {
+                    docs.insert(name, doc_lines.join("\n"));
+                }
+            }
+            items.push(item);
         }
-        Ok(Program { no_std, items })
+        Ok(Program { no_std, items, docs })
     }
 
     fn parse_item(&mut self) -> Result<Item, ParseError> {
@@ -172,7 +282,7 @@ impl Parser {
 
         loop {
             match self.peek() {
-                Some(Token::Public) => {
+                Some(Token::Public) | Some(Token::Pub) => {
                     self.advance();
                     is_public = true;
                 }
@@ -187,6 +297,32 @@ impl Parser {
         match self.peek() {
             Some(Token::Import) => {
                 self.advance();
+                // Plan 41: Check for `import crate reqwest = "0.12";`
+                if self.peek() == Some(&Token::Identifier("crate".to_string())) {
+                    self.advance(); // consume "crate"
+                    let crate_name = self.parse_identifier()?;
+                    self.consume(Token::Assign)?;
+                    let version = match self.advance() {
+                        Some(Token::StringLiteral(v)) => v.trim_matches('"').to_string(),
+                        _ => return Err(ParseError::UnexpectedToken { expected: "version string".to_string(), found: None, span: 0..0 }),
+                    };
+                    // Optional: features ["full", "json"]
+                    let mut features = Vec::new();
+                    if self.peek() == Some(&Token::Identifier("features".to_string())) {
+                        self.advance(); // consume "features"
+                        self.consume(Token::LBracket)?;
+                        loop {
+                            match self.advance() {
+                                Some(Token::StringLiteral(f)) => features.push(f.trim_matches('"').to_string()),
+                                _ => return Err(ParseError::UnexpectedToken { expected: "feature string".to_string(), found: None, span: 0..0 }),
+                            }
+                            if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                        }
+                        self.consume(Token::RBracket)?;
+                    }
+                    self.consume(Token::Semicolon)?;
+                    return Ok(Item::CrateImport { crate_name, version, features });
+                }
                 let module = self.parse_identifier()?;
                 // Plan 26: Extended import syntax
                 let items = if self.peek() == Some(&Token::Dot) {
@@ -236,7 +372,7 @@ impl Parser {
                 // Plan 17: @[WithContext] auto-injects context field
                 if annotations.iter().any(|a| a.name == "WithContext") {
                     if !fields.iter().any(|f| f.name == "context") {
-                        fields.insert(0, FieldDecl { name: "context".to_string(), ty: TypeNode::Context });
+                        fields.insert(0, FieldDecl { name: "context".to_string(), ty: TypeNode::Context, default_value: None });
                     }
                 }
                 Ok(Item::Agent(AgentDef {
@@ -315,7 +451,7 @@ impl Parser {
                     loop {
                         let ty = self.parse_type()?;
                         let param_name = self.parse_identifier()?;
-                        params.push(FieldDecl { name: param_name, ty });
+                        params.push(FieldDecl { name: param_name, ty, default_value: None });
                         if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
                     }
                 }
@@ -325,6 +461,78 @@ impl Parser {
                 let body = self.parse_prompt_template_body()?;
                 self.consume(Token::RBrace)?;
                 Ok(Item::PromptTemplate(PromptTemplateDef { name, params, body }))
+            },
+            // Wave 13: impl blocks for structs
+            Some(Token::Impl) => {
+                self.advance();
+                let type_name = self.parse_identifier()?;
+                // Optional type parameters: impl<T> TypeName { ... }
+                let mut type_params = Vec::new();
+                if self.peek() == Some(&Token::LessThan) {
+                    self.advance();
+                    if self.peek() != Some(&Token::GreaterThan) {
+                        loop {
+                            type_params.push(self.parse_identifier()?);
+                            if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                        }
+                    }
+                    self.consume(Token::GreaterThan)?;
+                }
+                // Parse methods inside { }
+                self.consume(Token::LBrace)?;
+                let mut methods = Vec::new();
+                while self.peek() != Some(&Token::RBrace) && self.peek().is_some() {
+                    // Each method starts with optional pub/public, optional async, then fn
+                    let mut method_is_public = is_public; // inherit from impl block
+                    let method_is_async;
+                    // Check for pub/public
+                    if matches!(self.peek(), Some(Token::Public) | Some(Token::Pub)) {
+                        self.advance();
+                        method_is_public = true;
+                    }
+                    // Check for async
+                    method_is_async = if self.peek() == Some(&Token::Async) {
+                        self.advance();
+                        true
+                    } else {
+                        false
+                    };
+                    self.consume(Token::Fn)?;
+                    let method_name = self.parse_identifier()?;
+                    self.consume(Token::LParen)?;
+                    let mut args = Vec::new();
+                    if self.peek() != Some(&Token::RParen) {
+                        loop {
+                            let ty = self.parse_type()?;
+                            let param_name = self.parse_identifier()?;
+                            let default_value = if self.peek() == Some(&Token::Assign) {
+                                self.advance();
+                                Some(self.parse_expression()?)
+                            } else { None };
+                            args.push(FieldDecl { name: param_name, ty, default_value });
+                            if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                        }
+                    }
+                    self.consume(Token::RParen)?;
+                    let return_ty = if self.peek() == Some(&Token::Arrow) {
+                        self.advance();
+                        Some(self.parse_type()?)
+                    } else { Some(TypeNode::Void) };
+                    let body = self.parse_block()?;
+                    methods.push(MethodDecl {
+                        name: method_name,
+                        is_public: method_is_public,
+                        is_async: method_is_async,
+                        annotations: vec![],
+                        type_params: vec![],
+                        constraints: vec![],
+                        args,
+                        return_ty,
+                        body: Some(body),
+                    });
+                }
+                self.consume(Token::RBrace)?;
+                Ok(Item::Impl { type_name, type_params, methods })
             },
             // Plan 25: Standalone top-level functions
             Some(Token::Fn) => {
@@ -336,7 +544,7 @@ impl Parser {
                     loop {
                         let ty = self.parse_type()?;
                         let param_name = self.parse_identifier()?;
-                        params.push(FieldDecl { name: param_name, ty });
+                        params.push(FieldDecl { name: param_name, ty, default_value: None });
                         if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
                     }
                 }
@@ -434,7 +642,7 @@ impl Parser {
 
             // Simple property declaration e.g. `public string name;`
             let mut _is_public = false;
-            if *tok == Token::Public {
+            if *tok == Token::Public || *tok == Token::Pub {
                 self.advance();
                 _is_public = true;
             } else if *tok == Token::Private {
@@ -445,7 +653,7 @@ impl Parser {
             let name = self.parse_identifier()?;
             self.consume(Token::Semicolon)?;
 
-            fields.push(FieldDecl { name, ty });
+            fields.push(FieldDecl { name, ty, default_value: None });
         }
         
         self.consume(Token::RBrace)?;
@@ -464,10 +672,10 @@ impl Parser {
 
     fn parse_base_type(&mut self) -> Result<TypeNode, ParseError> {
         match self.advance() {
-            Some(Token::TypeInt) | Some(Token::TypeIntShort) => Ok(TypeNode::Int),
-            Some(Token::TypeString) | Some(Token::TypeStringShort) => Ok(TypeNode::String),
-            Some(Token::TypeBool) | Some(Token::TypeBoolShort) => Ok(TypeNode::Bool),
-            Some(Token::TypeMapShort) => Ok(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Custom("Dynamic".to_string())))),
+            Some(Token::TypeInt) => Ok(TypeNode::Int),
+            Some(Token::TypeFloat) => Ok(TypeNode::Float),  // Plan 42
+            Some(Token::TypeString) => Ok(TypeNode::String),
+            Some(Token::TypeBool) => Ok(TypeNode::Bool),
             Some(Token::TypeVoid) => Ok(TypeNode::Void),
             Some(Token::TypeUlong) => Ok(TypeNode::Ulong),
             Some(Token::Prompt) => Ok(TypeNode::Prompt),
@@ -494,13 +702,19 @@ impl Parser {
                     let inner = Box::new(self.parse_type()?);
                     self.consume(Token::GreaterThan)?;
                     Ok(TypeNode::List(inner))
-                } else if name == "Map" {
+                } else if name == "Map" || name == "map" {
                     self.consume(Token::LessThan)?;
                     let key = Box::new(self.parse_type()?);
                     self.consume(Token::Comma)?;
                     let val = Box::new(self.parse_type()?);
                     self.consume(Token::GreaterThan)?;
                     Ok(TypeNode::Map(key, val))
+                // Wave 16: set<T> → HashSet<T>
+                } else if name == "Set" || name == "set" {
+                    self.consume(Token::LessThan)?;
+                    let inner = Box::new(self.parse_type()?);
+                    self.consume(Token::GreaterThan)?;
+                    Ok(TypeNode::Set(inner))
                 } else if self.peek() == Some(&Token::LessThan) {
                     self.advance();
                     let mut type_args = Vec::new();
@@ -519,6 +733,16 @@ impl Parser {
                 } else {
                     Ok(TypeNode::Custom(name))
                 }
+            },
+            // Plan 38: Tuple types — (int, string)
+            Some(Token::LParen) => {
+                let mut types = vec![self.parse_type()?];
+                while self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                    types.push(self.parse_type()?);
+                }
+                self.consume(Token::RParen)?;
+                Ok(TypeNode::Tuple(types))
             },
             Some(t) => Err(ParseError::UnexpectedToken {
                 expected: "A Type".to_string(),
@@ -556,9 +780,15 @@ impl Parser {
                     self.advance();
                     is_public = true;
                 },
-                Some(Token::Public) => {
+                Some(Token::Public) | Some(Token::Pub) => {
                     self.advance();
                     is_public = true;
+                    return_ty = self.parse_type()?;
+                },
+                // Plan 47: Explicit private modifier
+                Some(Token::Private) => {
+                    self.advance();
+                    is_public = false;
                     return_ty = self.parse_type()?;
                 },
                 _ => {
@@ -572,17 +802,29 @@ impl Parser {
             if self.peek() == Some(&Token::Semicolon) && !is_async {
                 // It's a field declaration: type name;
                 self.advance(); // consume ;
-                fields.push(FieldDecl { name, ty: return_ty });
+                fields.push(FieldDecl { name, ty: return_ty, default_value: None });
                 continue;
             }
 
             // It's a method — continue parsing like parse_methods_block
             let mut type_params = Vec::new();
+            let mut inline_constraints = Vec::new();
             if self.peek() == Some(&Token::LessThan) {
                 self.advance();
                 if self.peek() != Some(&Token::GreaterThan) {
                     loop {
-                        type_params.push(self.parse_identifier()?);
+                        let tp = self.parse_identifier()?;
+                        // Plan 39: Inline trait bounds <T: Display + Clone>
+                        if self.peek() == Some(&Token::Colon) {
+                            self.advance();
+                            let mut bounds = vec![self.parse_identifier()?];
+                            while self.peek() == Some(&Token::Plus) {
+                                self.advance();
+                                bounds.push(self.parse_identifier()?);
+                            }
+                            inline_constraints.push(GenericConstraint { type_param: tp.clone(), bounds });
+                        }
+                        type_params.push(tp);
                         if let Some(Token::Comma) = self.peek() { self.advance(); } else { break; }
                     }
                 }
@@ -596,21 +838,38 @@ impl Parser {
                     loop {
                         let arg_ty = self.parse_type()?;
                         let arg_name = self.parse_identifier()?;
-                        args.push(FieldDecl { name: arg_name, ty: arg_ty });
+                        // Plan 40: Optional default value
+                        let default_value = if self.peek() == Some(&Token::Assign) {
+                            self.advance();
+                            Some(self.parse_expression()?)
+                        } else { None };
+                        args.push(FieldDecl { name: arg_name, ty: arg_ty, default_value });
                         if let Some(Token::Comma) = self.peek() { self.advance(); } else { break; }
                     }
                 }
             }
             self.consume(Token::RParen)?;
 
-            let mut constraints = Vec::new();
+            // Plan 47: Resolve Custom("T") → TypeVar("T") for declared type params
+            if !type_params.is_empty() {
+                for arg in &mut args {
+                    arg.ty = Self::resolve_type_vars(&arg.ty, &type_params);
+                }
+            }
+
+            let mut constraints = inline_constraints;
             if self.peek() == Some(&Token::Where) {
                 self.advance();
                 loop {
                     let type_param = self.parse_identifier()?;
                     self.consume(Token::Colon)?;
-                    let bound = self.parse_identifier()?;
-                    constraints.push(GenericConstraint { type_param, bound });
+                    let mut bounds = vec![self.parse_identifier()?];
+                    // Plan 39: Support multiple bounds with + (e.g., T: Display + Clone)
+                    while self.peek() == Some(&Token::Plus) {
+                        self.advance();
+                        bounds.push(self.parse_identifier()?);
+                    }
+                    constraints.push(GenericConstraint { type_param, bounds });
                     if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
                 }
             }
@@ -660,7 +919,7 @@ impl Parser {
                     is_public = true;
                     // Varg-Min defaults to void return for methods
                 },
-                Some(Token::Public) => {
+                Some(Token::Public) | Some(Token::Pub) => {
                     self.advance();
                     is_public = true;
                     return_ty = self.parse_type()?;
@@ -673,11 +932,23 @@ impl Parser {
             let name = self.parse_identifier()?;
             
             let mut type_params = Vec::new();
+            let mut inline_constraints = Vec::new();
             if self.peek() == Some(&Token::LessThan) {
                 self.advance();
                 if self.peek() != Some(&Token::GreaterThan) {
                     loop {
-                        type_params.push(self.parse_identifier()?);
+                        let tp = self.parse_identifier()?;
+                        // Plan 39: Inline trait bounds <T: Display + Clone>
+                        if self.peek() == Some(&Token::Colon) {
+                            self.advance();
+                            let mut bounds = vec![self.parse_identifier()?];
+                            while self.peek() == Some(&Token::Plus) {
+                                self.advance();
+                                bounds.push(self.parse_identifier()?);
+                            }
+                            inline_constraints.push(GenericConstraint { type_param: tp.clone(), bounds });
+                        }
+                        type_params.push(tp);
                         if let Some(Token::Comma) = self.peek() {
                             self.advance();
                         } else {
@@ -687,7 +958,7 @@ impl Parser {
                 }
                 self.consume(Token::GreaterThan)?;
             }
-            
+
             self.consume(Token::LParen)?;
             let mut args = Vec::new();
             if let Some(inner) = self.peek() {
@@ -695,7 +966,12 @@ impl Parser {
                     loop {
                         let arg_ty = self.parse_type()?;
                         let arg_name = self.parse_identifier()?;
-                        args.push(FieldDecl { name: arg_name, ty: arg_ty });
+                        // Plan 40: Optional default value
+                        let default_value = if self.peek() == Some(&Token::Assign) {
+                            self.advance();
+                            Some(self.parse_expression()?)
+                        } else { None };
+                        args.push(FieldDecl { name: arg_name, ty: arg_ty, default_value });
 
                         if let Some(Token::Comma) = self.peek() {
                             self.advance();
@@ -707,15 +983,27 @@ impl Parser {
             }
             self.consume(Token::RParen)?;
 
+            // Plan 47: Resolve Custom("T") → TypeVar("T") for declared type params
+            if !type_params.is_empty() {
+                for arg in &mut args {
+                    arg.ty = Self::resolve_type_vars(&arg.ty, &type_params);
+                }
+            }
+
             // Parse optional generic constraints: where T : Comparable, V : Serializable
-            let mut constraints = Vec::new();
+            let mut constraints = inline_constraints;
             if self.peek() == Some(&Token::Where) {
                 self.advance();
                 loop {
                     let type_param = self.parse_identifier()?;
                     self.consume(Token::Colon)?;
-                    let bound = self.parse_identifier()?;
-                    constraints.push(GenericConstraint { type_param, bound });
+                    let mut bounds = vec![self.parse_identifier()?];
+                    // Plan 39: Support multiple bounds with +
+                    while self.peek() == Some(&Token::Plus) {
+                        self.advance();
+                        bounds.push(self.parse_identifier()?);
+                    }
+                    constraints.push(GenericConstraint { type_param, bounds });
                     if self.peek() == Some(&Token::Comma) {
                         self.advance();
                     } else {
@@ -767,9 +1055,11 @@ impl Parser {
     /// Parse a full if / else-if / else statement (called from parse_block and recursively from parse_else_branch)
     fn parse_if_statement(&mut self) -> Result<Statement, ParseError> {
         self.advance(); // consume 'if'
-        self.consume(Token::LParen)?;
+        // Plan 47: Parentheses around condition are optional (Rust/Go-style)
+        let has_paren = self.peek() == Some(&Token::LParen);
+        if has_paren { self.advance(); }
         let condition = self.parse_expression()?;
-        self.consume(Token::RParen)?;
+        if has_paren { self.consume(Token::RParen)?; }
         let then_block = self.parse_block()?;
         let else_block = self.parse_else_branch()?;
         Ok(Statement::If { condition, then_block, else_block })
@@ -788,9 +1078,11 @@ impl Parser {
 
             match tok {
                 // Varg-Min Optional Variable Binding Type
-                Token::Var | Token::TypeInt | Token::TypeString | Token::TypeBool | Token::Prompt | Token::Tensor | Token::Context | Token::TypeIntShort | Token::TypeStringShort | Token::TypeBoolShort | Token::TypeMapShort | Token::NetworkAccess | Token::FileAccess | Token::DbAccess | Token::LlmAccess | Token::SystemAccess => {
-                    let ty = if *tok == Token::Var {
-                        self.advance(); // consume 'var'
+                Token::Var | Token::Let | Token::TypeInt | Token::TypeFloat | Token::TypeString | Token::TypeBool | Token::Prompt | Token::Tensor | Token::Context | Token::NetworkAccess | Token::FileAccess | Token::DbAccess | Token::LlmAccess | Token::SystemAccess => {
+                    let ty = if *tok == Token::Var || *tok == Token::Let {
+                        self.advance(); // consume 'var' or 'let'
+                        // Plan 45: skip optional 'mut' after let
+                        if self.peek() == Some(&Token::Mut) { self.advance(); }
                         // Plan 06: Check for tuple destructuring: var (a, b) = ...
                         if self.peek() == Some(&Token::LParen) {
                             self.advance(); // consume (
@@ -922,7 +1214,12 @@ impl Parser {
                             _ => return Err(ParseError::UnexpectedToken { expected: "Valid L-Value".to_string(), found: Some(Token::Assign), span: self.current_span() }),
                         }
                     } else {
-                        self.consume(Token::Semicolon)?;
+                        // Plan 47: Semicolon optional before closing brace (last expr in block)
+                        if let Some(Token::Semicolon) = self.peek() {
+                            self.advance();
+                        } else if self.peek() != Some(&Token::RBrace) {
+                            self.consume(Token::Semicolon)?; // will produce the error
+                        }
                         statements.push(Statement::Expr(expr));
                     }
                 },
@@ -941,7 +1238,7 @@ impl Parser {
                 Token::Const => {
                     self.advance();
                     // const TYPE NAME = expr;  or  const var NAME = expr;
-                    let ty = if let Some(Token::Var) = self.peek() {
+                    let ty = if matches!(self.peek(), Some(Token::Var) | Some(Token::Let)) {
                         self.advance();
                         None
                     } else {
@@ -968,21 +1265,82 @@ impl Parser {
                 },
                 Token::While => {
                     self.advance();
-                    self.consume(Token::LParen)?;
+                    // Plan 47: Parentheses optional
+                    let has_paren = self.peek() == Some(&Token::LParen);
+                    if has_paren { self.advance(); }
                     let condition = self.parse_expression()?;
-                    self.consume(Token::RParen)?;
+                    if has_paren { self.consume(Token::RParen)?; }
                     let body = self.parse_block()?;
                     statements.push(Statement::While { condition, body });
                 },
                 Token::For => {
                     self.advance();
+
+                    // Plan 56: for-in syntax — `for x in items { }` (no parens)
+                    // Wave 16: Also supports `for (k, v) in map { }` (tuple destructuring)
+                    if self.peek() != Some(&Token::LParen) {
+                        // Parse as for-in loop → reuse Statement::Foreach
+                        if matches!(self.peek(), Some(Token::Var) | Some(Token::Let)) {
+                            self.advance();
+                            if self.peek() == Some(&Token::Mut) { self.advance(); }
+                        }
+                        let item_name = self.parse_identifier()?;
+                        self.consume(Token::In)?;
+                        let collection = self.parse_expression()?;
+                        let body = self.parse_block()?;
+                        statements.push(Statement::Foreach { item_name, value_name: None, collection, body });
+                        continue;
+                    }
+
+                    // Wave 16: Check if this is `for (k, v) in expr { }` (tuple destructure)
+                    // Lookahead: ( identifier , identifier ) in
+                    {
+                        let saved_pos = self.pos;
+                        let is_tuple_destructure = (|| {
+                            self.advance(); // consume (
+                            if matches!(self.peek(), Some(Token::Var) | Some(Token::Let)) { self.advance(); }
+                            if self.peek() == Some(&Token::Mut) { self.advance(); }
+                            if !matches!(self.peek(), Some(Token::Identifier(_))) { return false; }
+                            self.advance(); // consume first ident
+                            if self.peek() != Some(&Token::Comma) { return false; }
+                            self.advance(); // consume ,
+                            if matches!(self.peek(), Some(Token::Var) | Some(Token::Let)) { self.advance(); }
+                            if self.peek() == Some(&Token::Mut) { self.advance(); }
+                            if !matches!(self.peek(), Some(Token::Identifier(_))) { return false; }
+                            self.advance(); // consume second ident
+                            if self.peek() != Some(&Token::RParen) { return false; }
+                            self.advance(); // consume )
+                            matches!(self.peek(), Some(Token::In))
+                        })();
+                        self.pos = saved_pos; // restore
+
+                        if is_tuple_destructure {
+                            self.consume(Token::LParen)?;
+                            if matches!(self.peek(), Some(Token::Var) | Some(Token::Let)) { self.advance(); }
+                            if self.peek() == Some(&Token::Mut) { self.advance(); }
+                            let key_name = self.parse_identifier()?;
+                            self.consume(Token::Comma)?;
+                            if matches!(self.peek(), Some(Token::Var) | Some(Token::Let)) { self.advance(); }
+                            if self.peek() == Some(&Token::Mut) { self.advance(); }
+                            let val_name = self.parse_identifier()?;
+                            self.consume(Token::RParen)?;
+                            self.consume(Token::In)?;
+                            let collection = self.parse_expression()?;
+                            let body = self.parse_block()?;
+                            statements.push(Statement::Foreach { item_name: key_name, value_name: Some(val_name), collection, body });
+                            continue;
+                        }
+                    }
+
+                    // C-style for (init; cond; update) { }
                     self.consume(Token::LParen)?;
-                    
+
                     let init_stmt = match self.peek() {
-                        Some(Token::Var) | Some(Token::TypeInt) | Some(Token::TypeString) | Some(Token::TypeBool) | Some(Token::Identifier(_)) => {
+                        Some(Token::Var) | Some(Token::Let) | Some(Token::TypeInt) | Some(Token::TypeFloat) | Some(Token::TypeString) | Some(Token::TypeBool) | Some(Token::Identifier(_)) => {
                             let tok_init = self.peek().unwrap().clone();
-                            let ty = if tok_init == Token::Var {
+                            let ty = if tok_init == Token::Var || tok_init == Token::Let {
                                 self.advance();
+                                if self.peek() == Some(&Token::Mut) { self.advance(); } // Plan 45
                                 None
                             } else {
                                 Some(self.parse_type()?)
@@ -1003,9 +1361,31 @@ impl Parser {
                     self.consume(Token::Semicolon)?;
 
                     let update_name = self.parse_identifier()?;
-                    self.consume(Token::Assign)?;
-                    let update_value = self.parse_expression()?;
-                    let update_stmt = Statement::Assign { name: update_name, value: update_value };
+                    // Support both = and compound assign (+=, -=, etc.) in for-loop update
+                    let compound_op = match self.peek() {
+                        Some(Token::PlusAssign) => Some(BinaryOperator::Add),
+                        Some(Token::MinusAssign) => Some(BinaryOperator::Sub),
+                        Some(Token::MulAssign) => Some(BinaryOperator::Mul),
+                        Some(Token::DivAssign) => Some(BinaryOperator::Div),
+                        Some(Token::ModAssign) => Some(BinaryOperator::Mod),
+                        _ => None,
+                    };
+                    let update_stmt = if let Some(op) = compound_op {
+                        self.advance(); // consume compound op
+                        let rhs = self.parse_expression()?;
+                        Statement::Assign {
+                            name: update_name.clone(),
+                            value: Expression::BinaryOp {
+                                left: Box::new(Expression::Identifier(update_name)),
+                                operator: op,
+                                right: Box::new(rhs),
+                            },
+                        }
+                    } else {
+                        self.consume(Token::Assign)?;
+                        let update_value = self.parse_expression()?;
+                        Statement::Assign { name: update_name, value: update_value }
+                    };
                     
                     self.consume(Token::RParen)?;
                     let body = self.parse_block()?;
@@ -1019,16 +1399,27 @@ impl Parser {
                 },
                 Token::Foreach => {
                     self.advance();
-                    self.consume(Token::LParen)?;
-                    if let Some(Token::Var) = self.peek() {
+                    // Plan 47: Parentheses optional
+                    let has_paren = self.peek() == Some(&Token::LParen);
+                    if has_paren { self.advance(); }
+                    if matches!(self.peek(), Some(Token::Var) | Some(Token::Let)) {
                         self.advance();
+                        if self.peek() == Some(&Token::Mut) { self.advance(); } // Plan 45
                     }
                     let item_name = self.parse_identifier()?;
+                    // Wave 16: Check for (k, v) destructure in foreach
+                    let value_name = if self.peek() == Some(&Token::Comma) {
+                        self.advance(); // consume ,
+                        if matches!(self.peek(), Some(Token::Var) | Some(Token::Let)) { self.advance(); }
+                        if self.peek() == Some(&Token::Mut) { self.advance(); }
+                        let vn = self.parse_identifier()?;
+                        Some(vn)
+                    } else { None };
                     self.consume(Token::In)?;
                     let collection = self.parse_expression()?;
-                    self.consume(Token::RParen)?;
+                    if has_paren { self.consume(Token::RParen)?; }
                     let body = self.parse_block()?;
-                    statements.push(Statement::Foreach { item_name, collection, body });
+                    statements.push(Statement::Foreach { item_name, value_name, collection, body });
                 },
                 Token::Return => {
                     self.advance();
@@ -1080,13 +1471,20 @@ impl Parser {
                     let mut arms = Vec::new();
                     while self.peek() != Some(&Token::RBrace) {
                         let pattern = self.parse_pattern()?;
+                        // Wave 11: Optional guard — Ok(x) if x > 0 => { ... }
+                        let guard = if self.peek() == Some(&Token::If) {
+                            self.advance(); // consume 'if'
+                            Some(self.parse_expression()?)
+                        } else {
+                            None
+                        };
                         self.consume(Token::FatArrow)?;
                         let body = self.parse_block()?;
                         // Optional comma between arms
                         if self.peek() == Some(&Token::Comma) {
                             self.advance();
                         }
-                        arms.push(MatchArm { pattern, body });
+                        arms.push(MatchArm { pattern, guard, body });
                     }
                     self.consume(Token::RBrace)?;
                     statements.push(Statement::Match { subject, arms });
@@ -1131,11 +1529,28 @@ impl Parser {
                     self.consume(Token::RBrace)?;
                     statements.push(Statement::Select { arms });
                 },
-                // Fallback dummy token skipper to avoid infinite loops if an expression fails
+                // Wave 11: Bare literals and other expressions as statements
+                Token::IntLiteral(_) | Token::FloatLiteral(_) | Token::StringLiteral(_) |
+                Token::BoolLiteral(_) | Token::Null | Token::LBracket | Token::LParen |
+                Token::Minus | Token::Bang | Token::InterpolatedStringLiteral(_) => {
+                    let expr = self.parse_expression()?;
+                    if let Some(Token::Semicolon) = self.peek() {
+                        self.advance();
+                    } else if self.peek() != Some(&Token::RBrace) {
+                        self.consume(Token::Semicolon)?;
+                    }
+                    statements.push(Statement::Expr(expr));
+                },
+                // Plan 55: Fallback token skipper with EOF safety
                 _ => {
+                    let prev_pos = self.pos;
                     let skipped = self.advance();
                     if skipped == Some(Token::Semicolon) {
                         continue;
+                    }
+                    // Safety: if advance() made no progress (EOF), break to avoid infinite loop
+                    if self.pos == prev_pos {
+                        break;
                     }
                 }
             }
@@ -1218,7 +1633,7 @@ impl Parser {
         loop {
             let ty = self.parse_type().map_err(|_| ())?;
             let name = self.parse_identifier().map_err(|_| ())?;
-            params.push(FieldDecl { name, ty });
+            params.push(FieldDecl { name, ty, default_value: None });
 
             match self.peek() {
                 Some(Token::Comma) => { self.advance(); }
@@ -1239,6 +1654,7 @@ impl Parser {
     fn token_binding_power(tok: &Token) -> Option<(u8, u8)> {
         match tok {
             Token::Tilde                              => Some((1, 2)),   // cosine_sim: lowest
+            Token::DotDot | Token::DotDotEquals        => Some((2, 3)),  // Plan 37: range (very low)
             Token::Or                                  => Some((3, 4)),  // ||
             Token::And                                 => Some((5, 6)),  // &&
             Token::Equals | Token::NotEquals           => Some((7, 8)),  // == !=
@@ -1276,9 +1692,37 @@ impl Parser {
                 let operand = self.parse_expression_bp(15)?;
                 Expression::Await(Box::new(operand))
             },
+            // Wave 11: if-expression — if cond { a } else { b }
+            Some(Token::If) => {
+                let condition = self.parse_expression()?;
+                let then_block = self.parse_block()?;  // parse_block consumes { and }
+                self.consume(Token::Else)?;
+                let else_block = self.parse_block()?;
+                Expression::IfExpr {
+                    condition: Box::new(condition),
+                    then_block,
+                    else_block,
+                }
+            },
             Some(Token::Null) => Expression::Null,
+            Some(Token::FloatLiteral(val)) => Expression::Float(val),  // Plan 42
             Some(Token::IntLiteral(val)) => Expression::Int(val),
             Some(Token::StringLiteral(val)) => Expression::String(val.trim_matches('"').to_string()),
+            // Wave 16: Multiline strings """..."""
+            Some(Token::MultilineStringLiteral(val)) => {
+                // Strip leading/trailing """ and normalize common indentation
+                let inner = val.strip_prefix("\"\"\"").unwrap_or(&val);
+                let inner = inner.strip_suffix("\"\"\"").unwrap_or(inner);
+                // Strip leading newline if present (common pattern)
+                let inner = inner.strip_prefix('\n').unwrap_or(inner);
+                // Strip trailing newline if present
+                let inner = inner.strip_suffix('\n').unwrap_or(inner);
+                Expression::String(inner.to_string())
+            },
+            // Plan 35: Interpolated strings $"Hello {name}!"
+            Some(Token::InterpolatedStringLiteral(val)) => {
+                self.parse_interpolated_string(&val)?
+            },
             Some(Token::PromptLiteralToken(val)) => {
                 let inner = val.trim_start_matches("prompt").trim().trim_matches('"').to_string();
                 Expression::PromptLiteral(inner)
@@ -1389,11 +1833,22 @@ impl Parser {
                         }
                     }
                     Err(_) => {
-                        // Not a lambda — parse as parenthesized expression
+                        // Not a lambda — parse as parenthesized expression or tuple
                         self.pos = saved_pos;
-                        let expr = self.parse_expression()?;
-                        self.consume(Token::RParen)?;
-                        expr
+                        let first = self.parse_expression()?;
+                        if self.peek() == Some(&Token::Comma) {
+                            // Plan 38: Tuple literal (a, b, ...)
+                            let mut elements = vec![first];
+                            while self.peek() == Some(&Token::Comma) {
+                                self.advance();
+                                elements.push(self.parse_expression()?);
+                            }
+                            self.consume(Token::RParen)?;
+                            Expression::TupleLiteral(elements)
+                        } else {
+                            self.consume(Token::RParen)?;
+                            first
+                        }
                     }
                 }
             },
@@ -1403,29 +1858,6 @@ impl Parser {
             Some(Token::DbAccess) => Expression::Identifier("DbAccess".to_string()),
             Some(Token::LlmAccess) => Expression::Identifier("LlmAccess".to_string()),
             Some(Token::SystemAccess) => Expression::Identifier("SystemAccess".to_string()),
-            Some(Token::FButton) => {
-                if let Some(Token::LParen) = self.advance() {
-                    let mut args = Vec::new();
-                    if self.peek() != Some(&Token::RParen) {
-                        loop {
-                            args.push(self.parse_expression()?);
-                            if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
-                        }
-                    }
-                    self.consume(Token::RParen)?;
-                    Expression::MethodCall {
-                        caller: Box::new(Expression::Identifier("self".to_string())),
-                        method_name: "fetch".to_string(),
-                        args
-                    }
-                } else {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "( for F fetch caller".to_string(),
-                        found: self.peek().cloned(),
-                        span: self.last_span(),
-                    });
-                }
-            },
             // Wave 6: retry(N) { body } fallback { fallback_body }
             Some(Token::Retry) => {
                 self.consume(Token::LParen)?;
@@ -1473,6 +1905,20 @@ impl Parser {
                 if l_bp < min_bp {
                     break;
                 }
+
+                // Plan 37: Range expressions — special-case, not a BinaryOp
+                if matches!(tok, Token::DotDot | Token::DotDotEquals) {
+                    let inclusive = tok == &Token::DotDotEquals;
+                    self.advance(); // consume .. or ..=
+                    let right = self.parse_expression_bp(r_bp)?;
+                    left = Expression::Range {
+                        start: Box::new(left),
+                        end: Box::new(right),
+                        inclusive,
+                    };
+                    continue;
+                }
+
                 let op = match self.advance().unwrap() {
                     Token::Plus => BinaryOperator::Add,
                     Token::Minus => BinaryOperator::Sub,
@@ -1502,6 +1948,16 @@ impl Parser {
             match tok {
                 Token::Dot => {
                     self.advance(); // consume dot
+                    // Plan 38: Tuple field access — .0, .1 etc.
+                    if let Some(Token::IntLiteral(_)) = self.peek() {
+                        if let Some(Token::IntLiteral(idx)) = self.advance() {
+                            left = Expression::PropertyAccess {
+                                caller: Box::new(left),
+                                property_name: idx.to_string(),
+                            };
+                            continue;
+                        }
+                    }
                     let prop = self.parse_identifier()?;
                     if let Some(Token::LParen) = self.peek() {
                         self.advance();
@@ -1553,11 +2009,20 @@ impl Parser {
                     }
                     self.consume(Token::RParen)?;
                     if let Expression::Identifier(method_name) = left {
-                        left = Expression::MethodCall {
-                            caller: Box::new(Expression::Identifier("self".to_string())),
-                            method_name,
-                            args,
-                        };
+                        // Wave 12: Bare enum variant construction — Ok(val), Err(e), Some(x)
+                        if method_name == "Ok" || method_name == "Err" || method_name == "Some" {
+                            left = Expression::EnumConstruct {
+                                enum_name: String::new(),
+                                variant_name: method_name,
+                                args,
+                            };
+                        } else {
+                            left = Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name,
+                                args,
+                            };
+                        }
                     } else {
                         return Err(ParseError::UnexpectedToken { expected: "Identifier before call".to_string(), found: Some(Token::LParen), span: self.last_span() });
                     }
@@ -1566,6 +2031,15 @@ impl Parser {
                 Token::QuestionMark => {
                     self.advance(); // consume ?
                     left = Expression::TryPropagate(Box::new(left));
+                },
+                // Wave 11: Type casting — expr as Type
+                Token::As => {
+                    self.advance(); // consume 'as'
+                    let target_type = self.parse_type()?;
+                    left = Expression::Cast {
+                        expr: Box::new(left),
+                        target_type,
+                    };
                 },
                 // Plan 24: expr or default — unwrap with fallback
                 Token::OrKeyword => {
@@ -1598,22 +2072,77 @@ impl Parser {
                             args,
                         };
                     } else {
-                        // a |> f(b, c) → f(a, b, c)
+                        // a |> f(b, c) → f(a, b, c) — pipe as first arg to function
                         let func_name = self.parse_identifier()?;
                         self.consume(Token::LParen)?;
-                        let mut args = vec![left];
+                        let mut extra_args = Vec::new();
                         if self.peek() != Some(&Token::RParen) {
                             loop {
-                                args.push(self.parse_expression()?);
+                                extra_args.push(self.parse_expression()?);
                                 if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
                             }
                         }
                         self.consume(Token::RParen)?;
+                        // First try as method call on the piped value: a.f(b, c)
+                        // This allows both standalone fn calls and method calls to work
                         left = Expression::MethodCall {
-                            caller: Box::new(Expression::Identifier("self".to_string())),
+                            caller: Box::new(left),
                             method_name: func_name,
-                            args,
+                            args: extra_args,
                         };
+                    }
+                },
+                // Wave 12: Struct literal — Point { x: 5, y: 10 }
+                Token::LBrace => {
+                    if let Expression::Identifier(ref type_name) = left {
+                        if self.is_struct_literal_ahead() {
+                            let type_name = type_name.clone();
+                            self.advance(); // consume {
+                            let mut fields = Vec::new();
+                            while self.peek() != Some(&Token::RBrace) {
+                                let field_name = self.parse_identifier()?;
+                                self.consume(Token::Colon)?;
+                                let value = self.parse_expression()?;
+                                fields.push((field_name, value));
+                                if self.peek() == Some(&Token::Comma) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                            self.consume(Token::RBrace)?;
+                            left = Expression::StructLiteral { type_name, fields };
+                        } else {
+                            break; // not a struct literal — let statement parser handle {
+                        }
+                    } else {
+                        break;
+                    }
+                },
+                // Wave 12: Enum variant construction — Shape::Circle(5)
+                Token::ColonColon => {
+                    if let Expression::Identifier(ref enum_name) = left {
+                        let enum_name = enum_name.clone();
+                        self.advance(); // consume ::
+                        let variant_name = self.parse_identifier()?;
+                        let mut args = Vec::new();
+                        if self.peek() == Some(&Token::LParen) {
+                            self.advance(); // consume (
+                            if self.peek() != Some(&Token::RParen) {
+                                loop {
+                                    args.push(self.parse_expression()?);
+                                    if self.peek() == Some(&Token::Comma) {
+                                        self.advance();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.consume(Token::RParen)?;
+                        }
+                        left = Expression::EnumConstruct { enum_name, variant_name, args };
+                    } else {
+                        break;
                     }
                 },
                 _ => break,
@@ -1621,6 +2150,18 @@ impl Parser {
         }
 
         Ok(left)
+    }
+
+    /// Wave 12: Lookahead to check if `{` starts a struct literal (Ident : pattern)
+    fn is_struct_literal_ahead(&self) -> bool {
+        // pos points to LBrace — check tokens[pos+1] is Identifier and tokens[pos+2] is Colon
+        let base = self.pos + 1; // skip LBrace
+        if base + 1 < self.tokens.len() {
+            matches!(self.tokens[base].0, Token::Identifier(_))
+                && self.tokens[base + 1].0 == Token::Colon
+        } else {
+            false
+        }
     }
 }
 
@@ -2386,7 +2927,7 @@ mod tests {
             assert_eq!(m.type_params, vec!["T".to_string()]);
             assert_eq!(m.constraints.len(), 1);
             assert_eq!(m.constraints[0].type_param, "T");
-            assert_eq!(m.constraints[0].bound, "Comparable");
+            assert_eq!(m.constraints[0].bounds, vec!["Comparable".to_string()]);
         } else { panic!("Expected Agent"); }
     }
 
@@ -3366,7 +3907,7 @@ mod tests {
 
     #[test]
     fn test_parse_pipe_simple() {
-        // a |> f() → MethodCall { caller: self, method: f, args: [a] }
+        // a |> f() → MethodCall { caller: data, method: process, args: [] }
         let source = r#"
             agent Test {
                 public void Run() {
@@ -3379,10 +3920,10 @@ mod tests {
         if let Item::Agent(a) = &program.items[0] {
             let body = a.methods[0].body.as_ref().unwrap();
             if let Statement::Let { value, .. } = &body.statements[0] {
-                if let Expression::MethodCall { method_name, args, .. } = value {
+                if let Expression::MethodCall { caller, method_name, args } = value {
                     assert_eq!(method_name, "process");
-                    assert_eq!(args.len(), 1); // 'data' is first arg
-                    assert!(matches!(&args[0], Expression::Identifier(n) if n == "data"));
+                    assert_eq!(args.len(), 0);
+                    assert!(matches!(&**caller, Expression::Identifier(n) if n == "data"));
                 } else { panic!("Expected MethodCall, got {:?}", value); }
             } else { panic!("Expected Let"); }
         } else { panic!("Expected Agent"); }
@@ -3390,7 +3931,7 @@ mod tests {
 
     #[test]
     fn test_parse_pipe_chain() {
-        // a |> f() |> g() → g(f(a))
+        // a |> f() |> g() → data.step1().step2()
         let source = r#"
             agent Test {
                 public void Run() {
@@ -3403,15 +3944,15 @@ mod tests {
         if let Item::Agent(a) = &program.items[0] {
             let body = a.methods[0].body.as_ref().unwrap();
             if let Statement::Let { value, .. } = &body.statements[0] {
-                // Outer: step2(step1(data))
-                if let Expression::MethodCall { method_name, args, .. } = value {
+                // Outer: (data.step1()).step2()
+                if let Expression::MethodCall { caller, method_name, args } = value {
                     assert_eq!(method_name, "step2");
-                    assert_eq!(args.len(), 1);
-                    // Inner: step1(data)
-                    if let Expression::MethodCall { method_name: inner_name, args: inner_args, .. } = &args[0] {
+                    assert_eq!(args.len(), 0);
+                    // Inner: data.step1()
+                    if let Expression::MethodCall { caller: inner_caller, method_name: inner_name, args: inner_args } = &**caller {
                         assert_eq!(inner_name, "step1");
-                        assert_eq!(inner_args.len(), 1);
-                        assert!(matches!(&inner_args[0], Expression::Identifier(n) if n == "data"));
+                        assert_eq!(inner_args.len(), 0);
+                        assert!(matches!(&**inner_caller, Expression::Identifier(n) if n == "data"));
                     } else { panic!("Expected inner MethodCall"); }
                 } else { panic!("Expected MethodCall"); }
             } else { panic!("Expected Let"); }
@@ -3420,7 +3961,7 @@ mod tests {
 
     #[test]
     fn test_parse_pipe_with_args() {
-        // a |> f(b, c) → f(a, b, c)
+        // a |> f(b, c) → data.transform("json", 5)
         let source = r#"
             agent Test {
                 public void Run() {
@@ -3433,12 +3974,12 @@ mod tests {
         if let Item::Agent(a) = &program.items[0] {
             let body = a.methods[0].body.as_ref().unwrap();
             if let Statement::Let { value, .. } = &body.statements[0] {
-                if let Expression::MethodCall { method_name, args, .. } = value {
+                if let Expression::MethodCall { caller, method_name, args } = value {
                     assert_eq!(method_name, "transform");
-                    assert_eq!(args.len(), 3); // data, "json", 5
-                    assert!(matches!(&args[0], Expression::Identifier(n) if n == "data"));
-                    assert!(matches!(&args[1], Expression::String(s) if s == "json"));
-                    assert!(matches!(&args[2], Expression::Int(5)));
+                    assert_eq!(args.len(), 2); // "json", 5
+                    assert!(matches!(&**caller, Expression::Identifier(n) if n == "data"));
+                    assert!(matches!(&args[0], Expression::String(s) if s == "json"));
+                    assert!(matches!(&args[1], Expression::Int(5)));
                 } else { panic!("Expected MethodCall"); }
             } else { panic!("Expected Let"); }
         } else { panic!("Expected Agent"); }
@@ -3855,6 +4396,1570 @@ mod tests {
         if let Item::Agent(a) = &program.items[2] {
             assert_eq!(a.name, "Multi");
             assert_eq!(a.implements, vec!["Foo".to_string(), "Bar".to_string()]);
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 37: Range Expressions ----
+
+    #[test]
+    fn test_parse_range_exclusive() {
+        let source = r#"
+        agent T {
+            public void Run() {
+                foreach (i in 0..10) {
+                    print i;
+                }
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            if let Statement::Foreach { collection, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                match collection {
+                    Expression::Range { start, end, inclusive } => {
+                        assert_eq!(**start, Expression::Int(0));
+                        assert_eq!(**end, Expression::Int(10));
+                        assert_eq!(*inclusive, false);
+                    },
+                    _ => panic!("Expected Range expression, got {:?}", collection),
+                }
+            } else { panic!("Expected Foreach"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_range_inclusive() {
+        let source = r#"
+        agent T {
+            public void Run() {
+                foreach (i in 0..=10) {
+                    print i;
+                }
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            if let Statement::Foreach { collection, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                match collection {
+                    Expression::Range { start, end, inclusive } => {
+                        assert_eq!(**start, Expression::Int(0));
+                        assert_eq!(**end, Expression::Int(10));
+                        assert_eq!(*inclusive, true);
+                    },
+                    _ => panic!("Expected Range expression, got {:?}", collection),
+                }
+            } else { panic!("Expected Foreach"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 38: Tuple Expressions ----
+
+    #[test]
+    fn test_parse_tuple_literal() {
+        let source = r#"
+        agent T {
+            public void Run() {
+                var t = (1, 2, 3);
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            if let Statement::Let { value, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                match value {
+                    Expression::TupleLiteral(elements) => {
+                        assert_eq!(elements.len(), 3);
+                        assert_eq!(elements[0], Expression::Int(1));
+                        assert_eq!(elements[1], Expression::Int(2));
+                        assert_eq!(elements[2], Expression::Int(3));
+                    },
+                    _ => panic!("Expected TupleLiteral, got {:?}", value),
+                }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_tuple_field_access() {
+        let source = r#"
+        agent T {
+            public void Run() {
+                var t = (1, 2);
+                var x = t.0;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            if let Statement::Let { value, .. } = &a.methods[0].body.as_ref().unwrap().statements[1] {
+                match value {
+                    Expression::PropertyAccess { caller, property_name } => {
+                        assert_eq!(**caller, Expression::Identifier("t".to_string()));
+                        assert_eq!(property_name, "0");
+                    },
+                    _ => panic!("Expected PropertyAccess, got {:?}", value),
+                }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_tuple_type_in_method() {
+        // Tuple type as method parameter
+        let source = r#"
+        agent T {
+            public void Process((int, string) data) {
+                print data.0;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let method = &a.methods[0];
+            assert_eq!(method.args[0].ty, TypeNode::Tuple(vec![TypeNode::Int, TypeNode::String]));
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 45: Verbosity Reduction Tests ----
+
+    #[test]
+    fn test_let_as_var_alias() {
+        let source = r#"
+        agent T {
+            public void Run() {
+                let x = 42;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            if let Statement::Let { name, value, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                assert_eq!(name, "x");
+                assert_eq!(*value, Expression::Int(42));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_let_mut_alias() {
+        let source = r#"
+        agent T {
+            public void Run() {
+                let mut x = 42;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            if let Statement::Let { name, value, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                assert_eq!(name, "x");
+                assert_eq!(*value, Expression::Int(42));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_pub_as_public_alias() {
+        let source = r#"
+        agent T {
+            pub void Run() {
+                let x = 1;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.methods[0].is_public, true);
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 39: Trait Bounds Tests ----
+
+    #[test]
+    fn test_parse_inline_trait_bounds_single() {
+        let source = r#"
+        agent Sorter {
+            public void Sort<T: Comparable>() {}
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let m = &a.methods[0];
+            assert_eq!(m.type_params, vec!["T".to_string()]);
+            assert_eq!(m.constraints.len(), 1);
+            assert_eq!(m.constraints[0].type_param, "T");
+            assert_eq!(m.constraints[0].bounds, vec!["Comparable".to_string()]);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_inline_trait_bounds_multiple() {
+        let source = r#"
+        agent Sorter {
+            public void Sort<T: Display + Clone, U: Send>() {}
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let m = &a.methods[0];
+            assert_eq!(m.type_params, vec!["T".to_string(), "U".to_string()]);
+            assert_eq!(m.constraints.len(), 2);
+            assert_eq!(m.constraints[0].type_param, "T");
+            assert_eq!(m.constraints[0].bounds, vec!["Display".to_string(), "Clone".to_string()]);
+            assert_eq!(m.constraints[1].type_param, "U");
+            assert_eq!(m.constraints[1].bounds, vec!["Send".to_string()]);
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 40: Default Parameter Values Tests ----
+
+    #[test]
+    fn test_parse_default_param_value() {
+        let source = r#"
+        agent Config {
+            public void Setup(int delay = 30, string name = "default") {}
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let m = &a.methods[0];
+            assert_eq!(m.args.len(), 2);
+            assert_eq!(m.args[0].name, "delay");
+            assert_eq!(m.args[0].default_value, Some(Expression::Int(30)));
+            assert_eq!(m.args[1].name, "name");
+            assert_eq!(m.args[1].default_value, Some(Expression::String("default".to_string())));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_mixed_default_and_required_params() {
+        let source = r#"
+        agent Runner {
+            public void Run(int x, int y = 0) {}
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let m = &a.methods[0];
+            assert_eq!(m.args.len(), 2);
+            assert_eq!(m.args[0].default_value, None);
+            assert_eq!(m.args[1].default_value, Some(Expression::Int(0)));
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 42: Float Tests ----
+
+    #[test]
+    fn test_parse_float_literal() {
+        let source = r#"
+        agent Math {
+            public void Calc() {
+                var x = 3.14;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert_eq!(*value, Expression::Float(3.14));
+            } else { panic!("Expected VarDecl"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_float_type_annotation() {
+        let source = r#"
+        agent Math {
+            public float Compute() {
+                return 2.5;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.methods[0].return_ty, Some(TypeNode::Float));
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ---- Plan 41: External Crate Import Tests ----
+
+    #[test]
+    fn test_parse_crate_import_simple() {
+        let source = r#"import crate reqwest = "0.12";"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::CrateImport { crate_name, version, features } = &program.items[0] {
+            assert_eq!(crate_name, "reqwest");
+            assert_eq!(version, "0.12");
+            assert!(features.is_empty());
+        } else { panic!("Expected CrateImport, got {:?}", program.items[0]); }
+    }
+
+    #[test]
+    fn test_parse_crate_import_with_features() {
+        let source = r#"import crate tokio = "1.0" features ["full", "macros"];"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::CrateImport { crate_name, version, features } = &program.items[0] {
+            assert_eq!(crate_name, "tokio");
+            assert_eq!(version, "1.0");
+            assert_eq!(features, &vec!["full".to_string(), "macros".to_string()]);
+        } else { panic!("Expected CrateImport"); }
+    }
+
+    // ===== Plan 55: Parser Error Recovery Safety =====
+
+    #[test]
+    fn test_parse_block_unclosed_brace_eof() {
+        // Missing closing brace should produce error, not hang
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 5;
+        "#;
+        let mut parser = Parser::new(source);
+        let result = parser.parse_program();
+        assert!(result.is_err(), "Should error on unclosed brace, not hang");
+    }
+
+    #[test]
+    fn test_parse_block_empty_valid() {
+        let source = r#"
+            agent Test {
+                public void Run() { }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert!(a.methods[0].body.as_ref().unwrap().statements.is_empty());
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_block_semicolon_only() {
+        // Block with just semicolons should parse as empty statements
+        let source = r#"
+            agent Test {
+                public void Run() { ; ; ; }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            // Semicolons are consumed by fallback, resulting in no statements
+            let body = a.methods[0].body.as_ref().unwrap();
+            assert!(body.statements.is_empty() || body.statements.len() <= 3);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_block_unclosed_nested_brace() {
+        // Nested unclosed brace should error, not infinite loop
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    if (true) {
+                        var x = 1;
+        "#;
+        let mut parser = Parser::new(source);
+        let result = parser.parse_program();
+        assert!(result.is_err(), "Should error on nested unclosed brace");
+    }
+
+    // ===== Plan 56: For-In Loop Syntax =====
+
+    #[test]
+    fn test_parse_for_in_basic() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var items = [1, 2, 3];
+                    for x in items {
+                        print(x);
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            assert!(matches!(&stmts[1], Statement::Foreach { item_name, .. } if item_name == "x"),
+                "for-in should parse as Foreach: {:?}", stmts[1]);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_for_in_with_var() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    for var item in list {
+                        print(item);
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            assert!(matches!(&stmts[0], Statement::Foreach { item_name, .. } if item_name == "item"));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_for_in_with_range() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    for i in 0..10 {
+                        print(i);
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            assert!(matches!(&stmts[0], Statement::Foreach { item_name, collection, .. }
+                if item_name == "i" && matches!(collection, Expression::Range { .. })),
+                "for-in with range: {:?}", stmts[0]);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_cstyle_for_still_works() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    for (var i = 0; i < 10; i += 1) {
+                        print(i);
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            assert!(matches!(&stmts[0], Statement::For { .. }), "C-style for should still work: {:?}", stmts[0]);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_for_in_method_call_collection() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    for item in get_items() {
+                        process(item);
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            assert!(matches!(&stmts[0], Statement::Foreach { item_name, .. } if item_name == "item"));
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 11: Type Casting =====
+
+    #[test]
+    fn test_parse_cast_int_to_float() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = 42 as float;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::Cast { expr, target_type } = value {
+                    assert!(matches!(**expr, Expression::Int(42)));
+                    assert_eq!(*target_type, TypeNode::Float);
+                } else { panic!("Expected Cast, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_cast_float_to_int() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var y = 3.14 as int;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::Cast { target_type, .. } = value {
+                    assert_eq!(*target_type, TypeNode::Int);
+                } else { panic!("Expected Cast"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_cast_to_string() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var s = count as string;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::Cast { target_type, .. } = value {
+                    assert_eq!(*target_type, TypeNode::String);
+                } else { panic!("Expected Cast"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 11: If-Expression =====
+
+    #[test]
+    fn test_parse_if_expression() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = if true { 1 } else { 0 };
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::IfExpr { condition, then_block, else_block } = value {
+                    assert!(matches!(**condition, Expression::Bool(true)));
+                    assert_eq!(then_block.statements.len(), 1);
+                    assert_eq!(else_block.statements.len(), 1);
+                } else { panic!("Expected IfExpr, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 11: Match Guards =====
+
+    #[test]
+    fn test_parse_match_guard() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    match x {
+                        Ok(val) if val > 0 => {
+                            print "positive";
+                        }
+                        _ => {
+                            print "other";
+                        }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Match { arms, .. } = &body.statements[0] {
+                assert_eq!(arms.len(), 2);
+                // First arm has a guard
+                assert!(arms[0].guard.is_some());
+                // Second arm (wildcard) has no guard
+                assert!(arms[1].guard.is_none());
+            } else { panic!("Expected Match"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_match_no_guard() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    match x {
+                        1 => { print "one"; }
+                        _ => { print "other"; }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Match { arms, .. } = &body.statements[0] {
+                assert!(arms[0].guard.is_none());
+                assert!(arms[1].guard.is_none());
+            } else { panic!("Expected Match"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Realistic Use Case Tests =====
+
+    #[test]
+    fn test_realistic_agent_self_method_calls() {
+        // Agent methods calling each other via self — most common pattern
+        let source = r#"
+            agent DataPipeline {
+                string last_result;
+                int processed;
+
+                public void Init() {
+                    last_result = "";
+                    processed = 0;
+                }
+
+                public string Clean(string input) {
+                    return input.trim();
+                }
+
+                public string Process(string data) {
+                    string cleaned = Clean(data);
+                    processed += 1;
+                    last_result = $"[{processed}] {cleaned}";
+                    return last_result;
+                }
+
+                public void Run() {
+                    Init();
+                    var result = Process("  hello world  ");
+                    print result;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.name, "DataPipeline");
+            assert_eq!(a.fields.len(), 2);
+            assert_eq!(a.methods.len(), 4); // Init, Clean, Process, Run
+            // Run calls Init() and Process()
+            let run_body = a.methods[3].body.as_ref().unwrap();
+            assert!(run_body.statements.len() >= 2);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_contract_implementation() {
+        // Agent implementing a contract — core Varg pattern
+        let source = r#"
+            contract Cacheable {
+                string GetKey();
+                bool IsExpired();
+            }
+
+            agent SessionCache : Cacheable {
+                string session_id;
+                int ttl;
+                int created_at;
+
+                public string GetKey() {
+                    return session_id;
+                }
+
+                public bool IsExpired() {
+                    return ttl <= 0;
+                }
+
+                public void Tick() {
+                    ttl -= 1;
+                }
+
+                public void Run() {
+                    session_id = "sess_abc123";
+                    ttl = 300;
+                    while !IsExpired() {
+                        Tick();
+                    }
+                    print $"Session {session_id} expired";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.items.len(), 2);
+        if let Item::Contract(c) = &program.items[0] {
+            assert_eq!(c.name, "Cacheable");
+            assert_eq!(c.methods.len(), 2);
+        } else { panic!("Expected Contract"); }
+        if let Item::Agent(a) = &program.items[1] {
+            assert_eq!(a.implements, vec!["Cacheable"]);
+            assert_eq!(a.methods.len(), 4);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_nested_control_flow() {
+        // Deep nesting: while > if > for-in — common in data processing
+        let source = r#"
+            agent Processor {
+                public void Run() {
+                    var items = [1, 2, 3, 4, 5];
+                    int total = 0;
+                    int round = 0;
+                    while round < 3 {
+                        foreach item in items {
+                            if item > 2 {
+                                total += item;
+                            }
+                        }
+                        round += 1;
+                    }
+                    print $"Total after {round} rounds: {total}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // Should have: let items, let total, let round, while, print
+            assert!(body.statements.len() >= 4);
+            // The while loop should contain a foreach
+            if let Statement::While { body: while_body, .. } = &body.statements[3] {
+                assert!(matches!(&while_body.statements[0], Statement::Foreach { .. }));
+            } else { panic!("Expected While, got {:?}", body.statements[3]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_error_handling_pattern() {
+        // Try/catch with method calls and throw — real error recovery
+        let source = r#"
+            agent ApiClient {
+                int retry_count;
+
+                public string FetchData(string url) {
+                    try {
+                        var response = fetch(url);
+                        return response;
+                    } catch(err) {
+                        retry_count += 1;
+                        if retry_count > 3 {
+                            throw $"Max retries exceeded: {err}";
+                        }
+                        return FetchData(url);
+                    }
+                }
+
+                public void Run() {
+                    retry_count = 0;
+                    var data = FetchData("https://api.example.com/data");
+                    print data;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let fetch_body = a.methods[0].body.as_ref().unwrap();
+            assert!(matches!(&fetch_body.statements[0], Statement::TryCatch { .. }));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_generic_struct_usage() {
+        // Generic struct definition — data container pattern
+        let source = r#"
+            struct Pair<K, V> {
+                K key;
+                V value;
+            }
+
+            agent Config {
+                public void Run() {
+                    print "config ready";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Struct(s) = &program.items[0] {
+            assert_eq!(s.name, "Pair");
+            assert_eq!(s.type_params, vec!["K", "V"]);
+            assert_eq!(s.fields.len(), 2);
+        } else { panic!("Expected Struct"); }
+    }
+
+    #[test]
+    fn test_realistic_iterator_chain() {
+        // Filter + map chain — functional data processing
+        let source = r#"
+            agent Analytics {
+                public void Run() {
+                    var scores = [85, 42, 97, 31, 78, 95];
+                    var high_scores = scores.filter((int s) => s >= 80).map((int s) => s * 2);
+                    print $"High scores: {high_scores.len()}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // Second statement: let high_scores = scores.filter(...).map(...)
+            if let Statement::Let { value, .. } = &body.statements[1] {
+                // Should be MethodCall { caller: MethodCall { caller: scores, method: filter }, method: map }
+                if let Expression::MethodCall { method_name, caller, .. } = value {
+                    assert_eq!(method_name, "map");
+                    assert!(matches!(**caller, Expression::MethodCall { .. }));
+                } else { panic!("Expected chained MethodCall"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_enum_match_with_guards() {
+        // Pattern matching with enum variants and guards — error handling
+        let source = r#"
+            enum HttpResult {
+                Ok(string body),
+                Error(int code, string message),
+            }
+
+            agent Handler {
+                public void Handle(HttpResult result) {
+                    match result {
+                        Ok(body) => {
+                            print $"Success: {body}";
+                        }
+                        Error(code, msg) if code >= 500 => {
+                            print $"Server error {code}: {msg}";
+                        }
+                        Error(code, msg) => {
+                            print $"Client error {code}: {msg}";
+                        }
+                    }
+                }
+
+                public void Run() {
+                    print "done";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Enum(e) = &program.items[0] {
+            assert_eq!(e.name, "HttpResult");
+            assert_eq!(e.variants.len(), 2);
+            assert_eq!(e.variants[1].fields.len(), 2); // Error(int, string)
+        } else { panic!("Expected Enum"); }
+        if let Item::Agent(a) = &program.items[1] {
+            let handle_body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Match { arms, .. } = &handle_body.statements[0] {
+                assert_eq!(arms.len(), 3);
+                assert!(arms[0].guard.is_none());  // Ok(body) — no guard
+                assert!(arms[1].guard.is_some());   // Error(code, msg) if code >= 500
+                assert!(arms[2].guard.is_none());   // Error(code, msg) — fallback
+            } else { panic!("Expected Match"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_standalone_functions_with_agent() {
+        // Top-level functions used from agents — interop pattern
+        let source = r#"
+            fn fibonacci(int n) -> int {
+                int a = 0;
+                int b = 1;
+                int i = 0;
+                while i < n {
+                    int temp = b;
+                    b = a + b;
+                    a = temp;
+                    i += 1;
+                }
+                return a;
+            }
+
+            fn is_even(int n) -> bool {
+                return n % 2 == 0;
+            }
+
+            agent MathDemo {
+                public void Run() {
+                    int i = 0;
+                    while i < 10 {
+                        var fib = fibonacci(i);
+                        if is_even(fib) {
+                            print $"fib({i}) = {fib} (even)";
+                        }
+                        i += 1;
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.items.len(), 3);
+        assert!(matches!(&program.items[0], Item::Function(f) if f.name == "fibonacci"));
+        assert!(matches!(&program.items[1], Item::Function(f) if f.name == "is_even"));
+        assert!(matches!(&program.items[2], Item::Agent(_)));
+    }
+
+    #[test]
+    fn test_realistic_for_in_with_compound_assignments() {
+        // For-in loop with accumulation — most common loop pattern
+        let source = r#"
+            agent Stats {
+                public void Run() {
+                    var values = [10, 20, 30, 40, 50];
+                    int sum = 0;
+                    int max = 0;
+                    foreach val in values {
+                        sum += val;
+                        if val > max {
+                            max = val;
+                        }
+                    }
+                    print $"Sum: {sum}, Max: {max}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // let values, let sum, let max, foreach, print
+            assert_eq!(body.statements.len(), 5);
+            if let Statement::Foreach { body: loop_body, .. } = &body.statements[3] {
+                // sum += val, if val > max { max = val }
+                assert_eq!(loop_body.statements.len(), 2);
+            } else { panic!("Expected Foreach"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_string_interpolation_complex() {
+        // Interpolation with method calls and expressions
+        let source = r#"
+            agent Logger {
+                int log_count;
+
+                public void Log(string level, string message) {
+                    log_count += 1;
+                    print $"[{log_count}] [{level}] {message}";
+                }
+
+                public void Run() {
+                    log_count = 0;
+                    var items = [1, 2, 3];
+                    Log("INFO", $"Processing {items.len()} items");
+                    Log("DEBUG", $"First batch done, total logs: {log_count}");
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert_eq!(a.methods.len(), 2); // Log, Run
+            let log_body = a.methods[0].body.as_ref().unwrap();
+            // log_count += 1, print $"..."
+            assert_eq!(log_body.statements.len(), 2);
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_cast_in_expression() {
+        // Casting used in arithmetic — numeric processing
+        let source = r#"
+            agent Calculator {
+                public void Run() {
+                    int total = 100;
+                    int count = 3;
+                    var average = (total as float) / (count as float);
+                    print $"Average: {average}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // var average = (total as float) / (count as float)
+            if let Statement::Let { value, .. } = &body.statements[2] {
+                if let Expression::BinaryOp { operator, left, right } = value {
+                    assert_eq!(*operator, BinaryOperator::Div);
+                    assert!(matches!(**left, Expression::Cast { .. }));
+                    assert!(matches!(**right, Expression::Cast { .. }));
+                } else { panic!("Expected BinaryOp with casts"); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_if_expression_assignment() {
+        // If-expression used for conditional assignment
+        let source = r#"
+            agent Classifier {
+                public void Run() {
+                    int score = 85;
+                    var grade = if score >= 90 { "A" } else { "B" };
+                    print $"Grade: {grade}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { name, value, .. } = &body.statements[1] {
+                assert_eq!(name, "grade");
+                assert!(matches!(value, Expression::IfExpr { .. }));
+            } else { panic!("Expected Let with IfExpr"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_async_method() {
+        // Async method with await — API calling pattern
+        let source = r#"
+            agent WeatherService {
+                async public string GetForecast(string city) {
+                    var data = await fetch($"https://api.weather.com/{city}");
+                    return data;
+                }
+
+                async public void Run() {
+                    var forecast = await GetForecast("berlin");
+                    print $"Forecast: {forecast}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            assert!(a.methods[0].is_async);
+            assert!(a.methods[1].is_async);
+            let run_body = a.methods[1].body.as_ref().unwrap();
+            // var forecast = await GetForecast("berlin"), print
+            if let Statement::Let { value, .. } = &run_body.statements[0] {
+                assert!(matches!(value, Expression::Await(_)));
+            } else { panic!("Expected Let with Await"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_multiagent_spawn() {
+        // Multi-agent spawning and communication
+        let source = r#"
+            agent Worker {
+                public string Process(string input) {
+                    return $"processed: {input}";
+                }
+            }
+
+            agent Orchestrator {
+                public void Run() {
+                    var worker = spawn Worker();
+                    var result = worker.Process("task-1");
+                    print $"Got: {result}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.items.len(), 2);
+        if let Item::Agent(a) = &program.items[1] {
+            assert_eq!(a.name, "Orchestrator");
+            let body = a.methods[0].body.as_ref().unwrap();
+            // var worker = spawn Worker(), var result = worker.Process(...), print
+            assert_eq!(body.statements.len(), 3);
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::Spawn { .. }));
+            } else { panic!("Expected Spawn"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_default_params() {
+        // Default parameter values — API ergonomics pattern
+        let source = r#"
+            agent HttpClient {
+                public string Get(string url, int wait_ms = 30, bool verbose = false) {
+                    if verbose {
+                        print $"Fetching {url} (wait: {wait_ms}s)";
+                    }
+                    return "response";
+                }
+
+                public void Run() {
+                    var r1 = Get("https://api.com/data");
+                    var r2 = Get("https://api.com/slow", 60);
+                    var r3 = Get("https://api.com/debug", 30, true);
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let get_method = &a.methods[0];
+            assert_eq!(get_method.args.len(), 3);
+            assert!(get_method.args[0].default_value.is_none()); // url — no default
+            assert!(get_method.args[1].default_value.is_some()); // timeout = 30
+            assert!(get_method.args[2].default_value.is_some()); // verbose = false
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_ocap_capability_passing() {
+        // Capability tokens passed between methods — OCAP security pattern
+        let source = r#"
+            contract SecureStorage {
+                void Save(string key, string value, FileAccess cap);
+            }
+
+            agent Vault : SecureStorage {
+                public void Save(string key, string value, FileAccess cap) {
+                    unsafe {
+                        print $"Saving {key}";
+                    }
+                }
+
+                public void Run() {
+                    print "Vault ready";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Contract(c) = &program.items[0] {
+            assert_eq!(c.methods[0].args.len(), 3);
+            assert!(matches!(c.methods[0].args[2].ty, TypeNode::Capability(CapabilityType::FileAccess)));
+        } else { panic!("Expected Contract"); }
+    }
+
+    #[test]
+    fn test_realistic_tuple_destructuring() {
+        // Tuple unpacking in data processing
+        let source = r#"
+            agent Geo {
+                public void Run() {
+                    var coords = (52.52, 13.405);
+                    var (lat, lng) = coords;
+                    print $"Location: {lat}, {lng}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            assert!(matches!(&body.statements[1], Statement::LetDestructure { pattern: DestructurePattern::Tuple(_), .. }));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_realistic_range_for_loop() {
+        // Range-based for loop — most common iteration pattern
+        let source = r#"
+            agent Counter {
+                public void Run() {
+                    int sum = 0;
+                    foreach i in 0..100 {
+                        sum += i;
+                    }
+                    print $"Sum 0..99: {sum}";
+
+                    int sum2 = 0;
+                    foreach j in 0..=10 {
+                        sum2 += j;
+                    }
+                    print $"Sum 0..=10: {sum2}";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            // First foreach uses exclusive range
+            if let Statement::Foreach { collection, .. } = &body.statements[1] {
+                if let Expression::Range { inclusive, .. } = collection {
+                    assert!(!inclusive);
+                } else { panic!("Expected Range"); }
+            } else { panic!("Expected Foreach"); }
+            // Second foreach uses inclusive range
+            if let Statement::Foreach { collection, .. } = &body.statements[4] {
+                if let Expression::Range { inclusive, .. } = collection {
+                    assert!(inclusive);
+                } else { panic!("Expected Range"); }
+            } else { panic!("Expected Foreach"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 12: Struct Literal Parser Tests =====
+
+    #[test]
+    fn test_parse_struct_literal() {
+        let source = r#"
+            struct Point { int x; int y; }
+            agent Test {
+                public void Run() {
+                    var p = Point { x: 5, y: 10 };
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[1] {
+            if let Statement::Let { value, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                if let Expression::StructLiteral { type_name, fields } = value {
+                    assert_eq!(type_name, "Point");
+                    assert_eq!(fields.len(), 2);
+                    assert_eq!(fields[0].0, "x");
+                    assert_eq!(fields[1].0, "y");
+                } else {
+                    panic!("Expected StructLiteral, got {:?}", value);
+                }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_map_literal_regression() {
+        // Map literals with string keys must NOT be parsed as struct literals
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var m = { "key": 1 };
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            if let Statement::Let { value, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                assert!(matches!(value, Expression::MapLiteral(_)), "Expected MapLiteral, got {:?}", value);
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 12: Enum Construction Parser Tests =====
+
+    #[test]
+    fn test_parse_enum_qualified_construction() {
+        let source = r#"
+            enum Color { Red, Blue }
+            agent Test {
+                public void Run() {
+                    var c = Color::Red;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[1] {
+            if let Statement::Let { value, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                if let Expression::EnumConstruct { enum_name, variant_name, args } = value {
+                    assert_eq!(enum_name, "Color");
+                    assert_eq!(variant_name, "Red");
+                    assert!(args.is_empty());
+                } else {
+                    panic!("Expected EnumConstruct, got {:?}", value);
+                }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_enum_qualified_with_args() {
+        let source = r#"
+            enum Shape { Circle(int radius) }
+            agent Test {
+                public void Run() {
+                    var s = Shape::Circle(42);
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[1] {
+            if let Statement::Let { value, .. } = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                if let Expression::EnumConstruct { enum_name, variant_name, args } = value {
+                    assert_eq!(enum_name, "Shape");
+                    assert_eq!(variant_name, "Circle");
+                    assert_eq!(args.len(), 1);
+                } else {
+                    panic!("Expected EnumConstruct, got {:?}", value);
+                }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_bare_ok_err() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var a = Ok("success");
+                    var b = Err("fail");
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                if let Expression::EnumConstruct { enum_name, variant_name, .. } = value {
+                    assert_eq!(enum_name, "");
+                    assert_eq!(variant_name, "Ok");
+                } else { panic!("Expected EnumConstruct Ok, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+            if let Statement::Let { value, .. } = &body.statements[1] {
+                if let Expression::EnumConstruct { variant_name, .. } = value {
+                    assert_eq!(variant_name, "Err");
+                } else { panic!("Expected EnumConstruct Err, got {:?}", value); }
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_lexer_colon_colon() {
+        let source = "Shape::Circle";
+        let lexer = varg_lexer::Lexer::new(source);
+        let tokens: Vec<Token> = lexer.filter_map(|(res, _)| res.ok()).collect();
+        assert!(tokens.contains(&Token::ColonColon), "Missing ColonColon token: {:?}", tokens);
+    }
+
+    // ===== Wave 13: Contract Default Implementation Tests =====
+
+    #[test]
+    fn test_parse_contract_with_default_method() {
+        let source = r#"
+            contract Logger {
+                void log(string msg);
+                string format(string msg) {
+                    return msg;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Contract(c) = &program.items[0] {
+            assert_eq!(c.methods.len(), 2);
+            assert!(c.methods[0].body.is_none(), "log should have no body (abstract)");
+            assert!(c.methods[1].body.is_some(), "format should have a default body");
+        } else {
+            panic!("Expected Contract");
+        }
+    }
+
+    // ===== Wave 13: impl Blocks for Structs =====
+
+    // ===== Wave 13: Doc Comment Tests =====
+
+    #[test]
+    fn test_regular_comment_skipped() {
+        // Regular comments should be ignored, not treated as doc comments
+        let source = r#"
+            // This is a regular comment
+            agent Foo {
+                public void run() { return; }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert!(program.docs.is_empty(), "Regular comments should not appear in docs");
+    }
+
+    #[test]
+    fn test_parse_doc_comment_on_agent() {
+        let source = r#"
+            /// A simple HTTP server agent.
+            agent HttpServer {
+                public void handle() {
+                    return;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.docs.get("HttpServer").map(|s| s.as_str()), Some("A simple HTTP server agent."));
+    }
+
+    #[test]
+    fn test_parse_multiline_doc_comment() {
+        let source = r#"
+            /// First line of docs.
+            /// Second line of docs.
+            struct Point {
+                int x;
+                int y;
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.docs.get("Point").map(|s| s.as_str()), Some("First line of docs.\nSecond line of docs."));
+    }
+
+    #[test]
+    fn test_parse_doc_comment_on_function() {
+        let source = r#"
+            /// Adds two numbers.
+            fn add(int a, int b) -> int {
+                return a + b;
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.docs.get("add").map(|s| s.as_str()), Some("Adds two numbers."));
+    }
+
+    #[test]
+    fn test_parse_impl_block_basic() {
+        let source = r#"
+            struct Point {
+                int x;
+                int y;
+            }
+            impl Point {
+                fn distance() -> float {
+                    return 0.0;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.items.len(), 2);
+        if let Item::Impl { type_name, type_params, methods } = &program.items[1] {
+            assert_eq!(type_name, "Point");
+            assert!(type_params.is_empty());
+            assert_eq!(methods.len(), 1);
+            assert_eq!(methods[0].name, "distance");
+        } else {
+            panic!("Expected Impl block");
+        }
+    }
+
+    #[test]
+    fn test_parse_impl_block_multiple_methods() {
+        let source = r#"
+            struct Vec2 {
+                float x;
+                float y;
+            }
+            impl Vec2 {
+                pub fn length() -> float {
+                    return 0.0;
+                }
+                fn normalize() -> void {
+                    return;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Impl { methods, .. } = &program.items[1] {
+            assert_eq!(methods.len(), 2);
+            assert!(methods[0].is_public);
+            assert!(!methods[1].is_public);
+        } else {
+            panic!("Expected Impl");
+        }
+    }
+
+    #[test]
+    fn test_parse_impl_block_with_type_params() {
+        let source = r#"
+            struct Container {
+                int value;
+            }
+            impl Container<T> {
+                fn get() -> int {
+                    return self.value;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Impl { type_params, .. } = &program.items[1] {
+            assert_eq!(type_params, &vec!["T".to_string()]);
+        } else {
+            panic!("Expected Impl");
+        }
+    }
+
+    // ===== Wave 16: for (k, v) in map =====
+
+    #[test]
+    fn test_parse_for_kv_in_map() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    for (k, v) in my_map {
+                        print k;
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            if let Statement::Foreach { item_name, value_name, .. } = &stmts[0] {
+                assert_eq!(item_name, "k");
+                assert_eq!(value_name, &Some("v".to_string()));
+            } else { panic!("Expected Foreach, got {:?}", stmts[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_foreach_kv_with_parens() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    foreach (k, v in my_map) {
+                        print v;
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            if let Statement::Foreach { item_name, value_name, .. } = &stmts[0] {
+                assert_eq!(item_name, "k");
+                assert_eq!(value_name, &Some("v".to_string()));
+            } else { panic!("Expected Foreach, got {:?}", stmts[0]); }
         } else { panic!("Expected Agent"); }
     }
 }

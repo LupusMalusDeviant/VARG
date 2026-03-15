@@ -1,0 +1,27 @@
+@[CliCommand("run")]
+public system agent CryptoBot {
+    
+    @[McpTool("Demonstrates phase 10 data structures")]
+    public void TestPhase10() {
+        print "--- Testing Phase 10 Features ---";
+        
+        // 1. Array Test
+        print "1. Native Arrays:";
+        var primes = [2, 3, 5, 7, 11];
+        print primes;
+        
+        // 2. Map Test
+        print "2. Native HashMaps:";
+        var headers = {"Authorization": "Bearer Token", "Content-Type": "application/json"};
+        print headers;
+        
+        // 3. Built-in Crypto
+        print "3. Native High-Level Crypto:";
+        var secret = encrypt("TOP_SECRET_PAYLOAD", "hunter2");
+        print secret;
+        var plain = decrypt(secret, "hunter2");
+        print plain;
+        
+        print "Phase 10 successfully compiled and executed natively!";
+    }
+}

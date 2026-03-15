@@ -1,0 +1,24 @@
+agent JsonSerializerTester {
+    public void Run() {
+        print "--- Testing Phase 13 JSON Serialization ---";
+        
+        var myMap = {
+            "name": "Nex",
+            "version": "1.0",
+            "type": "AI-OS"
+        };
+        
+        print "1. Native Map Object:";
+        print myMap;
+        
+        var jsonString = to_json(myMap);
+        print "2. Serialized to JSON String:";
+        print jsonString;
+
+        var parsedMap = from_json("{\"status\":\"active\",\"agent\":\"JsonSerializerTester\"}");
+        print "3. Parsed from JSON String back to Native Map:";
+        print parsedMap;
+        
+        print "Phase 13 JSON Serialization verified natively!";
+    }
+}

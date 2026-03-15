@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 
+mod formatter;
+
 use varg_parser::{Parser, ParseError};
 use varg_typechecker::TypeChecker;
 use varg_codegen::RustGenerator;
@@ -14,12 +16,24 @@ use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
+    if args.len() < 2 {
         print_usage();
         exit(1);
     }
 
     let command = &args[1];
+
+    // Wave 13: REPL doesn't need a file argument
+    if command == "repl" {
+        run_repl();
+        return;
+    }
+
+    if args.len() < 3 {
+        print_usage();
+        exit(1);
+    }
+
     let input_file = &args[2];
 
     if !input_file.ends_with(".varg") {
@@ -27,19 +41,42 @@ fn main() {
         exit(1);
     }
 
+    // Wave 14: --debug flag for debug builds (faster compilation, debug symbols)
+    let debug_mode = args.iter().any(|a| a == "--debug");
+
     match command.as_str() {
         "build" => {
-            compile_varg_file(input_file, false);
+            compile_varg_file(input_file, false, debug_mode);
         },
         "run" => {
-            compile_varg_file(input_file, true);
+            compile_varg_file(input_file, true, debug_mode);
         },
         "emit-rs" => {
             // The old behavior (just spit out the .rs file)
             let (rust_source, _) = parse_and_generate(input_file);
             let output_path = input_file.replace(".varg", ".rs");
-            fs::write(&output_path, rust_source).unwrap();
+            // Plan 44: Prepend #![allow(...)] and run rustfmt
+            let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
+            let formatted = format!("{}{}", allow_header, rust_source);
+            fs::write(&output_path, &formatted).unwrap();
+            let _ = Command::new("rustfmt").arg(&output_path).status();
             println!("-> Wrote {}", output_path);
+        }
+        // Wave 13: Watch mode — recompile on .varg file changes
+        "watch" => {
+            watch_varg_file(input_file);
+        }
+        // Wave 13: Format .varg source code
+        "fmt" => {
+            format_varg_file(input_file);
+        }
+        // Wave 13: Doc generation — output markdown docs from doc comments
+        "doc" => {
+            generate_docs(input_file);
+        }
+        // Wave 15: Test runner — find @[Test] methods and run them
+        "test" => {
+            test_varg_file(input_file, debug_mode);
         }
         _ => {
             eprintln!("Unknown command: {}", command);
@@ -55,6 +92,318 @@ fn print_usage() {
     println!("  vargc build <file.varg>   - Compiles down to a native executable in the current directory");
     println!("  vargc run <file.varg>     - Compiles and immediately executes the script");
     println!("  vargc emit-rs <file.varg> - Translates to Rust source code (.rs) but does not compile");
+    println!("  vargc watch <file.varg>   - Watch for changes and recompile automatically");
+    println!("  vargc fmt <file.varg>     - Format Varg source code");
+    println!("  vargc doc <file.varg>     - Generate markdown documentation from doc comments");
+    println!("  vargc test <file.varg>    - Run @[Test] methods in the file");
+    println!("  vargc repl                - Interactive REPL (Read-Eval-Print Loop)");
+}
+
+/// Wave 13: Interactive REPL — parse, typecheck, and show generated Rust for each line
+fn run_repl() {
+    use std::io::{self, Write, BufRead};
+
+    println!("Varg REPL v0.1.0  (type :quit to exit, :help for commands)");
+    println!();
+
+    let stdin = io::stdin();
+    let mut history: Vec<String> = Vec::new();
+    let mut accumulated = String::new();
+
+    loop {
+        let prompt = if accumulated.is_empty() { "varg> " } else { "  ... " };
+        print!("{}", prompt);
+        io::stdout().flush().unwrap();
+
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line).unwrap() == 0 {
+            break; // EOF
+        }
+        let trimmed = line.trim();
+
+        // REPL commands
+        if trimmed == ":quit" || trimmed == ":q" {
+            println!("Goodbye!");
+            break;
+        }
+        if trimmed == ":help" || trimmed == ":h" {
+            println!("Commands:");
+            println!("  :quit / :q    — Exit the REPL");
+            println!("  :clear / :c   — Clear accumulated input");
+            println!("  :history      — Show input history");
+            println!("  :rs           — Show generated Rust for last input");
+            println!("  :ast          — Show parsed AST for last input");
+            println!();
+            println!("Input: Enter Varg statements/declarations. Multi-line input");
+            println!("       continues until braces are balanced.");
+            continue;
+        }
+        if trimmed == ":clear" || trimmed == ":c" {
+            accumulated.clear();
+            println!("Cleared.");
+            continue;
+        }
+        if trimmed == ":history" {
+            for (i, h) in history.iter().enumerate() {
+                println!("[{}] {}", i + 1, h.replace('\n', "\n    "));
+            }
+            continue;
+        }
+        if trimmed == ":rs" {
+            if let Some(last) = history.last() {
+                let wrapped = wrap_repl_input(last);
+                match try_compile_repl(&wrapped) {
+                    Ok(rust_code) => println!("{}", rust_code),
+                    Err(e) => eprintln!("Error: {}", e),
+                }
+            } else {
+                println!("No previous input.");
+            }
+            continue;
+        }
+        if trimmed == ":ast" {
+            if let Some(last) = history.last() {
+                let wrapped = wrap_repl_input(last);
+                let mut parser = varg_parser::Parser::new(&wrapped);
+                match parser.parse_program() {
+                    Ok(program) => println!("{:#?}", program.items),
+                    Err(e) => eprintln!("Parse error: {:?}", e),
+                }
+            } else {
+                println!("No previous input.");
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        accumulated.push_str(&line);
+
+        // Check if braces are balanced
+        let open = accumulated.matches('{').count();
+        let close = accumulated.matches('}').count();
+        if open > close {
+            continue; // Need more input
+        }
+
+        let input = accumulated.trim().to_string();
+        accumulated.clear();
+        history.push(input.clone());
+
+        // Try to compile as a standalone item or as a statement inside an agent
+        let wrapped = wrap_repl_input(&input);
+        match try_compile_repl(&wrapped) {
+            Ok(rust_code) => {
+                println!("=> {}", rust_code.lines()
+                    .filter(|l| !l.trim().starts_with("//") && !l.trim().is_empty()
+                        && !l.contains("AUTOGENERATED") && !l.contains("use varg_"))
+                    .collect::<Vec<_>>()
+                    .join("\n   "));
+            }
+            Err(e) => eprintln!("Error: {}", e),
+        }
+    }
+}
+
+/// Wrap REPL input into a valid Varg program for compilation
+fn wrap_repl_input(input: &str) -> String {
+    // If input looks like a top-level item (agent, struct, fn, contract, enum, impl),
+    // compile it directly. Otherwise, wrap it in an agent's Run method.
+    let first_word = input.split_whitespace().next().unwrap_or("");
+    match first_word {
+        "agent" | "struct" | "contract" | "enum" | "fn" | "pub" | "public" |
+        "import" | "crate" | "type" | "impl" | "prompt" | "system" => {
+            input.to_string()
+        }
+        _ => {
+            // Wrap as statements inside an agent
+            format!("agent __Repl {{ public void Run() {{ {} }} }}", input)
+        }
+    }
+}
+
+/// Try to parse, typecheck, and generate Rust for REPL input
+fn try_compile_repl(source: &str) -> Result<String, String> {
+    let mut parser = varg_parser::Parser::new(source);
+    let program = parser.parse_program().map_err(|e| format!("Parse error: {:?}", e))?;
+
+    let mut checker = TypeChecker::new();
+    if let Err(errors) = checker.check_program(&program) {
+        let msgs: Vec<String> = errors.iter().map(|e| e.error.message()).collect();
+        return Err(msgs.join("\n"));
+    }
+
+    let mut gen = RustGenerator::new();
+    let code = gen.generate(&program);
+    Ok(code)
+}
+
+/// Wave 13: Format a .varg source file
+fn format_varg_file(input_file: &str) {
+    let source = fs::read_to_string(input_file).unwrap_or_else(|err| {
+        eprintln!("Error reading {}: {}", input_file, err);
+        exit(1);
+    });
+
+    let mut parser = Parser::new(&source);
+    let program = parser.parse_program().unwrap_or_else(|err| {
+        eprintln!("Parse error: {:?}", err);
+        exit(1);
+    });
+
+    let mut fmt = formatter::VargFormatter::new();
+    let formatted = fmt.format_program(&program);
+
+    // Check if --check flag was passed
+    let args: Vec<String> = env::args().collect();
+    if args.iter().any(|a| a == "--check") {
+        if formatted.trim() != source.trim() {
+            eprintln!("{} is not formatted", input_file);
+            exit(1);
+        }
+        println!("{} is formatted", input_file);
+    } else {
+        fs::write(input_file, &formatted).unwrap();
+        println!("Formatted {}", input_file);
+    }
+}
+
+/// Wave 13: Watch mode — poll for .varg file changes and recompile
+fn watch_varg_file(input_file: &str) {
+    use std::time::Duration;
+
+    let path = Path::new(input_file);
+    let dir = path.parent().unwrap_or(Path::new("."));
+    println!("[watch] Watching {} for changes...", dir.display());
+    println!("[watch] Press Ctrl+C to stop.");
+
+    // Initial compile
+    compile_varg_file(input_file, false, false);
+
+    let mut last_modified = get_latest_varg_mtime(dir);
+
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let current = get_latest_varg_mtime(dir);
+        if current > last_modified {
+            println!("\n[watch] Change detected, recompiling...");
+            compile_varg_file(input_file, false, false);
+            last_modified = current;
+        }
+    }
+}
+
+/// Get the latest modification time of any .varg file in a directory
+fn get_latest_varg_mtime(dir: &Path) -> std::time::SystemTime {
+    use std::time::SystemTime;
+
+    let mut latest = SystemTime::UNIX_EPOCH;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(false, |e| e == "varg") {
+                if let Ok(meta) = path.metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if modified > latest {
+                            latest = modified;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    latest
+}
+
+/// Wave 13: Generate markdown documentation from doc comments
+fn generate_docs(input_file: &str) {
+    let (_, program) = parse_and_generate(input_file);
+
+    let filename = Path::new(input_file).file_name().unwrap_or_default().to_string_lossy();
+    println!("# Module: {}\n", filename);
+
+    for item in &program.items {
+        let (kind, name) = match item {
+            varg_ast::ast::Item::Agent(a) => ("Agent", a.name.as_str()),
+            varg_ast::ast::Item::Contract(c) => ("Contract", c.name.as_str()),
+            varg_ast::ast::Item::Struct(s) => ("Struct", s.name.as_str()),
+            varg_ast::ast::Item::Enum(e) => ("Enum", e.name.as_str()),
+            varg_ast::ast::Item::Function(f) => ("Function", f.name.as_str()),
+            _ => continue,
+        };
+
+        println!("## {} `{}`\n", kind, name);
+        if let Some(doc) = program.docs.get(name) {
+            println!("> {}\n", doc.replace('\n', "\n> "));
+        }
+
+        // Print methods for agents and contracts
+        let methods = match item {
+            varg_ast::ast::Item::Agent(a) => Some(&a.methods),
+            varg_ast::ast::Item::Contract(c) => Some(&c.methods),
+            _ => None,
+        };
+        if let Some(methods) = methods {
+            if !methods.is_empty() {
+                println!("### Methods\n");
+                for m in methods {
+                    let vis = if m.is_public { "public " } else { "" };
+                    let async_kw = if m.is_async { "async " } else { "" };
+                    let args: Vec<String> = m.args.iter().map(|a| format!("{} {}", format_type(&a.ty), a.name)).collect();
+                    let ret = m.return_ty.as_ref().map(|t| format!(" -> {}", format_type(t))).unwrap_or_default();
+                    println!("- `{}{}{}{}{}`", vis, async_kw, m.name, if args.is_empty() { "()".to_string() } else { format!("({})", args.join(", ")) }, ret);
+                }
+                println!();
+            }
+        }
+
+        // Print fields for structs
+        if let varg_ast::ast::Item::Struct(s) = item {
+            if !s.fields.is_empty() {
+                println!("### Fields\n");
+                for f in &s.fields {
+                    println!("- `{}: {}`", f.name, format_type(&f.ty));
+                }
+                println!();
+            }
+        }
+
+        // Print variants for enums
+        if let varg_ast::ast::Item::Enum(e) = item {
+            println!("### Variants\n");
+            for v in &e.variants {
+                if v.fields.is_empty() {
+                    println!("- `{}`", v.name);
+                } else {
+                    let fields: Vec<String> = v.fields.iter().map(|(n, t)| format!("{}: {}", n, format_type(t))).collect();
+                    println!("- `{}({})`", v.name, fields.join(", "));
+                }
+            }
+            println!();
+        }
+    }
+}
+
+/// Format a TypeNode for documentation output
+fn format_type(ty: &varg_ast::ast::TypeNode) -> String {
+    use varg_ast::ast::TypeNode;
+    match ty {
+        TypeNode::Int => "int".to_string(),
+        TypeNode::Float => "float".to_string(),
+        TypeNode::String => "string".to_string(),
+        TypeNode::Bool => "bool".to_string(),
+        TypeNode::Void => "void".to_string(),
+        TypeNode::Ulong => "ulong".to_string(),
+        TypeNode::Array(inner) => format!("{}[]", format_type(inner)),
+        TypeNode::Map(k, v) => format!("map<{}, {}>", format_type(k), format_type(v)),
+        TypeNode::Nullable(inner) => format!("{}?", format_type(inner)),
+        TypeNode::Custom(name) => name.clone(),
+        TypeNode::Result(ok, err) => format!("Result<{}, {}>", format_type(ok), format_type(err)),
+        TypeNode::Tuple(types) => format!("({})", types.iter().map(|t| format_type(t)).collect::<Vec<_>>().join(", ")),
+        _ => format!("{:?}", ty),
+    }
 }
 
 /// Maps Varg types to JSON Schema representations for MCP discovery
@@ -149,27 +498,30 @@ fn report_parse_error(filename: &str, source: &str, err: &ParseError) {
     });
 }
 
-fn report_semantic_error(filename: &str, source: &str, err: &varg_typechecker::TypeError) {
+fn report_semantic_error(filename: &str, source: &str, err: &varg_typechecker::SpannedTypeError) {
     let mut files = SimpleFiles::new();
     let file_id = files.add(filename, source);
     let writer = StandardStream::stderr(ColorChoice::Auto);
     let config = term::Config::default();
 
+    let span = err.span.clone().unwrap_or(0..0);
+    let label_msg = if err.span.is_some() { "here" } else { "in this file" };
+
     let diagnostic = Diagnostic::error()
         .with_message(err.message())
         .with_labels(vec![
-            Label::primary(file_id, 0..0)
-                .with_message("in this file"),
+            Label::primary(file_id, span)
+                .with_message(label_msg),
         ]);
 
     term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap_or_else(|_| {
-        eprintln!("Semantic Error: {:?}", err);
+        eprintln!("Semantic Error: {:?}", err.error);
     });
 }
 
 fn parse_and_generate(input_path: &str) -> (String, varg_ast::ast::Program) {
     let mut loaded = std::collections::HashSet::new();
-    let mut merged_ast = varg_ast::ast::Program { no_std: false, items: Vec::new() };
+    let mut merged_ast = varg_ast::ast::Program { no_std: false, items: Vec::new(), docs: std::collections::HashMap::new() };
 
     parse_recursive(input_path, &mut merged_ast, &mut loaded);
 
@@ -177,13 +529,17 @@ fn parse_and_generate(input_path: &str) -> (String, varg_ast::ast::Program) {
     let source_for_errors = fs::read_to_string(input_path).unwrap_or_default();
 
     let mut checker = TypeChecker::new();
-    if let Err(err) = checker.check_program(&merged_ast) {
-        report_semantic_error(input_path, &source_for_errors, &err);
+    checker.set_source(&source_for_errors);
+    if let Err(errors) = checker.check_program(&merged_ast) {
+        for err in &errors {
+            report_semantic_error(input_path, &source_for_errors, err);
+        }
         exit(1);
     }
 
     let mut generator = RustGenerator::new();
-    let source = generator.generate(&merged_ast);
+    // Plan 46: Generate with source map comments for error mapping
+    let source = generator.generate_with_source_map(&merged_ast, &source_for_errors);
     (source, merged_ast)
 }
 
@@ -199,27 +555,63 @@ fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mu
     });
 
     let mut parser = Parser::new(&source);
-    let ast = parser.parse_program().unwrap_or_else(|err| {
+    let parsed = parser.parse_program().unwrap_or_else(|err| {
         report_parse_error(path, &source, &err);
         exit(1);
     });
 
-    for item in ast.items {
-        if let varg_ast::ast::Item::Import(ref module_name) = item {
-            let parent_dir = Path::new(path).parent().unwrap_or(Path::new(""));
-            let mod_path = parent_dir.join(format!("{}.varg", module_name));
-            if !mod_path.exists() {
-                eprintln!("Error: Imported module '{}' not found at {:?}", module_name, mod_path);
-                exit(1);
+    // Wave 13: Merge doc comments from this module
+    for (name, doc) in parsed.docs {
+        program.docs.insert(name, doc);
+    }
+
+    for item in parsed.items {
+        match &item {
+            varg_ast::ast::Item::Import(ref module_name) => {
+                let parent_dir = Path::new(path).parent().unwrap_or(Path::new(""));
+                let mod_path = parent_dir.join(format!("{}.varg", module_name));
+                if !mod_path.exists() {
+                    eprintln!("Error: Imported module '{}' not found at {:?}", module_name, mod_path);
+                    exit(1);
+                }
+                parse_recursive(mod_path.to_str().unwrap(), program, loaded);
             }
-            parse_recursive(mod_path.to_str().unwrap(), program, loaded);
-        } else {
-            program.items.push(item);
+            varg_ast::ast::Item::ImportDecl(ref decl) => {
+                let parent_dir = Path::new(path).parent().unwrap_or(Path::new(""));
+                // Try module_name.varg, then module_name/mod.varg, then subdir/module_name.varg
+                let mod_path = parent_dir.join(format!("{}.varg", decl.module_name));
+                let mod_dir_path = parent_dir.join(&decl.module_name).join("mod.varg");
+                let actual_path = if mod_path.exists() {
+                    mod_path
+                } else if mod_dir_path.exists() {
+                    mod_dir_path
+                } else {
+                    // Check nested path: a.b.c → a/b/c.varg
+                    let nested = decl.module_name.replace('.', "/");
+                    let nested_path = parent_dir.join(format!("{}.varg", nested));
+                    if nested_path.exists() {
+                        nested_path
+                    } else {
+                        eprintln!("Error: Imported module '{}' not found. Searched:", decl.module_name);
+                        eprintln!("  - {:?}", mod_path);
+                        eprintln!("  - {:?}", mod_dir_path);
+                        if nested != decl.module_name {
+                            eprintln!("  - {:?}", nested_path);
+                        }
+                        exit(1);
+                    }
+                };
+                parse_recursive(actual_path.to_str().unwrap(), program, loaded);
+            }
+            _ => {
+                program.items.push(item);
+            }
         }
     }
+
 }
 
-fn compile_varg_file(input_path: &str, run_immediately: bool) {
+fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool) {
     let varg_name = Path::new(input_path).file_stem().unwrap().to_str().unwrap();
     
     println!("-> Transpiling {}...", input_path);
@@ -484,6 +876,18 @@ fn {handler_name}(body: String) -> String {{
         "tokio = { version = \"1\", features = [\"full\"] }\n"
     } else { "" };
 
+    // Plan 41: Collect external crate imports and generate dependency lines
+    let mut extra_deps = String::new();
+    for item in &ast.items {
+        if let varg_ast::ast::Item::CrateImport { crate_name, version, features } = item {
+            if features.is_empty() {
+                extra_deps.push_str(&format!("{} = \"{}\"\n", crate_name, version));
+            } else {
+                extra_deps.push_str(&format!("{} = {{ version = \"{}\", features = {:?} }}\n", crate_name, version, features));
+            }
+        }
+    }
+
     let cargo_toml = format!(r#"
 [package]
 name = "{}"
@@ -495,10 +899,11 @@ varg-os-types = {{ path = "{}" }}
 varg-runtime = {{ path = "{}" }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
-{}"#, varg_name,
+{}{}"#, varg_name,
     varg_os_types_path.display().to_string().replace("\\", "/"),
     varg_runtime_path.display().to_string().replace("\\", "/"),
-    tokio_dep);
+    tokio_dep,
+    extra_deps);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml).unwrap();
@@ -509,15 +914,26 @@ serde_json = "1.0"
     }
     
     let main_rs_path = src_dir.join("main.rs");
-    fs::write(&main_rs_path, final_rust_source).unwrap();
+    // Plan 44: Prepend #![allow(...)] to suppress common Rust warnings
+    let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
+    let formatted_source = format!("{}{}", allow_header, final_rust_source);
+    fs::write(&main_rs_path, &formatted_source).unwrap();
+
+    // Plan 44: Run rustfmt on generated code for clean output
+    let _ = Command::new("rustfmt")
+        .arg(main_rs_path.to_str().unwrap())
+        .status();
 
     println!("-> Compiling native binary using rustc...");
     
     let cargo_cmd = if run_immediately { "run" } else { "build" };
     let mut cmd = Command::new("cargo");
-    cmd.arg(cargo_cmd)
-       .arg("--release")
-       .current_dir(&cache_dir);
+    cmd.arg(cargo_cmd);
+    // Wave 14: Only use --release when not in debug mode
+    if !debug_mode {
+        cmd.arg("--release");
+    }
+    cmd.current_dir(&cache_dir);
 
     if run_immediately {
         cmd.arg("-q"); // Quiet cargo output when running tools
@@ -540,7 +956,9 @@ serde_json = "1.0"
         #[cfg(not(target_os = "windows"))]
         let exe_name = varg_name.to_string();
 
-        let compiled_exe_path = cache_dir.join("target").join("release").join(&exe_name);
+        // Wave 14: Use correct target subdirectory based on build profile
+        let profile_dir = if debug_mode { "debug" } else { "release" };
+        let compiled_exe_path = cache_dir.join("target").join(profile_dir).join(&exe_name);
         let dest_path = PathBuf::from(&exe_name);
         
         if fs::copy(&compiled_exe_path, &dest_path).is_ok() {
@@ -548,6 +966,139 @@ serde_json = "1.0"
         } else {
             eprintln!("-> Built, but failed to copy {} to current directory.", exe_name);
         }
+    }
+}
+
+/// Wave 15: Test runner — finds @[Test] methods in agents and generates a test harness
+fn test_varg_file(input_path: &str, debug_mode: bool) {
+    let varg_name = Path::new(input_path).file_stem().unwrap().to_str().unwrap();
+
+    println!("-> Transpiling {} for testing...", input_path);
+    let (mut final_rust_source, ast) = parse_and_generate(input_path);
+
+    // Collect all @[Test] methods from agents
+    let mut test_methods: Vec<(String, String, bool)> = Vec::new(); // (agent_name, method_name, has_fields)
+    for item in &ast.items {
+        if let varg_ast::ast::Item::Agent(a) = item {
+            let has_fields = !a.fields.is_empty();
+            for method in &a.methods {
+                if method.annotations.iter().any(|ann| ann.name == "Test") {
+                    test_methods.push((a.name.clone(), method.name.clone(), has_fields));
+                }
+            }
+        }
+    }
+
+    if test_methods.is_empty() {
+        println!("No @[Test] methods found in {}.", input_path);
+        return;
+    }
+
+    println!("-> Found {} test(s).", test_methods.len());
+
+    // Generate test runner main()
+    final_rust_source.push_str("\nfn main() {\n");
+    final_rust_source.push_str("    let mut passed: i64 = 0;\n");
+    final_rust_source.push_str("    let mut failed: i64 = 0;\n\n");
+
+    let mut current_agent = String::new();
+    for (agent_name, method_name, has_fields) in &test_methods {
+        if *agent_name != current_agent {
+            if !current_agent.is_empty() {
+                final_rust_source.push_str("    }\n\n");
+            }
+            final_rust_source.push_str(&format!("    // Agent: {}\n    {{\n", agent_name));
+            if *has_fields {
+                final_rust_source.push_str(&format!("        let mut instance = {}::new();\n", agent_name));
+            } else {
+                final_rust_source.push_str(&format!("        let mut instance = {} {{}};\n", agent_name));
+            }
+            current_agent = agent_name.clone();
+        }
+
+        final_rust_source.push_str(&format!(
+            r#"
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+            instance.{}();
+        }}));
+        if result.is_ok() {{
+            println!("  test {}::{} ... \x1b[32mok\x1b[0m");
+            passed += 1;
+        }} else {{
+            println!("  test {}::{} ... \x1b[31mFAILED\x1b[0m");
+            failed += 1;
+        }}
+"#,
+            method_name, agent_name, method_name, agent_name, method_name
+        ));
+    }
+    if !current_agent.is_empty() {
+        final_rust_source.push_str("    }\n\n");
+    }
+
+    final_rust_source.push_str(r#"    println!("\ntest result: {} passed, {} failed", passed, failed);
+    if failed > 0 { std::process::exit(1); }
+}
+"#);
+
+    // Use the same cache/build infrastructure as compile_varg_file
+    let cache_dir = PathBuf::from(".vargc_cache");
+    if !cache_dir.exists() {
+        fs::create_dir(&cache_dir).unwrap();
+    }
+
+    let current_dir = env::current_dir().unwrap();
+    let varg_os_types_path = current_dir.join("crates").join("varg-os-types");
+    let varg_runtime_path = current_dir.join("crates").join("varg-runtime");
+
+    let cargo_toml = format!(r#"
+[package]
+name = "{}"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+varg-os-types = {{ path = "{}" }}
+varg-runtime = {{ path = "{}" }}
+serde = {{ version = "1.0", features = ["derive"] }}
+serde_json = "1.0"
+"#, varg_name,
+    varg_os_types_path.display().to_string().replace("\\", "/"),
+    varg_runtime_path.display().to_string().replace("\\", "/"));
+
+    let cargo_toml_path = cache_dir.join("Cargo.toml");
+    fs::write(&cargo_toml_path, cargo_toml).unwrap();
+
+    let src_dir = cache_dir.join("src");
+    if !src_dir.exists() {
+        fs::create_dir(&src_dir).unwrap();
+    }
+
+    let main_rs_path = src_dir.join("main.rs");
+    let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
+    let formatted_source = format!("{}{}", allow_header, final_rust_source);
+    fs::write(&main_rs_path, &formatted_source).unwrap();
+
+    let _ = Command::new("rustfmt")
+        .arg(main_rs_path.to_str().unwrap())
+        .status();
+
+    println!("-> Running tests...\n");
+    let mut cmd = Command::new("cargo");
+    cmd.arg("run");
+    cmd.arg("-q");
+    if !debug_mode {
+        cmd.arg("--release");
+    }
+    cmd.current_dir(&cache_dir);
+
+    let status = cmd.status().unwrap_or_else(|err| {
+        eprintln!("Failed to execute cargo: {}", err);
+        exit(1);
+    });
+
+    if !status.success() {
+        exit(1);
     }
 }
 
@@ -605,9 +1156,9 @@ mod tests {
             is_public: true,
             type_params: vec![],
             fields: vec![
-                FieldDecl { name: "title".to_string(), ty: TypeNode::String },
-                FieldDecl { name: "url".to_string(), ty: TypeNode::String },
-                FieldDecl { name: "relevance".to_string(), ty: TypeNode::Int },
+                FieldDecl { name: "title".to_string(), ty: TypeNode::String, default_value: None },
+                FieldDecl { name: "url".to_string(), ty: TypeNode::String, default_value: None },
+                FieldDecl { name: "relevance".to_string(), ty: TypeNode::Int, default_value: None },
             ],
         };
         let schema = struct_to_json_schema(&struct_def);
@@ -620,14 +1171,14 @@ mod tests {
     #[test]
     fn test_find_struct_in_ast() {
         let program = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Struct(StructDef {
                     name: "MyStruct".to_string(),
                     is_public: false,
                     type_params: vec![],
                     fields: vec![
-                        FieldDecl { name: "value".to_string(), ty: TypeNode::Int },
+                        FieldDecl { name: "value".to_string(), ty: TypeNode::Int, default_value: None },
                     ],
                 }),
             ],

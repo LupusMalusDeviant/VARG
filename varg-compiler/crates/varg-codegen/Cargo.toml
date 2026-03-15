@@ -5,3 +5,8 @@ edition = "2021"
 
 [dependencies]
 varg-ast = { path = "../varg-ast" }
+
+[dev-dependencies]
+varg-lexer = { path = "../varg-lexer" }
+varg-parser = { path = "../varg-parser" }
+varg-typechecker = { path = "../varg-typechecker" }

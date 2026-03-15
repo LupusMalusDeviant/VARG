@@ -1,0 +1,17 @@
+system agent StreamTest {
+    public void Run() {
+        var ctx = __varg_create_context("streamed_session");
+        
+        unsafe {
+            print prompt """
+                Calling streaming LLM chat API...
+            """;
+            
+            stream llm_chat(ctx, "Tell me a very short joke.", "llama3");
+            
+            print prompt """
+                Stream completed !
+            """;
+        }
+    }
+}

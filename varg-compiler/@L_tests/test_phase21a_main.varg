@@ -1,0 +1,7 @@
+import test_phase21a_lib;
+
+system agent AppRunner {
+    public void Run() {
+        print "The multi-file compiler has successfully pulled in test_phase21a_lib!";
+    }
+}

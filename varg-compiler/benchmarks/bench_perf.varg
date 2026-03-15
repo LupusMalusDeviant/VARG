@@ -1,0 +1,74 @@
+// Performance Benchmark: Fibonacci + String + Array + Matrix + Range
+// Equivalent to Benchmark.cs, benchmark.py, benchmark.ts
+
+fn fibonacci(int n) -> int {
+    var fa = 0;
+    var fb = 1;
+    for i in 0..n {
+        var temp = fb;
+        fb = fa + fb;
+        fa = temp;
+    }
+    return fa;
+}
+
+fn sum_range(int start_val, int end_val) -> int {
+    var total = 0;
+    var idx = start_val;
+    while idx < end_val {
+        total += idx;
+        idx += 1;
+    }
+    return total;
+}
+
+agent BenchmarkRunner {
+    int counter;
+
+    public void Init() {
+        counter = 0;
+    }
+
+    public void RunOnce() {
+        // 1. Fibonacci(35)
+        var fib = fibonacci(35);
+        counter += fib;
+
+        // 2. String building (10000 concats)
+        var result = "";
+        for i in 0..10000 {
+            result = $"{result}x";
+        }
+
+        // 3. Array fill + sum (10000 elements)
+        var numbers = [0];
+        for i in 1..10000 {
+            numbers.push(i);
+        }
+        var sum = 0;
+        for i in 0..10000 {
+            sum += numbers[i];
+        }
+
+        // 4. Nested loop (matrix-like 200x200)
+        var matrix_sum = 0;
+        for row in 0..200 {
+            for col in 0..200 {
+                matrix_sum += row * col;
+            }
+        }
+
+        // 5. Sum range
+        var range_sum = sum_range(0, 1000);
+        counter += range_sum;
+    }
+
+    public void Run() {
+        print "=== Varg Benchmark (100 iterations) ===";
+        for i in 0..100 {
+            RunOnce();
+        }
+        print counter;
+        print "=== Done ===";
+    }
+}

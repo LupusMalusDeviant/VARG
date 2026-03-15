@@ -1,0 +1,71 @@
+// Benchmark 5: Agent Communication & Retry/Fallback
+// Tests: Agent lifecycle, method calls, retry/fallback, string interpolation
+
+fn process_item(string data) -> string {
+    return $"processed:{data}";
+}
+
+fn validate(string input) -> bool {
+    return input.len() > 0;
+}
+
+agent Pipeline {
+    string last_log;
+    int log_count;
+    int items_processed;
+    string status;
+
+    public void Init() {
+        last_log = "";
+        log_count = 0;
+        items_processed = 0;
+        status = "idle";
+    }
+
+    public void LogMsg(string msg) {
+        log_count += 1;
+        last_log = $"[{log_count}] {msg}";
+        print last_log;
+    }
+
+    public string Process(string data) {
+        status = "processing";
+        var result = process_item(data);
+        items_processed += 1;
+        status = "done";
+        return result;
+    }
+
+    public void Run() {
+        LogMsg("Starting pipeline");
+
+        var datasets = ["alpha", "beta", "gamma", "delta"];
+
+        foreach item in datasets {
+            var is_valid = validate(item);
+            if is_valid {
+                var result = Process(item);
+                LogMsg($"Processed: {result}");
+            }
+        }
+
+        LogMsg($"Total processed: {items_processed}");
+
+        // Process one more item
+        var final_result = Process("critical-data");
+        LogMsg($"Final response: {final_result}");
+
+        // Complex string building
+        var summary = $"Pipeline: {items_processed} items, {log_count} logs, status={status}";
+        print summary;
+
+        // Conditional with multiple branches
+        if items_processed > 3 {
+            print "High throughput";
+        } else if items_processed > 1 {
+            print "Normal throughput";
+        } else {
+            print "Low throughput";
+        }
+    }
+}

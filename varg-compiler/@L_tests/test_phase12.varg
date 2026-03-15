@@ -1,0 +1,34 @@
+agent ErrorHandler {
+    public void Run() {
+        print "--- Testing Phase 12 Try/Catch ---";
+        print "1. Simple throw and catch:";
+        
+        try {
+            print "  Inside try block...";
+            throw "Simulated network failure!";
+            print "  [FAIL] This should not be printed.";
+        } catch (err) {
+            print "  Caught Error Successfully:";
+            print err;
+        }
+
+        print "2. Let's do a nested try...catch:";
+        
+        try {
+            print "  Outer try...";
+            try {
+                print "  Inner try...";
+                throw "Deep Error!";
+                print "  [FAIL] This should not print.";
+            } catch (innerErr) {
+                print "  Caught Inner Error:";
+                print innerErr;
+            }
+            print "  Outer try continued successfully!";
+        } catch (outerErr) {
+            print "  [FAIL] Outer catch should not be reached!";
+        }
+        
+        print "Phase 12 Error Handling verified natively!";
+    }
+}

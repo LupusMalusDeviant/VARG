@@ -1,0 +1,97 @@
+// Benchmark 6: Pattern Matching, Closures, Data Processing
+// Tests: match on values, closures, array operations, complex control flow
+
+fn classify(int score) -> string {
+    if score == 100 {
+        return "perfect";
+    } else if score > 80 {
+        return "good";
+    } else if score > 60 {
+        return "ok";
+    } else {
+        return "needs work";
+    }
+}
+
+fn fizzbuzz(int n) -> string {
+    if n % 3 == 0 {
+        return "Fizz";
+    } else if n % 5 == 0 {
+        return "Buzz";
+    } else {
+        return $"{n}";
+    }
+}
+
+agent PatternBench {
+    int result_count;
+    int total;
+
+    public void Init() {
+        result_count = 0;
+        total = 0;
+    }
+
+    public void Run() {
+        // Pattern matching on values
+        var scores = [100, 85, 72, 55, 93];
+        for score in scores {
+            var grade = classify(score);
+            result_count += 1;
+            print $"Score {score}: {grade}";
+        }
+
+        // FizzBuzz
+        for i in 1..=20 {
+            var fb = fizzbuzz(i);
+            print $"{i}: {fb}";
+        }
+
+        // Data processing pipeline
+        var data = [15, 23, 42, 8, 67, 3, 91, 56, 12, 78];
+        var big_sum = 0;
+        var small_count = 0;
+
+        for val in data {
+            if val > 50 {
+                big_sum += val;
+            } else {
+                small_count += 1;
+            }
+        }
+
+        print $"Big sum: {big_sum}, small count: {small_count}";
+
+        // Nested conditionals
+        var temperature = 22;
+        var humidity = 65;
+        if temperature > 30 {
+            if humidity > 80 {
+                print "Hot and humid";
+            } else {
+                print "Hot and dry";
+            }
+        } else if temperature > 15 {
+            print "Comfortable";
+        } else {
+            print "Cold";
+        }
+
+        // String accumulation
+        var words = ["Varg", "is", "fast"];
+        var sentence = "";
+        var idx = 0;
+        for word in words {
+            if idx > 0 {
+                sentence = $"{sentence} {word}";
+            } else {
+                sentence = word;
+            }
+            idx += 1;
+        }
+        print $"Sentence: {sentence}";
+
+        total = result_count;
+        print $"Total classifications: {total}";
+    }
+}

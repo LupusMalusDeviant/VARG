@@ -1,0 +1,21 @@
+agent NetworkTester {
+    @[CliCommand]
+    public void Run() {
+        print "--- Testing Phase 11 Networking ---";
+
+        unsafe {
+            print "1. GET Request (Github API)...";
+            var headers = {"User-Agent": "Nex-OS-Runtime/1.0"};
+            var response = fetch("https://api.github.com/users/nex-os", "GET", headers);
+            print response;
+
+            print "2. POST Request (DummyJSON)...";
+            var post_headers = {"Content-Type": "application/json"};
+            var post_body = "{\"title\": \"Nex Lang\"}";
+            var post_response = fetch("https://dummyjson.com/products/add", "POST", post_headers, post_body);
+            print post_response;
+        }
+
+        print "Phase 11 Networking successfully compiled and executed natively!";
+    }
+}

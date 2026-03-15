@@ -1,0 +1,16 @@
+system agent TestMath {
+    public void Run() {
+        var vec_a = __varg_create_tensor([1, 0]);
+        var vec_b = __varg_create_tensor([0, 1]);
+        var vec_c = __varg_create_tensor([1, 0]);
+
+        var sim_ab = vec_a ~ vec_b;
+        var sim_ac = vec_a ~ vec_c;
+
+        print prompt """
+            Vector Math Test:
+            Similarity A ~ B (Orthogonal): ${sim_ab}
+            Similarity A ~ C (Identical) : ${sim_ac}
+        """;
+    }
+}

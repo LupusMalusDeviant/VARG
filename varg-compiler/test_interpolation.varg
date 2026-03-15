@@ -1,0 +1,16 @@
+agent TestInterp {
+    string name;
+    int age;
+
+    public void Init() {
+        name = "World";
+        age = 42;
+    }
+
+    public void Run() {
+        string msg = $"Hello {name}, you are {age} years old!";
+        print msg;
+        string calc = $"Result: {age + 10}";
+        print calc;
+    }
+}

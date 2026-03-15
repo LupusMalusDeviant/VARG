@@ -1,0 +1,27 @@
+// test_phase15.nex
+@[Agent]
+public agent MemoryAgent {
+    public void Run() {
+        print "--- Testing Phase 15 Native Database Memory ---";
+        
+        unsafe {
+            var res1 = query "SET last_execution 2026-03";
+            print "Setting memory: ";
+            print res1;
+            
+            var res2 = query "GET last_execution";
+            print "Retrieving memory: ";
+            print res2;
+
+            var res3 = query "SET config {\"agent\": \"test\", \"version\": 1.0}";
+            print "Setting config: ";
+            print res3;
+
+            var res4 = query "GET config";
+            print "Retrieving config: ";
+            print res4;
+        }
+
+        print "Phase 15 Verification Completed!";
+    }
+}

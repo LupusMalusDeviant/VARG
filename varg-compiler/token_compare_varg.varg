@@ -1,0 +1,40 @@
+// Realistic scenario: API data processor with error handling
+agent ApiProcessor {
+    string base_url;
+    int request_count;
+
+    public void Init() {
+        base_url = "https://api.example.com";
+        request_count = 0;
+    }
+
+    public string FetchData(string endpoint, NetworkAccess net) {
+        string url = base_url + "/" + endpoint;
+        string response = fetch(url);
+        request_count += 1;
+        return response;
+    }
+
+    public int ProcessItems(string json_data) {
+        var items = from_json(json_data);
+        var keys = items.keys();
+        int total = 0;
+        int idx = 0;
+        while (idx < keys.len()) {
+            total += 1;
+            idx += 1;
+        }
+        return total;
+    }
+
+    public void Run() {
+        print "Processing API data...";
+        try {
+            string data = FetchData("items", NetworkAccess);
+            int count = ProcessItems(data);
+            print count;
+        } catch (string err) {
+            print err;
+        }
+    }
+}

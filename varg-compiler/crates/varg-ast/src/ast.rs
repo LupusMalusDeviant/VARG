@@ -2,6 +2,8 @@
 pub struct Program {
     pub no_std: bool,
     pub items: Vec<Item>,
+    /// Wave 13: Doc comments keyed by item name (agent/struct/fn/contract/enum)
+    pub docs: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -18,6 +20,14 @@ pub enum Item {
     PromptTemplate(PromptTemplateDef),
     // Plan 25: Standalone top-level functions
     Function(FunctionDef),
+    // Plan 41: External crate imports
+    CrateImport { crate_name: String, version: String, features: Vec<String> },
+    // Wave 13: impl blocks for structs
+    Impl {
+        type_name: String,
+        type_params: Vec<String>,
+        methods: Vec<MethodDecl>,
+    },
 }
 
 // ---- Prompt Templates (Plan 23) ----
@@ -105,8 +115,8 @@ pub struct EnumVariant {
 // ---- Generic Constraints (Plan 07) ----
 #[derive(Debug, PartialEq, Clone)]
 pub struct GenericConstraint {
-    pub type_param: String,  // T
-    pub bound: String,       // Comparable (Contract name)
+    pub type_param: String,       // T
+    pub bounds: Vec<String>,      // [Comparable, Clone] — multiple trait bounds via +
 }
 
 // ---- Methods and Fields ----
@@ -114,6 +124,7 @@ pub struct GenericConstraint {
 pub struct FieldDecl {
     pub name: String,
     pub ty: TypeNode,
+    pub default_value: Option<Expression>,  // Plan 40: Default parameter values
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -149,7 +160,7 @@ pub enum Statement {
     If { condition: Expression, then_block: Block, else_block: Option<Block> },
     While { condition: Expression, body: Block },
     For { init: Box<Statement>, condition: Expression, update: Box<Statement>, body: Block },
-    Foreach { item_name: String, collection: Expression, body: Block },
+    Foreach { item_name: String, value_name: Option<String>, collection: Expression, body: Block },
     Break,
     Continue,
     Const { name: String, ty: Option<TypeNode>, value: Expression },
@@ -175,6 +186,7 @@ pub enum Statement {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expression {
     Int(i64),
+    Float(f64),  // Plan 42: Float literals
     String(String),
     Bool(bool),
     Null,
@@ -238,6 +250,53 @@ pub enum Expression {
         expr: Box<Expression>,
         default: Box<Expression>,
     },  // expr or default — unwrap with fallback
+
+    // Plan 35: String interpolation $"Hello {name}!"
+    // parts = ["Hello ", name_expr, "!"]
+    InterpolatedString(Vec<InterpolationPart>),
+
+    // Plan 38: Tuple literals (1, "hello")
+    TupleLiteral(Vec<Expression>),
+
+    // Plan 37: Range expressions 0..10, 0..=10
+    Range {
+        start: Box<Expression>,
+        end: Box<Expression>,
+        inclusive: bool,
+    },
+
+    // Wave 11: Type casting — expr as Type
+    Cast {
+        expr: Box<Expression>,
+        target_type: TypeNode,
+    },
+
+    // Wave 11: If-expression — if cond { a } else { b }
+    IfExpr {
+        condition: Box<Expression>,
+        then_block: Block,
+        else_block: Block,
+    },
+
+    // Wave 12: Struct literal — Point { x: 5, y: 10 }
+    StructLiteral {
+        type_name: String,
+        fields: Vec<(String, Expression)>,
+    },
+
+    // Wave 12: Enum variant construction — Shape::Circle(5) or Ok(value)
+    EnumConstruct {
+        enum_name: String,       // "Shape" or "" for bare variants
+        variant_name: String,    // "Circle"
+        args: Vec<Expression>,
+    },
+}
+
+// Plan 35: Parts of an interpolated string
+#[derive(Debug, PartialEq, Clone)]
+pub enum InterpolationPart {
+    Literal(String),
+    Expression(Expression),
 }
 
 // ---- Lambda Body (Plan 06) ----
@@ -282,6 +341,7 @@ pub enum CapabilityType {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    pub guard: Option<Expression>,  // Wave 11: if guard — Ok(x) if x > 0 => { ... }
     pub body: Block,
 }
 
@@ -317,6 +377,7 @@ pub enum SelectSource {
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypeNode {
     Int,
+    Float,  // Plan 42: f64
     String,
     Bool,
     Void,
@@ -329,9 +390,9 @@ pub enum TypeNode {
     Error, // New
     
     // Complex / Varg-Min Types
-    TypeMapShort, // New
     Array(Box<TypeNode>), // e.g., string[]
     Map(Box<TypeNode>, Box<TypeNode>), // e.g., map<string, int>
+    Set(Box<TypeNode>),              // Wave 16: set<string> → HashSet<String>
     
     // Plan 07: Nullable Types
     Nullable(Box<TypeNode>),         // string? → Option<String>
@@ -342,6 +403,9 @@ pub enum TypeNode {
     List(Box<TypeNode>),             // Standard Library List<T>
     Custom(String), // References to Agent or Struct names
 
+    // Plan 38: Tuple types (int, string)
+    Tuple(Vec<TypeNode>),
+
     // Plan 03: OCAP Capability Tokens
     Capability(CapabilityType),
 
@@ -350,6 +414,9 @@ pub enum TypeNode {
 
     // Plan 16: Agent messaging handle
     AgentHandle(String), // AgentHandle("Worker") — handle to spawned agent
+
+    // Wave 15: Opaque JSON value (serde_json::Value)
+    JsonValue,
 }
 
 // ---- SurrealDB AST Node ----
@@ -372,7 +439,7 @@ mod tests {
         //     }
         // }
         let ast = Program {
-            no_std: false,
+            no_std: false, docs: std::collections::HashMap::new(),
             items: vec![
                 Item::Agent(AgentDef {
                     name: "VramManager".to_string(),
@@ -390,18 +457,13 @@ mod tests {
                             type_params: vec![],
                             constraints: vec![],
                             args: vec![
-                                FieldDecl {
-                                    name: "size".to_string(),
-                                    ty: TypeNode::Ulong,
-                                }
+                                FieldDecl { name: "size".to_string(), ty: TypeNode::Ulong, default_value: None }
                             ],
                             return_ty: Some(TypeNode::Void),
-                            body: Some(Block {
-                                statements: vec![
+                            body: Some(Block { statements: vec![
                                     Statement::UnsafeBlock(Block {
-                                        statements: vec![Statement::Return(None)]
-                                    })
-                                ],
+                                        statements: vec![Statement::Return(None)] })
+                                ]
                             }),
                         }
                     ],

@@ -1,0 +1,52 @@
+// Benchmark 3: Data Processing Pipeline
+// Filter, map, aggregate over collections
+
+fn is_even(int n) -> bool {
+    return n % 2 == 0;
+}
+
+fn square(int n) -> int {
+    return n * n;
+}
+
+agent DataPipeline {
+    int total;
+
+    public void Init() {
+        total = 0;
+    }
+
+    public void Run() {
+        // Build dataset of 10000 elements
+        var data = [0];
+        int idx = 1;
+        while (idx < 10000) {
+            data.push(idx);
+            idx += 1;
+        }
+
+        // Filter evens and square them, then sum
+        int sum = 0;
+        int fi = 0;
+        while (fi < 10000) {
+            int val = data[fi];
+            if (is_even(val)) {
+                sum += square(val);
+            }
+            fi += 1;
+        }
+        total = sum;
+
+        // String processing: build CSV
+        string csv = "id,value,squared\n";
+        int ci = 0;
+        while (ci < 100) {
+            int sq = square(ci);
+            csv += $"{ci},{ci * 2},{sq}\n";
+            ci += 1;
+        }
+
+        print $"Sum of squared evens: {total}";
+        print $"CSV length: {csv.length()}";
+    }
+}

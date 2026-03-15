@@ -1,0 +1,8 @@
+/// The simplest Varg program.
+/// Compile and run: vargc run hello.varg
+agent Hello {
+    public void Run() {
+        print "Hello from Varg!";
+        print $"Built at: {timestamp()}";
+    }
+}

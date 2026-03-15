@@ -1,0 +1,29 @@
+// test_phase23_generics.varg
+// Testing Phase 23: Complete Generic Type System, Typesafe Lists, Map Instantiation & User Generics
+
+// 1. User Defined Generic Struct
+public struct Box<T> {
+    public T value;
+}
+
+// 2. Generic Method in an Agent
+system agent BoxManager {
+    // A generic method accepting a parameter that is a Box of T
+    public void UnwrapBox<T>(Box<T> my_box) {
+        print "Unwrapping generic box containing:";
+        print my_box.value;
+    }
+
+    // 3. Testing Standard Configured Types (Lists & Maps)
+    public void TestCollections() {
+        // Strongly typed List of strings
+        List<string> my_names = ["Varg", "Egregore", "AI"];
+        print "First name is:";
+        print my_names[0];
+
+        // Strongly typed Map of string -> int
+        Map<string, int> my_scores = { "Varg": 100, "Python": 0 };
+        print "Varg score:";
+        print my_scores["Varg"];
+    }
+}

@@ -1773,6 +1773,9 @@ name = "varg-codegen"
 version = "0.1.0"
 dependencies = [
  "varg-ast",
+ "varg-lexer",
+ "varg-parser",
+ "varg-typechecker",
 ]
 
 [[package]]

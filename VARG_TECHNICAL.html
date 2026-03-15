@@ -1,0 +1,1580 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Varg — Technischer Deep Dive</title>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --bg-card: #12121a;
+            --bg-code: #1a1a2e;
+            --text: #e0e0e8;
+            --text-muted: #8888a0;
+            --accent: #ff6b35;
+            --accent2: #4ecdc4;
+            --accent3: #a78bfa;
+            --border: #2a2a3e;
+            --varg: #ff6b35;
+            --csharp: #68217a;
+            --node: #339933;
+            --python: #3776ab;
+            --rust: #dea584;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+
+        /* Hero */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 40%, rgba(255,107,53,0.08) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 60%, rgba(78,205,196,0.06) 0%, transparent 50%);
+            animation: pulse 8s ease-in-out infinite alternate;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            100% { transform: scale(1.05); }
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero h1 {
+            font-size: clamp(3rem, 8vw, 7rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+        }
+
+        .hero-acronym {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-bottom: 2rem;
+        }
+
+        .hero-acronym span {
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        .hero-tagline {
+            font-size: clamp(1.1rem, 2.5vw, 1.5rem);
+            color: var(--text-muted);
+            max-width: 700px;
+            margin-bottom: 3rem;
+        }
+
+        .hero-stats {
+            display: flex;
+            gap: 3rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: var(--accent);
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        /* Sections */
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        section {
+            padding: 6rem 0;
+        }
+
+        section:nth-child(even) {
+            background: var(--bg-card);
+        }
+
+        h2 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--accent);
+        }
+
+        h3 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--accent2);
+        }
+
+        h2 .section-num {
+            color: var(--text-muted);
+            font-weight: 400;
+            margin-right: 0.5rem;
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--text);
+        }
+
+        .subtitle {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+            margin-bottom: 3rem;
+        }
+
+        /* Pipeline */
+        .pipeline {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin: 2.5rem 0;
+        }
+
+        .pipeline-step {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.8rem 1.2rem;
+            text-align: center;
+            min-width: 100px;
+        }
+
+        .pipeline-step .step-name {
+            font-weight: 700;
+            font-size: 0.95rem;
+        }
+
+        .pipeline-step .step-detail {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .pipeline-arrow {
+            font-size: 1.5rem;
+            color: var(--accent);
+        }
+
+        /* Code blocks */
+        pre {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.5rem;
+            overflow-x: auto;
+            margin: 1.5rem 0;
+            position: relative;
+        }
+
+        pre .lang-tag {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.75rem;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        code {
+            font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+            font-size: 0.88rem;
+            line-height: 1.6;
+        }
+
+        .code-inline {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 0.15em 0.4em;
+            font-family: 'Cascadia Code', 'Fira Code', monospace;
+            font-size: 0.88em;
+        }
+
+        /* Syntax highlighting */
+        .kw { color: #c792ea; }
+        .fn { color: #82aaff; }
+        .str { color: #c3e88d; }
+        .num { color: #f78c6c; }
+        .cmt { color: #546e7a; font-style: italic; }
+        .type { color: #ffcb6b; }
+        .op { color: #89ddff; }
+        .self { color: #ff5370; }
+        .annot { color: #ffcb6b; }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+        }
+
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            font-weight: 600;
+            color: var(--accent2);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            font-size: 0.95rem;
+        }
+
+        tr:hover td {
+            background: rgba(255,107,53,0.04);
+        }
+
+        /* Benchmark bars */
+        .bench-chart {
+            margin: 2rem 0;
+        }
+
+        .bench-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 1rem;
+            gap: 1rem;
+        }
+
+        .bench-label {
+            width: 100px;
+            font-weight: 600;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        .bench-bar-track {
+            flex: 1;
+            height: 36px;
+            background: var(--bg-code);
+            border-radius: 6px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .bench-bar {
+            height: 100%;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            padding-left: 12px;
+            font-weight: 700;
+            font-size: 0.85rem;
+            color: #fff;
+            transition: width 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+            min-width: fit-content;
+        }
+
+        .bench-bar.varg { background: linear-gradient(90deg, var(--varg), #ff8f5e); }
+        .bench-bar.csharp { background: linear-gradient(90deg, var(--csharp), #9b59b6); }
+        .bench-bar.node { background: linear-gradient(90deg, var(--node), #6ab04c); }
+        .bench-bar.python { background: linear-gradient(90deg, var(--python), #5d9fd4); }
+
+        .bench-time {
+            width: 80px;
+            text-align: right;
+            font-weight: 600;
+            flex-shrink: 0;
+            color: var(--text-muted);
+        }
+
+        .bench-factor {
+            width: 80px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        /* Cards */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        .card {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent);
+        }
+
+        .card h4 {
+            font-size: 1.1rem;
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+        }
+
+        .card p {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        /* Feature list */
+        .feature-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .feature-list li {
+            padding: 0.5rem 0;
+            padding-left: 1.8rem;
+            position: relative;
+        }
+
+        .feature-list li::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0.85rem;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+
+        /* Comparison matrix */
+        .matrix-yes {
+            color: var(--accent2);
+            font-weight: 700;
+        }
+
+        .matrix-no {
+            color: var(--text-muted);
+        }
+
+        .matrix-highlight {
+            background: rgba(255,107,53,0.08);
+        }
+
+        /* Side by side code */
+        .code-compare {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin: 1.5rem 0;
+        }
+
+        @media (max-width: 768px) {
+            .code-compare {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .code-compare pre {
+            margin: 0;
+        }
+
+        /* Waves timeline */
+        .timeline {
+            position: relative;
+            padding-left: 2rem;
+            margin: 2rem 0;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--border);
+        }
+
+        .timeline-item {
+            position: relative;
+            padding-bottom: 1.5rem;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -2rem;
+            top: 0.4rem;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--accent);
+            border: 2px solid var(--bg);
+        }
+
+        .timeline-item .wave-name {
+            font-weight: 700;
+            color: var(--accent2);
+        }
+
+        .timeline-item .wave-desc {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        /* Binary size */
+        .size-compare {
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 2rem;
+            margin: 2rem 0;
+            padding: 2rem 0;
+        }
+
+        .size-block {
+            text-align: center;
+        }
+
+        .size-visual {
+            width: 80px;
+            background: var(--border);
+            border-radius: 6px 6px 0 0;
+            margin: 0 auto 0.5rem;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            transition: height 1s;
+        }
+
+        .size-visual .inner {
+            width: 100%;
+            border-radius: 6px 6px 0 0;
+        }
+
+        .size-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .size-value {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        footer .footer-tagline {
+            font-size: 1.1rem;
+            font-style: italic;
+            margin-bottom: 0.5rem;
+            color: var(--text);
+        }
+
+        /* Scroll animations */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+        }
+
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Nav */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            background: rgba(10,10,15,0.9);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0.75rem 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transform: translateY(-100%);
+            transition: transform 0.3s;
+        }
+
+        nav.visible {
+            transform: translateY(0);
+        }
+
+        nav .nav-brand {
+            font-weight: 800;
+            font-size: 1.2rem;
+            color: var(--accent);
+        }
+
+        nav .nav-links {
+            display: flex;
+            gap: 1.5rem;
+            list-style: none;
+        }
+
+        nav .nav-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: color 0.2s;
+        }
+
+        nav .nav-links a:hover {
+            color: var(--accent);
+        }
+
+        @media (max-width: 768px) {
+            nav .nav-links { display: none; }
+            .hero h1 { font-size: 3.5rem; }
+            .hero-stats { gap: 1.5rem; }
+            .size-compare { flex-wrap: wrap; }
+        }
+    </style>
+</head>
+<body>
+
+<nav id="navbar">
+    <span class="nav-brand">VARG</span>
+    <ul class="nav-links">
+        <li><a href="#architecture">Architektur</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#token-efficiency">Token-Effizienz</a></li>
+        <li><a href="#benchmarks">Benchmarks</a></li>
+        <li><a href="#comparison">Vergleich</a></li>
+        <li><a href="#status">Status</a></li>
+    </ul>
+</nav>
+
+<!-- Hero -->
+<div class="hero">
+    <div class="hero-content">
+        <h1>VARG</h1>
+        <div class="hero-acronym">
+            <span>V</span>irtual <span>A</span>gent <span>R</span>ust <span>G</span>enerator
+        </div>
+        <p class="hero-tagline">
+            Eine kompilierte Programmiersprache, entwickelt fuer autonome KI-Agenten.<br>
+            C#-Ergonomie. Rust-Performance. Native KI-Primitive.
+        </p>
+        <div class="hero-stats">
+            <div class="stat">
+                <div class="stat-value">13ms</div>
+                <div class="stat-label">Laufzeit</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">135KB</div>
+                <div class="stat-label">Binary-Groesse</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">200x</div>
+                <div class="stat-label">Schneller als Python</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">417</div>
+                <div class="stat-label">Tests bestanden</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 1. What Is Varg? -->
+<section>
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">01</span> Was ist Varg?</h2>
+        <p class="subtitle fade-in">Keine existierende Sprache behandelt KI-Agenten als First-Class Citizens. Varg aendert das.</p>
+
+        <div class="card-grid fade-in">
+            <div class="card">
+                <h4>Python</h4>
+                <p>Langsam, dynamisch typisiert, braucht venv + pip + Laufzeit. ~200x langsamer als nativ.</p>
+            </div>
+            <div class="card">
+                <h4>TypeScript</h4>
+                <p>Braucht Node/Bun/Deno Runtime. ~5x langsamer. Typsicherheit zur Laufzeit entfernt.</p>
+            </div>
+            <div class="card">
+                <h4>Rust</h4>
+                <p>Schnell aber verbose. Feindlich gegenueber Rapid Prototyping. Steile Lernkurve.</p>
+            </div>
+            <div class="card">
+                <h4>C#</h4>
+                <p>Managed, GC-abhaengig, liefert 150MB+ Laufzeit mit. ~5x langsamer als nativ.</p>
+            </div>
+        </div>
+
+        <h3>Vargs Ansatz</h3>
+        <div class="pipeline fade-in">
+            <div class="pipeline-step">
+                <div class="step-name">.varg</div>
+                <div class="step-detail">Source</div>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="step-name">vargc</div>
+                <div class="step-detail">Compiler</div>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="step-name">.rs</div>
+                <div class="step-detail">Rust Source</div>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="step-name">cargo</div>
+                <div class="step-detail">Build</div>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step" style="border-color: var(--accent);">
+                <div class="step-name" style="color: var(--accent);">.exe</div>
+                <div class="step-detail">Native Binary</div>
+            </div>
+        </div>
+
+        <p class="fade-in">Das Ergebnis: <strong>Native Executables unter 160KB</strong>, keine Runtime, kein Garbage Collector, keine VM.</p>
+    </div>
+</section>
+
+<!-- 2. Architecture -->
+<section id="architecture">
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">02</span> Compiler-Architektur</h2>
+        <p class="subtitle fade-in">Fuenf-Phasen-Pipeline. 15.500 Zeilen Rust. 417 Tests.</p>
+
+        <table class="fade-in">
+            <thead>
+                <tr>
+                    <th>Phase</th>
+                    <th>Implementierung</th>
+                    <th>Zeilen</th>
+                    <th>Tests</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Lexer</td>
+                    <td>Logos-basierter Tokenizer</td>
+                    <td>580</td>
+                    <td>28</td>
+                </tr>
+                <tr>
+                    <td>Parser</td>
+                    <td>Handgeschriebener Recursive Descent</td>
+                    <td>4,610</td>
+                    <td>124</td>
+                </tr>
+                <tr>
+                    <td>TypeChecker</td>
+                    <td>Semantische Analyse + OCAP</td>
+                    <td>4,224</td>
+                    <td>106</td>
+                </tr>
+                <tr>
+                    <td>CodeGen</td>
+                    <td>AST &rarr; Rust-Quellcode-Emission</td>
+                    <td>3,527</td>
+                    <td>111</td>
+                </tr>
+                <tr>
+                    <td>CLI (vargc)</td>
+                    <td>build / run / emit-rs</td>
+                    <td>664</td>
+                    <td>1</td>
+                </tr>
+                <tr>
+                    <td>Runtime</td>
+                    <td>Stdlib (crypto, net, db, llm)</td>
+                    <td>18+</td>
+                    <td>28</td>
+                </tr>
+                <tr>
+                    <td>LSP</td>
+                    <td>VS Code Sprachserver</td>
+                    <td>139</td>
+                    <td>&mdash;</td>
+                </tr>
+                <tr style="font-weight: 700; color: var(--accent);">
+                    <td>Total</td>
+                    <td></td>
+                    <td>~15,500</td>
+                    <td>417</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Warum Transpilation nach Rust?</h3>
+        <ul class="feature-list fade-in">
+            <li><strong>Zero-Cost Abstraktionen</strong> &mdash; Rusts Optimizer uebernimmt die schwere Arbeit</li>
+            <li><strong>Speichersicherheit</strong> &mdash; Borrow Checker fängt Bugs ab, die Vargs Codegen uebersehen koennte</li>
+            <li><strong>Oekosystem-Zugang</strong> &mdash; <span class="code-inline">use extern</span> mappt direkt auf Cargo Crates</li>
+            <li><strong>Cross-Platform</strong> &mdash; ueberall wo Rust kompiliert, kompiliert Varg</li>
+            <li><strong>Bewaehrte Optimierungen</strong> &mdash; LLVM-Backend via rustc, 10+ Jahre kampferprobt</li>
+        </ul>
+    </div>
+</section>
+
+<!-- 3. Features -->
+<section id="features">
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">03</span> Kern-Features der Sprache</h2>
+
+        <h3>Agenten (First-Class Actors)</h3>
+        <p class="fade-in">Jedes Varg-Programm ist ein <strong>Agent</strong> &mdash; ein zustandsbehafteter Actor mit Lifecycle-Hooks. Kein Library-Pattern. In die Grammatik eingebaut.</p>
+
+        <pre class="fade-in"><code><span class="lang-tag">varg</span>
+<span class="kw">agent</span> <span class="type">ApiProcessor</span> : <span class="type">DataProcessor</span> {
+    <span class="type">string</span> last_result;
+    <span class="type">int</span> request_count;
+
+    <span class="kw">public void</span> <span class="fn">Init</span>() {
+        last_result = <span class="str">""</span>;
+        request_count = <span class="num">0</span>;
+    }
+
+    <span class="kw">public</span> <span class="type">string</span> <span class="fn">Process</span>(<span class="type">string</span> input) {
+        request_count += <span class="num">1</span>;
+        last_result = <span class="str">$"[{request_count}] {input.trim()}"</span>;
+        <span class="kw">return</span> last_result;
+    }
+
+    <span class="kw">public void</span> <span class="fn">Run</span>() {
+        <span class="kw">for</span> i <span class="kw">in</span> <span class="num">0</span>..<span class="num">5000</span> {
+            <span class="fn">Process</span>(<span class="str">$"  Request {i}  "</span>);
+        }
+        <span class="kw">print</span> <span class="str">$"Processed {request_count} requests"</span>;
+    }
+}</code></pre>
+
+        <p class="fade-in">Kompiliert zu einem Rust <span class="code-inline">struct</span> + <span class="code-inline">impl</span>-Block + <span class="code-inline">main()</span>. Kein Runtime-Overhead. Kein Actor-Framework. Purer kompilierter Code.</p>
+
+        <h3>Contracts (Interface-First Design)</h3>
+        <pre class="fade-in"><code><span class="lang-tag">varg</span>
+<span class="kw">contract</span> <span class="type">DataProcessor</span> {
+    <span class="type">string</span> <span class="fn">Process</span>(<span class="type">string</span> input);
+    <span class="type">int</span> <span class="fn">GetCount</span>();
+}
+
+<span class="kw">agent</span> <span class="type">MyAgent</span> : <span class="type">DataProcessor</span> {
+    <span class="cmt">// Must implement Process() and GetCount()</span>
+    <span class="cmt">// or compilation fails</span>
+}</code></pre>
+
+        <h3>OCAP-Sicherheit (Object-Capability Model)</h3>
+        <p class="fade-in">Privilegierte Operationen erfordern explizite Capability-Tokens. Erzwungen zur <strong>Compile-Zeit</strong>, nicht zur Laufzeit.</p>
+        <pre class="fade-in"><code><span class="lang-tag">varg</span>
+<span class="cmt">// Compile error &mdash; capabilities can't be constructed outside unsafe:</span>
+<span class="kw">let</span> token = <span class="type">FileSystem</span>;  <span class="cmt">// ERROR: CapabilityConstructionOutsideUnsafe</span>
+
+<span class="cmt">// Correct: capabilities must be explicitly granted</span>
+<span class="kw">public void</span> <span class="fn">ReadFile</span>(<span class="type">string</span> path, <span class="kw">cap</span> <span class="type">FileSystem</span> fs) {
+    <span class="kw">var</span> content = fs.<span class="fn">read</span>(path);
+}</code></pre>
+
+        <h3>Weitere Features</h3>
+        <div class="card-grid fade-in">
+            <div class="card">
+                <h4>Eigenstaendige Funktionen</h4>
+                <p><span class="code-inline">fn fibonacci(int n) -> int { ... }</span><br>
+                Pure Rust-Funktionen. Kein Struct, kein self, kein Overhead.</p>
+            </div>
+            <div class="card">
+                <h4>String-Interpolation</h4>
+                <p><span class="code-inline">$"Hello {name} v{ver}"</span><br>
+                Kompiliert zu Rusts <span class="code-inline">format!()</span>-Makro.</p>
+            </div>
+            <div class="card">
+                <h4>For-In &amp; Ranges</h4>
+                <p><span class="code-inline">for i in 0..10 { }</span><br>
+                <span class="code-inline">for item in list { }</span></p>
+            </div>
+            <div class="card">
+                <h4>Tupel</h4>
+                <p><span class="code-inline">var point = (10, 20);</span><br>
+                Zugriff via <span class="code-inline">point.0</span>, <span class="code-inline">point.1</span></p>
+            </div>
+            <div class="card">
+                <h4>Retry/Fallback</h4>
+                <p><span class="code-inline">retry(3) { api.call() } fallback { "cached" }</span><br>
+                Eingebaut fuer unzuverlaessige LLM/API-Aufrufe.</p>
+            </div>
+            <div class="card">
+                <h4>Generics</h4>
+                <p><span class="code-inline">struct Pair&lt;K, V&gt; { K key; V value; }</span><br>
+                Typargument-Anzahl wird zur Compile-Zeit validiert.</p>
+            </div>
+            <div class="card">
+                <h4>Pattern Matching</h4>
+                <p><span class="code-inline">match color { Red(i) => ..., _ => ... }</span><br>
+                Vollstaendigkeitspruefung via Wildcard.</p>
+            </div>
+            <div class="card">
+                <h4>Native KI-Typen</h4>
+                <p><span class="code-inline">Prompt, Context, Tensor, Embedding</span><br>
+                In die Sprache eingebaut, keine Library.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- 4. Token-Effizienz -->
+<section id="token-efficiency">
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">04</span> Token-Effizienz: Warum das fuer KI wichtig ist</h2>
+        <p class="subtitle fade-in">Weniger Tokens = guenstigere LLM-Aufrufe. Varg ist die kompakteste typsichere Sprache fuer Agenten.</p>
+
+        <p class="fade-in">Wenn ein LLM-Agent Code generiert, liest oder analysiert, zahlt man <strong>pro Token</strong>. Jedes ueberfluessige Keyword, jeder Import, jedes <span class="code-inline">self.</span> kostet Geld. Varg wurde von Anfang an darauf optimiert, <strong>maximale Semantik pro Token</strong> zu liefern.</p>
+
+        <h3>Zeichenvergleich: Gleiche Logik, verschiedene Sprachen</h3>
+        <div class="bench-chart fade-in">
+            <div class="bench-row">
+                <div class="bench-label" style="color: var(--varg);">Varg</div>
+                <div class="bench-bar-track">
+                    <div class="bench-bar varg" style="width: 55%;">1.067 Zeichen</div>
+                </div>
+                <div class="bench-time">1.067</div>
+                <div class="bench-factor" style="color: var(--accent); font-weight:700;">1.0x</div>
+            </div>
+            <div class="bench-row">
+                <div class="bench-label" style="color: var(--python);">Python</div>
+                <div class="bench-bar-track">
+                    <div class="bench-bar python" style="width: 71%;">1.381 Zeichen</div>
+                </div>
+                <div class="bench-time">1.381</div>
+                <div class="bench-factor">1.3x mehr</div>
+            </div>
+            <div class="bench-row">
+                <div class="bench-label" style="color: var(--node);">TypeScript</div>
+                <div class="bench-bar-track">
+                    <div class="bench-bar node" style="width: 88%;">1.708 Zeichen</div>
+                </div>
+                <div class="bench-time">1.708</div>
+                <div class="bench-factor">1.6x mehr</div>
+            </div>
+            <div class="bench-row">
+                <div class="bench-label" style="color: var(--csharp);">C#</div>
+                <div class="bench-bar-track">
+                    <div class="bench-bar csharp" style="width: 100%;">1.943 Zeichen</div>
+                </div>
+                <div class="bench-time">1.943</div>
+                <div class="bench-factor">1.8x mehr</div>
+            </div>
+        </div>
+
+        <h3>Warum Varg weniger Tokens braucht</h3>
+        <div class="card-grid fade-in">
+            <div class="card">
+                <h4>Keine Imports</h4>
+                <p>Python braucht <span class="code-inline">from typing import Protocol</span>, <span class="code-inline">import asyncio</span>, etc. Varg: null Zeilen Imports. Agenten, Contracts und KI-Typen sind eingebaut.</p>
+            </div>
+            <div class="card">
+                <h4>Kein self./this.</h4>
+                <p>Python: <span class="code-inline">self.request_count += 1</span><br>
+                Varg: <span class="code-inline">request_count += 1</span><br>
+                5 Zeichen gespart pro Feldzugriff. Bei 20 Zugriffen: 100 Tokens weniger.</p>
+            </div>
+            <div class="card">
+                <h4>Implizite Lifecycle</h4>
+                <p>Kein <span class="code-inline">async def main():</span>, kein <span class="code-inline">asyncio.run(main())</span>. Vargs <span class="code-inline">Init()</span> und <span class="code-inline">Run()</span> sind Konvention, nicht Boilerplate.</p>
+            </div>
+            <div class="card">
+                <h4>Eingebaute Syntax</h4>
+                <p><span class="code-inline">retry(3) { ... } fallback { ... }</span> statt 15 Zeilen try/except/retry-Logik mit Counter und Backoff.</p>
+            </div>
+        </div>
+
+        <h3>Token-Kosten-Rechnung</h3>
+        <table class="fade-in">
+            <thead>
+                <tr>
+                    <th>Szenario</th>
+                    <th>Python-Tokens</th>
+                    <th>Varg-Tokens</th>
+                    <th>Ersparnis</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Agent mit 5 Methoden generieren</td>
+                    <td>~450</td>
+                    <td>~280</td>
+                    <td style="color: var(--accent2); font-weight: 700;">38%</td>
+                </tr>
+                <tr>
+                    <td>Code-Review eines 200-Zeilen-Agenten</td>
+                    <td>~1.800</td>
+                    <td>~1.100</td>
+                    <td style="color: var(--accent2); font-weight: 700;">39%</td>
+                </tr>
+                <tr>
+                    <td>Fehleranalyse + Fix-Vorschlag</td>
+                    <td>~600</td>
+                    <td>~380</td>
+                    <td style="color: var(--accent2); font-weight: 700;">37%</td>
+                </tr>
+                <tr class="matrix-highlight">
+                    <td><strong>1000 Agent-Operationen/Tag</strong></td>
+                    <td>~450K</td>
+                    <td>~280K</td>
+                    <td style="color: var(--accent); font-weight: 700;">170K Tokens/Tag gespart</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <p class="fade-in">Bei GPT-4o-Preisen (~$5/1M Tokens): <strong>~$0.85/Tag Ersparnis pro Agent</strong>. Bei 100 Agenten im Produktivbetrieb: <strong>~$85/Tag = ~$2.550/Monat</strong>.</p>
+
+        <h3>Pipe-Operator: Funktionsverkettung ohne Verschachtelung</h3>
+        <div class="code-compare fade-in">
+            <pre><code><span class="lang-tag">Python</span>
+<span class="cmt"># Verschachtelt, schwer lesbar:</span>
+result = <span class="fn">format_output</span>(
+    <span class="fn">validate</span>(
+        <span class="fn">transform</span>(
+            <span class="fn">parse</span>(input)
+        )
+    )
+)</code></pre>
+            <pre><code><span class="lang-tag">Varg</span>
+<span class="cmt">// Linear, klar lesbar:</span>
+<span class="kw">var</span> result = input
+    |> <span class="fn">parse</span>()
+    |> <span class="fn">transform</span>()
+    |> <span class="fn">validate</span>()
+    |> <span class="fn">format_output</span>();</code></pre>
+        </div>
+
+        <p class="fade-in">Der Pipe-Operator <span class="code-inline">|></span> macht Datenfluesse linear statt verschachtelt. Das spart nicht nur Tokens, sondern macht den Code auch fuer LLMs einfacher zu parsen und zu generieren.</p>
+    </div>
+</section>
+
+<!-- 5. Benchmarks -->
+<section id="benchmarks">
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">05</span> Performance-Benchmarks</h2>
+        <p class="subtitle fade-in">1000 Iterationen &times; Fibonacci(40) + 300&times;300 Matrix + sum_range(50000). Identische Ausgabe verifiziert.</p>
+
+        <div class="bench-chart fade-in">
+            <div class="bench-row">
+                <div class="bench-label" style="color: var(--varg);">Varg</div>
+                <div class="bench-bar-track">
+                    <div class="bench-bar varg" style="width: 0%;" data-width="1%">13 ms</div>
+                </div>
+                <div class="bench-time">13 ms</div>
+                <div class="bench-factor" style="color: var(--accent); font-weight:700;">1.0x</div>
+            </div>
+            <div class="bench-row">
+                <div class="bench-label" style="color: var(--csharp);">C#</div>
+                <div class="bench-bar-track">
+                    <div class="bench-bar csharp" style="width: 0%;" data-width="5.2%">67 ms</div>
+                </div>
+                <div class="bench-time">67 ms</div>
+                <div class="bench-factor">5.2x langsamer</div>
+            </div>
+            <div class="bench-row">
+                <div class="bench-label" style="color: var(--node);">Node.js</div>
+                <div class="bench-bar-track">
+                    <div class="bench-bar node" style="width: 0%;" data-width="5.4%">70 ms</div>
+                </div>
+                <div class="bench-time">70 ms</div>
+                <div class="bench-factor">5.4x langsamer</div>
+            </div>
+            <div class="bench-row">
+                <div class="bench-label" style="color: var(--python);">Python</div>
+                <div class="bench-bar-track">
+                    <div class="bench-bar python" style="width: 0%;" data-width="100%">2.595 ms</div>
+                </div>
+                <div class="bench-time">2.595 ms</div>
+                <div class="bench-factor" style="color: var(--accent); font-weight: 700;">200x langsamer</div>
+            </div>
+        </div>
+
+        <h3>Warum Varg schnell ist</h3>
+        <p class="fade-in"><strong>Keine Magie &mdash; es ist Rust.</strong> Varg kompiliert zu optimiertem Rust &rarr; nativer Maschinencode via LLVM.</p>
+        <ul class="feature-list fade-in">
+            <li>Keine Garbage-Collector-Pausen</li>
+            <li>Keine JIT-Aufwaermzeit</li>
+            <li>Kein Interpreter-Overhead</li>
+            <li>Keine V8/CLR-Runtime zum Laden</li>
+            <li>Kein Dynamisch Dispatch (alles wird monomorphisiert)</li>
+        </ul>
+
+        <h3>Binary-Groesse</h3>
+        <div class="size-compare fade-in">
+            <div class="size-block">
+                <div class="size-visual" style="height: 30px;">
+                    <div class="inner" style="height: 100%; background: var(--varg);"></div>
+                </div>
+                <div class="size-name" style="color: var(--varg);">Varg</div>
+                <div class="size-value">135 KB</div>
+                <div class="size-value">Eigenstaendig, keine Deps</div>
+            </div>
+            <div class="size-block">
+                <div class="size-visual" style="height: 200px;">
+                    <div class="inner" style="height: 100%; background: var(--csharp);"></div>
+                </div>
+                <div class="size-name" style="color: var(--csharp);">C#</div>
+                <div class="size-value">5 KB + 150 MB</div>
+                <div class="size-value">.NET Runtime noetig</div>
+            </div>
+            <div class="size-block">
+                <div class="size-visual" style="height: 170px;">
+                    <div class="inner" style="height: 100%; background: var(--node);"></div>
+                </div>
+                <div class="size-name" style="color: var(--node);">Node.js</div>
+                <div class="size-value">2 KB + 100 MB</div>
+                <div class="size-value">Node.js noetig</div>
+            </div>
+            <div class="size-block">
+                <div class="size-visual" style="height: 140px;">
+                    <div class="inner" style="height: 100%; background: var(--python);"></div>
+                </div>
+                <div class="size-name" style="color: var(--python);">Python</div>
+                <div class="size-value">1.5 KB + 80 MB</div>
+                <div class="size-value">Python noetig</div>
+            </div>
+        </div>
+
+        <h3>Kompilierzeit</h3>
+        <table class="fade-in">
+            <thead><tr><th>Phase</th><th>Zeit</th></tr></thead>
+            <tbody>
+                <tr><td>Varg &rarr; Rust Transpilation</td><td>~190 ms</td></tr>
+                <tr><td>Rust &rarr; Native Binary (Release)</td><td>~380 ms</td></tr>
+                <tr style="font-weight:700; color: var(--accent);"><td>Gesamt: Quellcode &rarr; Executable</td><td>~570 ms</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Codezeilen</h3>
+        <table class="fade-in">
+            <thead><tr><th>Sprache</th><th>Zeilen</th><th>Boilerplate</th></tr></thead>
+            <tbody>
+                <tr><td>Python</td><td>41</td><td>Minimal</td></tr>
+                <tr><td>Node.js</td><td>50</td><td>Minimal</td></tr>
+                <tr class="matrix-highlight"><td><strong>Varg</strong></td><td><strong>55</strong></td><td>Agent/Init-Struktur</td></tr>
+                <tr><td>C#</td><td>65</td><td>Class + using + Main</td></tr>
+                <tr><td>Rust (handgeschrieben)</td><td>~90</td><td>mod, use, Lifetimes</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<!-- 5. Agent Comparison -->
+<section>
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">06</span> Agent-Entwicklung: Varg vs Python</h2>
+        <p class="subtitle fade-in">Gleiche Logik. Verschiedene Welten.</p>
+
+        <div class="code-compare fade-in">
+            <pre><code><span class="lang-tag">Python</span>
+<span class="kw">import</span> asyncio
+<span class="kw">from</span> dataclasses <span class="kw">import</span> dataclass
+<span class="kw">from</span> typing <span class="kw">import</span> Protocol
+
+<span class="kw">class</span> <span class="type">DataProcessor</span>(<span class="type">Protocol</span>):
+    <span class="kw">def</span> <span class="fn">process</span>(<span class="self">self</span>, input: <span class="type">str</span>) -> <span class="type">str</span>: ...
+    <span class="kw">def</span> <span class="fn">get_count</span>(<span class="self">self</span>) -> <span class="type">int</span>: ...
+
+<span class="annot">@dataclass</span>
+<span class="kw">class</span> <span class="type">ApiProcessor</span>:
+    last_result: <span class="type">str</span> = <span class="str">""</span>
+    request_count: <span class="type">int</span> = <span class="num">0</span>
+
+    <span class="kw">def</span> <span class="fn">process</span>(<span class="self">self</span>, input):
+        <span class="self">self</span>.request_count += <span class="num">1</span>
+        <span class="self">self</span>.last_result = \
+          <span class="str">f"[{<span class="self">self</span>.request_count}]"</span>
+        <span class="kw">return</span> <span class="self">self</span>.last_result
+
+    <span class="kw">def</span> <span class="fn">get_count</span>(<span class="self">self</span>):
+        <span class="kw">return</span> <span class="self">self</span>.request_count
+
+<span class="kw">async def</span> <span class="fn">main</span>():
+    agent = <span class="type">ApiProcessor</span>()
+    <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="num">5000</span>):
+        agent.<span class="fn">process</span>(<span class="str">f"Request {i}"</span>)
+    <span class="fn">print</span>(<span class="str">f"Done: {agent.request_count}"</span>)
+
+asyncio.<span class="fn">run</span>(<span class="fn">main</span>())</code></pre>
+
+            <pre><code><span class="lang-tag">Varg</span>
+<span class="kw">contract</span> <span class="type">DataProcessor</span> {
+    <span class="type">string</span> <span class="fn">Process</span>(<span class="type">string</span> input);
+    <span class="type">int</span> <span class="fn">GetCount</span>();
+}
+
+<span class="kw">agent</span> <span class="type">ApiProcessor</span> : <span class="type">DataProcessor</span> {
+    <span class="type">string</span> last_result;
+    <span class="type">int</span> request_count;
+
+    <span class="kw">public void</span> <span class="fn">Init</span>() {
+        last_result = <span class="str">""</span>;
+        request_count = <span class="num">0</span>;
+    }
+
+    <span class="kw">public</span> <span class="type">string</span> <span class="fn">Process</span>(<span class="type">string</span> input) {
+        request_count += <span class="num">1</span>;
+        last_result =
+          <span class="str">$"[{request_count}] {input}"</span>;
+        <span class="kw">return</span> last_result;
+    }
+
+    <span class="kw">public</span> <span class="type">int</span> <span class="fn">GetCount</span>() {
+        <span class="kw">return</span> request_count;
+    }
+
+    <span class="kw">public void</span> <span class="fn">Run</span>() {
+        <span class="kw">for</span> i <span class="kw">in</span> <span class="num">0</span>..<span class="num">5000</span> {
+            <span class="fn">Process</span>(<span class="str">$"Request {i}"</span>);
+        }
+        <span class="kw">print</span> <span class="str">$"Done: {request_count}"</span>;
+    }
+}</code></pre>
+        </div>
+
+        <div class="card-grid fade-in">
+            <div class="card">
+                <h4>Keine Imports</h4>
+                <p>Agenten, Contracts und String-Interpolation sind eingebaut. Keine Import-Zeremonie.</p>
+            </div>
+            <div class="card">
+                <h4>Kein self.</h4>
+                <p>Feldzugriff innerhalb von Agenten ist implizit. Weniger Rauschen, mehr Absicht.</p>
+            </div>
+            <div class="card">
+                <h4>Compile-Time Contracts</h4>
+                <p>Fehlende Methoden werden erkannt bevor Code laeuft. Nicht zur Laufzeit via Duck Typing.</p>
+            </div>
+            <div class="card">
+                <h4>141 KB Binary</h4>
+                <p>Keine Python-Runtime. Kein venv. Kein pip. Kopieren und ausfuehren.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- 6. Type System -->
+<section>
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">07</span> Typsystem</h2>
+
+        <div class="code-compare fade-in">
+            <div>
+                <h3 style="margin-top:0;">Primitive Typen</h3>
+                <table>
+                    <thead><tr><th>Varg</th><th>Rust</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="code-inline">int</span></td><td>i64</td></tr>
+                        <tr><td><span class="code-inline">float</span></td><td>f64</td></tr>
+                        <tr><td><span class="code-inline">string</span></td><td>String</td></tr>
+                        <tr><td><span class="code-inline">bool</span></td><td>bool</td></tr>
+                        <tr><td><span class="code-inline">void</span></td><td>()</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div>
+                <h3 style="margin-top:0;">Collection-Typen</h3>
+                <table>
+                    <thead><tr><th>Varg</th><th>Rust</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="code-inline">[int]</span></td><td>Vec&lt;i64&gt;</td></tr>
+                        <tr><td><span class="code-inline">map&lt;string, int&gt;</span></td><td>HashMap&lt;String, i64&gt;</td></tr>
+                        <tr><td><span class="code-inline">(int, string)</span></td><td>(i64, String)</td></tr>
+                        <tr><td><span class="code-inline">list&lt;T&gt;</span></td><td>Vec&lt;T&gt;</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <h3>Compile-Time-Sicherheit</h3>
+        <ul class="feature-list fade-in">
+            <li><strong>Typinferenz</strong> &mdash; <span class="code-inline">var x = 42;</span> inferiert <span class="code-inline">int</span></li>
+            <li><strong>Rueckgabetyp-Validierung</strong> &mdash; Rueckgabetypen muessen mit der Deklaration uebereinstimmen</li>
+            <li><strong>Rueckgabepfad-Analyse</strong> &mdash; alle Code-Pfade muessen einen Wert zurueckgeben</li>
+            <li><strong>Generic-Argumentanzahl-Validierung</strong> &mdash; <span class="code-inline">Pair&lt;int&gt;</span> bei 2-Parameter-Generic = Fehler</li>
+            <li><strong>Contract-Compliance</strong> &mdash; Agenten muessen alle Contract-Methoden implementieren</li>
+            <li><strong>OCAP-Flussanalyse</strong> &mdash; Capabilities nur in <span class="code-inline">unsafe</span> konstruierbar</li>
+            <li><strong>Collection-Methodentyp-Inferenz</strong> &mdash; <span class="code-inline">arr.first()</span> gibt Element-Typ zurueck</li>
+        </ul>
+    </div>
+</section>
+
+<!-- 7. Comparison Matrix -->
+<section id="comparison">
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">08</span> Vergleichsmatrix</h2>
+        <p class="subtitle fade-in">Varg vs. die etablierten Sprachen.</p>
+
+        <table class="fade-in">
+            <thead>
+                <tr>
+                    <th>Eigenschaft</th>
+                    <th style="color: var(--varg);">Varg</th>
+                    <th>Python</th>
+                    <th>TypeScript</th>
+                    <th>C#</th>
+                    <th style="color: var(--rust);">Rust</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr class="matrix-highlight">
+                    <td>Laufzeit-Performance</td>
+                    <td class="matrix-yes">Native</td>
+                    <td class="matrix-no">~200x langsamer</td>
+                    <td class="matrix-no">~5x langsamer</td>
+                    <td class="matrix-no">~5x langsamer</td>
+                    <td class="matrix-yes">Native</td>
+                </tr>
+                <tr>
+                    <td>Binary-Groesse</td>
+                    <td class="matrix-yes">135 KB</td>
+                    <td class="matrix-no">+ Laufzeit</td>
+                    <td class="matrix-no">+ Laufzeit</td>
+                    <td class="matrix-no">+ Laufzeit</td>
+                    <td class="matrix-yes">~135 KB</td>
+                </tr>
+                <tr class="matrix-highlight">
+                    <td>GC-Pausen</td>
+                    <td class="matrix-yes">Keine</td>
+                    <td class="matrix-no">Yes</td>
+                    <td class="matrix-no">Yes</td>
+                    <td class="matrix-no">Yes</td>
+                    <td class="matrix-yes">Keine</td>
+                </tr>
+                <tr>
+                    <td>Typsicherheit</td>
+                    <td class="matrix-yes">Static</td>
+                    <td class="matrix-no">Dynamisch</td>
+                    <td>Static*</td>
+                    <td class="matrix-yes">Static</td>
+                    <td class="matrix-yes">Static</td>
+                </tr>
+                <tr class="matrix-highlight">
+                    <td>Agent als Primitiv</td>
+                    <td class="matrix-yes">Eingebaut</td>
+                    <td class="matrix-no">Nein</td>
+                    <td class="matrix-no">Nein</td>
+                    <td class="matrix-no">Nein</td>
+                    <td class="matrix-no">Nein</td>
+                </tr>
+                <tr>
+                    <td>Capability-Sicherheit</td>
+                    <td class="matrix-yes">Eingebaut</td>
+                    <td class="matrix-no">Nein</td>
+                    <td class="matrix-no">Nein</td>
+                    <td class="matrix-no">Nein</td>
+                    <td class="matrix-no">Nein</td>
+                </tr>
+                <tr class="matrix-highlight">
+                    <td>KI-Typen</td>
+                    <td class="matrix-yes">Eingebaut</td>
+                    <td class="matrix-no">Bibliothek</td>
+                    <td class="matrix-no">Bibliothek</td>
+                    <td class="matrix-no">Bibliothek</td>
+                    <td class="matrix-no">Bibliothek</td>
+                </tr>
+                <tr>
+                    <td>Retry/Fallback</td>
+                    <td class="matrix-yes">Eingebaut</td>
+                    <td class="matrix-no">Bibliothek</td>
+                    <td class="matrix-no">Bibliothek</td>
+                    <td class="matrix-no">Bibliothek</td>
+                    <td class="matrix-no">Bibliothek</td>
+                </tr>
+                <tr class="matrix-highlight">
+                    <td>String Interpolation</td>
+                    <td class="matrix-yes">$"..."</td>
+                    <td class="matrix-yes">f-strings</td>
+                    <td class="matrix-yes">Template</td>
+                    <td class="matrix-yes">$"..."</td>
+                    <td class="matrix-no">format!()</td>
+                </tr>
+                <tr>
+                    <td>Lernkurve</td>
+                    <td class="matrix-yes">C#-aehnlich</td>
+                    <td class="matrix-yes">Einfach</td>
+                    <td>Mittel</td>
+                    <td>Mittel</td>
+                    <td class="matrix-no">Schwer</td>
+                </tr>
+                <tr class="matrix-highlight">
+                    <td>Deployment</td>
+                    <td class="matrix-yes">.exe kopieren</td>
+                    <td class="matrix-no">venv + pip</td>
+                    <td class="matrix-no">node_modules</td>
+                    <td class="matrix-no">.NET Laufzeit</td>
+                    <td class="matrix-yes">Binary kopieren</td>
+                </tr>
+            </tbody>
+        </table>
+        <p style="font-size: 0.85rem; color: var(--text-muted);">*TypeScripts Typsicherheit wird zur Laufzeit entfernt</p>
+    </div>
+</section>
+
+<!-- 8. Benchmark Suite -->
+<section>
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">09</span> Benchmark-Suite</h2>
+        <p class="subtitle fade-in">8 End-to-End-Benchmarks, die jedes wichtige Sprachfeature validieren.</p>
+
+        <table class="fade-in">
+            <thead>
+                <tr>
+                    <th>Benchmark</th>
+                    <th>Getestete Features</th>
+                    <th>Zeilen</th>
+                    <th>Binary</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>agent_benchmark</td>
+                    <td>Contracts, agents, string interpolation, standalone fn</td>
+                    <td>45</td>
+                    <td>141 KB</td>
+                </tr>
+                <tr>
+                    <td>bench4_generics</td>
+                    <td>For-in loops, tuples, ranges, string methods, array ops</td>
+                    <td>64</td>
+                    <td>156 KB</td>
+                </tr>
+                <tr>
+                    <td>bench5_async_agents</td>
+                    <td>Agent lifecycle, method calls, string building</td>
+                    <td>71</td>
+                    <td>141 KB</td>
+                </tr>
+                <tr>
+                    <td>bench6_patterns</td>
+                    <td>FizzBuzz, conditionals, data processing</td>
+                    <td>97</td>
+                    <td>140 KB</td>
+                </tr>
+                <tr>
+                    <td>bench7_fullstack</td>
+                    <td>env(), contracts, for-in, string interpolation</td>
+                    <td>63</td>
+                    <td>157 KB</td>
+                </tr>
+                <tr>
+                    <td>bench_perf</td>
+                    <td>Fibonacci, matrix, arrays, strings (100 iter)</td>
+                    <td>55</td>
+                    <td>135 KB</td>
+                </tr>
+                <tr>
+                    <td>bench_perf_heavy</td>
+                    <td>Fibonacci(40), 300&times;300 matrix, ranges (1000 iter)</td>
+                    <td>55</td>
+                    <td>135 KB</td>
+                </tr>
+            </tbody>
+        </table>
+        <p class="fade-in">Alle Benchmarks kompilieren in unter 600ms und erzeugen Binaries unter 160KB.</p>
+    </div>
+</section>
+
+<!-- 9. Status -->
+<section id="status">
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">10</span> Entwicklungsstatus</h2>
+
+        <div class="hero-stats fade-in" style="margin-bottom: 3rem;">
+            <div class="stat">
+                <div class="stat-value">11/11</div>
+                <div class="stat-label">Wellen komplett</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">417</div>
+                <div class="stat-label">Tests (0 Fehler)</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">15.5K</div>
+                <div class="stat-label">Zeilen Rust</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">8</div>
+                <div class="stat-label">Benchmarks</div>
+            </div>
+        </div>
+
+        <div class="timeline fade-in">
+            <div class="timeline-item">
+                <span class="wave-name">Wave 1: Housekeeping</span>
+                <span class="wave-desc">&mdash; Naming, docs, git init</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 2: Compiler Foundation</span>
+                <span class="wave-desc">&mdash; Error reporting, type system, test coverage</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 3: Core Features</span>
+                <span class="wave-desc">&mdash; OCAP security, SurrealQL AST, closures, pattern matching</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 4: Runtime &amp; Tooling</span>
+                <span class="wave-desc">&mdash; Runtime helpers, VS Code LSP</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 5: Core Optimizations</span>
+                <span class="wave-desc">&mdash; break/continue, string methods, async/await, compound assignment</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 6: LLM-Native Features</span>
+                <span class="wave-desc">&mdash; Pipe operator, retry/fallback, MCP schemas, agent messaging</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 7: Language Identity</span>
+                <span class="wave-desc">&mdash; Agent lifecycle, actor concurrency, OCAP flow, prompt templates</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 8: Language Maturity</span>
+                <span class="wave-desc">&mdash; Standalone functions, module system, async runtime, generics, contracts</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 9: Production Polish</span>
+                <span class="wave-desc">&mdash; Ranges, tuples, trait bounds, stdlib, iterator chains, source maps</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 10: Production Readiness</span>
+                <span class="wave-desc">&mdash; Parser fixes, LLM provider abstraction, env() builtin</span>
+            </div>
+            <div class="timeline-item">
+                <span class="wave-name">Wave 11: Typsicherheit Hardening</span>
+                <span class="wave-desc">&mdash; Generic validation, return paths, OCAP construction, benchmarks</span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- 10. Vision -->
+<section>
+    <div class="container">
+        <h2 class="fade-in"><span class="section-num">11</span> Vision: VargOS</h2>
+        <p class="subtitle fade-in">Der Compiler ist Phase 1. Das Betriebssystem ist Phase 2.</p>
+
+        <div class="card-grid fade-in">
+            <div class="card" style="border-color: var(--accent);">
+                <h4>SurrealDB-Dateisystem</h4>
+                <p>Vektor-indiziert, Graph-abfragbar. Jede Datei ist ein Knoten. Jede Beziehung eine Kante. Native semantische Suche.</p>
+            </div>
+            <div class="card" style="border-color: var(--accent);">
+                <h4>Agenten-basierte Ausfuehrung</h4>
+                <p>Agenten ersetzen Prozesse. Keine PIDs. Kein fork(). Actors mit Message-Passing und Capability-gestuetzten Ressourcen.</p>
+            </div>
+            <div class="card" style="border-color: var(--accent);">
+                <h4>VRAM-Multiplexing</h4>
+                <p>Mehrere LLM-Agenten teilen sich GPU-Speicher. Hibernation und Zero-Copy-Transfers zwischen Agenten.</p>
+            </div>
+            <div class="card" style="border-color: var(--accent);">
+                <h4>Capability-Berechtigungen</h4>
+                <p>Kein Unix rwx. Kein root. Capability-Tokens ersetzen das Berechtigungsmodell. Unfaelschbar, widerrufbar, auditierbar.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<footer>
+    <p class="footer-tagline">Gebaut mit Rust. Gemessen an der Industrie. Entworfen fuer das, was als naechstes kommt.</p>
+    <p><strong style="color: var(--accent);">VARG</strong> &mdash; Virtual Agent Rust Generator</p>
+</footer>
+
+<script>
+    // Scroll animations
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.classList.add('visible');
+            }
+        });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+    // Navbar show on scroll
+    const navbar = document.getElementById('navbar');
+    window.addEventListener('scroll', () => {
+        if (window.scrollY > window.innerHeight * 0.5) {
+            navbar.classList.add('visible');
+        } else {
+            navbar.classList.remove('visible');
+        }
+    });
+
+    // Animate benchmark bars on visibility
+    const benchObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.querySelectorAll('.bench-bar').forEach(bar => {
+                    bar.style.width = bar.dataset.width;
+                });
+            }
+        });
+    }, { threshold: 0.3 });
+
+    document.querySelectorAll('.bench-chart').forEach(el => benchObserver.observe(el));
+</script>
+</body>
+</html>

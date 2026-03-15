@@ -1,0 +1,19 @@
+// test_phase16.nex
+@[Agent]
+public agent AutonomousAgent {
+    public void Run() {
+        print "--- Testing Phase 16 Native Autonomous LLM Bindings ---";
+        
+        var response = "[ERROR] Untrusted Scope";
+
+        unsafe {
+            print "Booting local Ollama engine for reasoning via HTTP...";
+            // Note: If Ollama isn't running natively, it returns a network failure string natively instead of a panic
+            response = llm_infer("What is the capital of France? Reply in one word:", "llama3");
+        }
+
+        print "AI Inference Result:";
+        print response;
+        print "Phase 16 Verification Completed!";
+    }
+}

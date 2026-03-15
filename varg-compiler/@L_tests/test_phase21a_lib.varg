@@ -1,0 +1,4 @@
+public struct DataModel {
+    public int count;
+    public string message;
+}
