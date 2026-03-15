@@ -164,7 +164,20 @@ agent SecureAgent {
 
 ## Getting Started
 
-### Prerequisites
+### Easy Install (Pre-compiled Binary)
+
+The easiest way to use Varg is to download the pre-compiled binary:
+
+1. Go to the [Releases](../../releases) page.
+2. Download `varg-v2.0.0-windows-x64.zip`.
+3. Extract `vargc.exe` and place it somewhere in your system `PATH`.
+4. You're ready to go!
+
+---
+
+### Build from Source
+
+#### Prerequisites
 
 - [Rust](https://rustup.rs/) (1.75+)
 
