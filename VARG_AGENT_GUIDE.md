@@ -82,13 +82,170 @@ agent WebFetcher {
 
 ## 7. Advanced Agent Features
 - **Actor Messaging:** `spawn Worker {}`, `worker.send("task", args)`, `worker.request("status")`. Worker implements `public void on_message(string msg, string[] args)`.
-- **Retry / Fallback:** 
+- **Retry / Fallback:**
 ```csharp
 var html = retry(3, backoff: 1000) {
     fetch(url, "GET")?
 } fallback {
     ""
 };
+```
+
+## 8. HTTP Server (axum-based, real async)
+```csharp
+agent ApiServer {
+    public async void Run() {
+        var server = http_serve();
+        http_route(server, "GET", "/health", (req) => {
+            return http_response(200, "{\"status\": \"ok\"}");
+        });
+        http_route(server, "POST", "/echo", (req) => {
+            return http_response(200, req.body);
+        });
+        http_listen(server, "0.0.0.0:8080");
+    }
+}
+```
+- `http_serve()` creates a server instance
+- `http_route(server, method, path, handler)` registers a route
+- `http_listen(server, addr)` starts listening (async, blocks)
+- Handler receives `req` with `.method`, `.path`, `.headers`, `.body`, `.query_params`
+- Returns `http_response(status, body)` with `.status`, `.headers`, `.body`
+
+## 9. Database (SQLite, real rusqlite)
+```csharp
+agent DbApp {
+    public void Run() {
+        var db = db_open(":memory:");  // or "app.db" for file
+        db_execute(db, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", []);
+        db_execute(db, "INSERT INTO users (name) VALUES (?1)", ["Alice"]);
+        var rows = db_query(db, "SELECT * FROM users", []);
+        // rows is List<Map<string, string>>
+        for row in rows {
+            print row["name"];
+        }
+    }
+}
+```
+- `db_open(path)` opens SQLite (`:memory:` or file path)
+- `db_execute(db, sql, params)` returns affected row count
+- `db_query(db, sql, params)` returns `List<Map<string, string>>`
+- Use `?1`, `?2` for parameterized queries
+
+## 10. WebSocket Client (real tungstenite)
+```csharp
+agent WsClient {
+    public void Run() {
+        var ws = ws_connect("ws://localhost:8080/ws");
+        ws_send(ws, "hello");
+        var msg = ws_receive(ws);  // blocking
+        print msg;
+        ws_close(ws);
+    }
+}
+```
+
+## 11. MCP Protocol Client (JSON-RPC over stdio)
+```csharp
+agent McpClient {
+    public void Run() {
+        var conn = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-everything"]);
+        var tools = mcp_list_tools(conn);
+        var result = mcp_call_tool(conn, "echo", {"message": "hello"});
+        print result;
+        mcp_disconnect(conn);
+    }
+}
+```
+- `mcp_connect(cmd, args)` spawns process and does initialize handshake
+- `mcp_list_tools(conn)` returns available tools
+- `mcp_call_tool(conn, name, params)` calls a tool, returns text result
+- `mcp_disconnect(conn)` cleanly shuts down
+
+## 12. SSE (Server-Sent Events)
+```csharp
+var writer = sse_stream();
+sse_send(writer, "update", "data payload");
+sse_close(writer);
+```
+
+## 13. Contracts & Dependency Injection
+```csharp
+contract IDatabase {
+    fn query(sql: string) -> string;
+}
+
+agent SqliteDb implements IDatabase {
+    public string query(string sql) { /* real impl */ }
+}
+
+agent MockDb implements IDatabase {
+    public string query(string sql) { return "mock"; }
+}
+
+agent MyService {
+    IDatabase db;  // contract-typed field -> Box<dyn Trait>
+
+    public MyService(IDatabase db) {
+        self.db = db;
+    }
+
+    public string getData() {
+        return self.db.query("SELECT ...");
+    }
+}
+```
+- Contract-typed fields compile to `Box<dyn Trait>`
+- Constructor injection: pass implementation at creation time
+- Use for testing: inject MockDb in tests, SqliteDb in production
+
+## 14. Test Framework
+```csharp
+agent MyTests {
+    @[BeforeEach]
+    public void setup() {
+        // runs before each test
+    }
+
+    @[AfterEach]
+    public void teardown() {
+        // runs after each test
+    }
+
+    @[Test]
+    public void test_addition() {
+        assert_eq(1 + 1, 2);
+    }
+
+    @[Test]
+    public void test_strings() {
+        assert_contains("hello world", "world");
+        assert_true("abc".starts_with("a"));
+        assert_false("abc".is_empty());
+    }
+}
+```
+Run with: `vargc test my_tests.varg`
+Coverage: `vargc test --coverage my_tests.varg`
+
+**Assertions:** `assert`, `assert_eq`, `assert_ne`, `assert_true`, `assert_false`, `assert_contains`, `assert_throws`
+
+## 15. External Crate Imports
+```csharp
+import crate serde_json;           // adds to Cargo.toml automatically
+import serde_json::Value;          // qualified type import
+import axum::{Router, Json};       // braced imports
+import tokio::*;                   // wildcard
+```
+These compile to Rust `use` statements and the crate is auto-added to the generated Cargo.toml.
+
+## 16. Date/Time, Logging, Environment
+```csharp
+var now = time_millis();
+var formatted = time_format(now, "%Y-%m-%d");
+log_info("Starting up");
+log_error("Something failed");
+var key = env("API_KEY");
 ```
 
 ---

@@ -20,14 +20,14 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 | Metric | Value |
 |--------|-------|
 | Compiler LOC | 24,012 lines of Rust |
-| Test Suite | 682 tests, 0 failures |
+| Test Suite | 685 tests, 0 failures |
 | Crates | 10 specialized compiler crates |
 | Token Types | 119 lexer tokens |
 | AST Variants | 25 statements, 29 expressions |
 | Builtins | 94 typechecker handlers, 116 codegen handlers |
 | Security | 5 OCAP capability types |
 | Runtime Modules | 10 (crypto, db, llm, net, vector, core, http-server, sqlite, websocket, mcp) |
-| Dev Waves | 17 completed development waves |
+| Dev Waves | 18 completed development waves |
 
 ---
 
@@ -130,6 +130,7 @@ vargc run weather.varg
 - **Debug Mode** -- `vargc build --debug` for fast iteration (skips cargo)
 - **Source Maps** -- error messages reference Varg line numbers, not Rust
 - **Test Framework** -- `@[Test]`, `@[BeforeEach]`, `@[AfterEach]` + `assert`, `assert_eq`, `assert_ne`, `assert_true`, `assert_false`, `assert_contains`, `assert_throws`
+- **Code Coverage** -- `vargc test --coverage` via cargo-llvm-cov integration
 - **Qualified Imports** -- `import axum::Router;`, wildcards, braced imports for external crate types
 
 ---
@@ -176,7 +177,7 @@ agent SecureAgent {
 The easiest way to use Varg is to download the pre-compiled binary:
 
 1. Go to the [Releases](../../releases) page.
-2. Download `varg-v0.5.0-windows-x64.zip`.
+2. Download the latest `varg-vX.Y.Z-windows-x64.zip` (currently v0.7.0).
 3. Extract `vargc.exe` and place it somewhere in your system `PATH`.
 4. You're ready to go!
 
@@ -284,7 +285,7 @@ varg-compiler/crates/           24,012 LOC total
 
 ## Test Suite
 
-682 tests across all crates, all passing:
+685 tests across all crates, all passing:
 
 ```bash
 cd varg-compiler
@@ -299,9 +300,9 @@ cargo test
 | varg-typechecker | 197 | Type inference, OCAP, DI contracts, Result methods |
 | varg-codegen | 213 | Rust generation, HTTP/DB/WS/MCP codegen, DI boxing |
 | varg-os-types | 11 | OCAP marker structs |
-| varg-runtime | 45 | HTTP server, SQLite, WebSocket, SSE, MCP client |
+| varg-runtime | 48 | Real HTTP server, SQLite, WebSocket, SSE, MCP client |
 | varg-lsp | 18 | Diagnostics, hover, completion |
-| **Total** | **682** | **0 failures** |
+| **Total** | **685** | **0 failures** |
 
 ---
 
@@ -324,9 +325,11 @@ Project X/
 ## Status
 
 Varg is in active development. The compiler is functional and produces working native binaries.
-17 development waves completed, 682 tests passing.
+18 development waves completed, 685 tests passing.
 
 Wave 17 (F41) added HTTP server, database drivers, WebSocket/SSE, MCP protocol, dependency injection, extended test infrastructure, and qualified crate imports -- everything needed for full-stack agent applications.
+
+Wave 18 (F42) replaced all runtime stubs with real implementations: axum HTTP server, rusqlite (bundled) database, tungstenite WebSocket client, and MCP JSON-RPC client with process spawning. Added test lifecycle hooks and code coverage support.
 
 The language is suitable for building real agents, CLI tools, API clients, web servers, and automation scripts.
 
