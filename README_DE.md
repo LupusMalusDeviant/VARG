@@ -286,13 +286,11 @@ cargo test --lib -p varg-ast -p varg-lexer -p varg-parser -p varg-typechecker -p
 
 ```
 Project X/
-  VARG.md                 Projektregeln & Dokumentations-Index
   README.md               Englische Version
   README_DE.md            Diese Datei (Deutsch)
   REFERENCE.md            Vollstaendige Sprachreferenz
-  docs/
-    language/             5 Sprachdesign-Dokumente
-    os/                   5 OS-Architektur-Dokumente
+  VARG_AGENT_GUIDE.md     Anleitung/Prompt fuer KI-Agenten
+  docs/                   Bilder und Assets
   examples/               5 Beispielprogramme
   varg-compiler/          Rust Workspace (10 Crates, 22.682 LOC)
   varg-vscode/            VS Code Extension (Syntax Highlighting)
