@@ -261,7 +261,7 @@ impl TypeChecker {
             "len", "length", "contains", "starts_with", "ends_with",
             "to_upper", "to_lower", "trim", "substring", "char_at",
             "index_of", "split", "replace", "push", "pop", "first",
-            "last", "reverse", "is_empty", "keys", "values", "remove",
+            "last", "reverse", "is_empty", "keys", "values", "remove", "get",
             "sort", "join", "count", "filter", "map", "flat_map", "find",
             "any", "all", "abs", "sqrt", "floor", "ceil", "round",
             "min", "max", "parse_int", "parse_float", "to_string",
@@ -278,6 +278,15 @@ impl TypeChecker {
             "json_parse", "json_get", "json_get_int", "json_get_bool", "json_get_array", "json_stringify",
             "assert", "assert_eq", "assert_ne", "assert_true", "assert_false", "assert_contains", "assert_throws",
             "set_of",
+            "graph_open", "graph_add_node", "graph_add_edge", "graph_query", "graph_traverse", "graph_neighbors",
+            "embed", "vector_store_open", "vector_store_upsert", "vector_store_search", "vector_store_delete", "vector_store_count",
+            "memory_open", "memory_set", "memory_get", "memory_store", "memory_recall", "memory_add_fact", "memory_query_facts", "memory_episode_count", "memory_clear_working",
+            "trace_start", "trace_span", "trace_end", "trace_error", "trace_event", "trace_set_attr", "trace_span_count", "trace_export",
+            "mcp_server_new", "mcp_server_register", "mcp_server_tool_count", "mcp_server_handle_request", "mcp_server_run",
+            "event_bus_new", "event_emit", "event_count",
+            "pipeline_new", "pipeline_run", "pipeline_step_count",
+            "orchestrator_new", "orchestrator_add_task", "orchestrator_run_all", "orchestrator_results", "orchestrator_task_count", "orchestrator_completed_count",
+            "self_improver_new", "self_improver_record_success", "self_improver_record_failure", "self_improver_recall", "self_improver_success_rate", "self_improver_iterations", "self_improver_stats",
         ];
         candidates.extend(builtins.iter());
         let suggestions = suggest_similar(method_name, &candidates);
@@ -1168,6 +1177,16 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::Void)
+                // ===== Wave 19: map.get(key, default) =====
+                } else if method_name == "get" {
+                    if args.len() != 2 {
+                        return Err(TypeError::TypeMismatch { expected: "2 arguments (key, default)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    match &caller_ty {
+                        TypeNode::Map(_, val) => Ok(*val.clone()),
+                        _ => Ok(TypeNode::Custom("Dynamic".to_string())),
+                    }
                 // ===== Plan 16: Agent Messaging Methods =====
                 } else if method_name == "send" {
                     if args.is_empty() {
@@ -1393,6 +1412,170 @@ impl TypeChecker {
                 } else if method_name == "mcp_disconnect" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (connection)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
+                // ===== Wave 20: Knowledge Graph Builtins =====
+                } else if method_name == "graph_open" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("GraphHandle".to_string()))
+                } else if method_name == "graph_add_node" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (graph, label, properties)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "graph_add_edge" {
+                    if args.len() != 5 { return Err(TypeError::TypeMismatch { expected: "5 arguments (graph, from_id, relation, to_id, properties)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "graph_query" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (graph, label)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))))
+                } else if method_name == "graph_traverse" {
+                    if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (graph, start_id, depth, relation_filter)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))))
+                } else if method_name == "graph_neighbors" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (graph, node_id)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))))
+                // ===== Wave 20b: Vector Store =====
+                } else if method_name == "embed" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (text)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Float)))
+                } else if method_name == "vector_store_open" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("VectorStoreHandle".to_string()))
+                } else if method_name == "vector_store_upsert" {
+                    if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (store, id, embedding, metadata)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "vector_store_search" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (store, query_embedding, top_k)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))))
+                } else if method_name == "vector_store_delete" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (store, id)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "vector_store_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (store)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                // ===== Wave 21: Agent Memory =====
+                } else if method_name == "memory_open" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("MemoryHandle".to_string()))
+                } else if method_name == "memory_set" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (mem, key, value)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "memory_get" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (mem, key, default)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "memory_store" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (mem, content, metadata)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "memory_recall" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (mem, query, top_k)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))))
+                } else if method_name == "memory_add_fact" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (mem, label, props)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "memory_query_facts" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (mem, label)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))))
+                } else if method_name == "memory_episode_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (mem)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "memory_clear_working" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (mem)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                // ===== Wave 22: Observability & Tracing =====
+                } else if method_name == "trace_start" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("TracerHandle".to_string()))
+                } else if method_name == "trace_span" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (tracer, name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "trace_end" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (tracer, span_id)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "trace_error" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (tracer, span_id, error_msg)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "trace_event" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (tracer, name, attributes)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "trace_set_attr" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (tracer, key, value)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "trace_span_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (tracer)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "trace_export" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (tracer)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== Wave 23: MCP Server =====
+                } else if method_name == "mcp_server_new" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (name, version)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("McpServerHandle".to_string()))
+                } else if method_name == "mcp_server_register" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (server, name, description)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "mcp_server_tool_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (server)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "mcp_server_handle_request" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (server, request_json)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "mcp_server_run" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (server)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                // ===== Wave 24: Reactive Pipelines =====
+                } else if method_name == "event_bus_new" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("EventBusHandle".to_string()))
+                } else if method_name == "event_emit" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (bus, event_name, data)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "event_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (bus)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "pipeline_new" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("PipelineHandle".to_string()))
+                } else if method_name == "pipeline_run" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (pipeline, input)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "pipeline_step_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (pipeline)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                // ===== Wave 25: Agent Orchestration =====
+                } else if method_name == "orchestrator_new" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("OrchestratorHandle".to_string()))
+                } else if method_name == "orchestrator_add_task" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (orch, id, input)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "orchestrator_results" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (orch)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))))
+                } else if method_name == "orchestrator_task_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (orch)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "orchestrator_completed_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (orch)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                // ===== Wave 26: Self-Improving Loop =====
+                } else if method_name == "self_improver_new" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (name, max_retries)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("SelfImproverHandle".to_string()))
+                } else if method_name == "self_improver_record_success" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (improver, task, solution)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "self_improver_record_failure" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (improver, task, error)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "self_improver_recall" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (improver, task, top_k)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))))
+                } else if method_name == "self_improver_success_rate" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (improver)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "self_improver_iterations" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (improver)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "self_improver_stats" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (improver)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))
                 // ===== Wave 12: Math Methods =====
                 } else if method_name == "abs" {
                     let caller_ty = self.infer_expression_type(caller)?;
@@ -4776,6 +4959,36 @@ mod tests {
         };
         let ty = checker.infer_expression_type(&expr).unwrap();
         assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::Int)), "values() on Map<string,int> should return Array<int>");
+    }
+
+    // ===== Wave 19: map.get(key, default) =====
+
+    #[test]
+    fn test_map_get_returns_value_type() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("data".to_string(), TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("data".to_string())),
+            method_name: "get".to_string(),
+            args: vec![
+                Expression::String("key".to_string()),
+                Expression::Int(0),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Int, "get() on Map<string,int> should return int");
+    }
+
+    #[test]
+    fn test_map_get_wrong_arg_count() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("data".to_string(), TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Int)));
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("data".to_string())),
+            method_name: "get".to_string(),
+            args: vec![Expression::String("key".to_string())],
+        };
+        assert!(checker.infer_expression_type(&expr).is_err(), "get() with 1 arg should fail");
     }
 
     // ===== Plan 57: Generic Type Argument Count Validation =====

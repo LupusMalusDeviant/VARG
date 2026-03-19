@@ -117,6 +117,8 @@ pub struct RustGenerator {
     in_result_function: bool,
     /// F41-6: Fields with contract types (struct_name.field_name → true) for Box<dyn> wrapping
     contract_typed_fields: HashSet<String>,
+    /// Wave 19: Track map-typed variables for correct index codegen
+    map_vars: HashSet<String>,
 }
 
 impl RustGenerator {
@@ -135,6 +137,7 @@ impl RustGenerator {
             known_enums: HashMap::new(),
             in_result_function: false,
             contract_typed_fields: HashSet::new(),
+            map_vars: HashSet::new(),
         }
     }
 
@@ -266,7 +269,17 @@ impl RustGenerator {
                 // Wave 14: Set flag so return statements get Ok()-wrapped
                 let prev = self.in_result_function;
                 self.in_result_function = uses_try;
-                let mut body = self.gen_block(&f.body, 1);
+                // Wave 19: Implicit return — if function has return type and last statement is Expr,
+                // convert it to Return for codegen
+                let mut func_body = f.body.clone();
+                if f.return_ty.is_some() && !func_body.statements.is_empty() {
+                    let last_idx = func_body.statements.len() - 1;
+                    if let Statement::Expr(expr) = &func_body.statements[last_idx] {
+                        let expr = expr.clone();
+                        func_body.statements[last_idx] = Statement::Return(Some(expr));
+                    }
+                }
+                let mut body = self.gen_block(&func_body, 1);
                 self.in_result_function = prev;
                 // Wave 14: If uses_try, wrap implicit return with Ok(())
                 if uses_try {
@@ -741,6 +754,10 @@ impl RustGenerator {
                     if matches!(ty, Some(TypeNode::String)) || self.is_string_expr(value) {
                         self.string_vars.insert(name.clone());
                     }
+                    // Wave 19: Track map variables for correct index codegen
+                    if matches!(ty, Some(TypeNode::Map(_, _))) || matches!(value, Expression::MapLiteral(_)) {
+                        self.map_vars.insert(name.clone());
+                    }
                     let val_str = self.gen_expression(value);
                     let val_str = self.clone_self_field_if_needed(&val_str);
                     out.push_str(&format!("{}let mut {} = {};\n", indent, name, val_str));
@@ -786,11 +803,15 @@ impl RustGenerator {
                 },
                 Statement::IndexAssign { target, index, value } => {
                     let idx_str = self.gen_expression(index);
-                    if let Expression::String(_) = index {
-                        // String literal key → map insert
-                        out.push_str(&format!("{}{}.insert({}, {});\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
+                    // Wave 19: Determine if target is a map variable
+                    let is_map = matches!(index, Expression::String(_))
+                        || if let Expression::Identifier(name) = target { self.map_vars.contains(name) } else { false };
+                    if is_map {
+                        // Map insert — compute value first to avoid borrow conflict
+                        let val_str = self.gen_expression(value);
+                        out.push_str(&format!("{}{{ let __v = {}; {}.insert({}.clone(), __v); }}\n", indent, val_str, self.gen_expression(target), idx_str));
                     } else {
-                        // Int literal or int variable → array index assign
+                        // Array index assign
                         out.push_str(&format!("{}{}[{} as usize] = {};\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
                     }
                 },
@@ -1224,7 +1245,13 @@ impl RustGenerator {
                     format!("{}.split(&{}).map(|s| s.to_string()).collect::<Vec<String>>()", arg_strs[0], arg_strs[1])
                 // ===== Wave 5: String Methods (caller-as-receiver) =====
                 } else if method_name == "len" || method_name == "length" {
-                    format!("{}.len() as i64", self.gen_expression(caller))
+                    // Wave 20: Support both x.len() and len(x) forms
+                    let target = if matches!(**caller, Expression::Identifier(ref n) if n == "self") && !args.is_empty() {
+                        self.gen_expression(&args[0])
+                    } else {
+                        self.gen_expression(caller)
+                    };
+                    format!("{}.len() as i64", target)
                 } else if method_name == "contains" {
                     format!("{}.contains(&{})", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "starts_with" {
@@ -1264,6 +1291,9 @@ impl RustGenerator {
                     format!("{}.contains_key(&{})", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "remove" {
                     format!("{}.remove(&{})", self.gen_expression(caller), arg_strs[0])
+                // ===== Wave 19: map.get(key, default) =====
+                } else if method_name == "get" {
+                    format!("{}.get(&{}).cloned().unwrap_or({})", self.gen_expression(caller), arg_strs[0], arg_strs[1])
                 // ===== Plan 42: Stdlib Expansion =====
                 } else if method_name == "to_string" {
                     format!("{}.to_string()", self.gen_expression(caller))
@@ -1507,6 +1537,119 @@ impl RustGenerator {
                     format!("varg_runtime::mcp::__varg_mcp_call_tool(&mut {}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "mcp_disconnect" {
                     format!("varg_runtime::mcp::__varg_mcp_disconnect(&mut {})", arg_strs[0])
+                // ===== Wave 20: Knowledge Graph Builtins =====
+                } else if method_name == "graph_open" {
+                    format!("varg_runtime::graph::__varg_graph_open(&{})", arg_strs[0])
+                } else if method_name == "graph_add_node" {
+                    format!("varg_runtime::graph::__varg_graph_add_node(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "graph_add_edge" {
+                    format!("varg_runtime::graph::__varg_graph_add_edge(&{}, {}, &{}, {}, &{})", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3], arg_strs[4])
+                } else if method_name == "graph_query" {
+                    format!("varg_runtime::graph::__varg_graph_query(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "graph_traverse" {
+                    format!("varg_runtime::graph::__varg_graph_traverse(&{}, {}, {}, &{})", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3])
+                } else if method_name == "graph_neighbors" {
+                    format!("varg_runtime::graph::__varg_graph_neighbors(&{}, {})", arg_strs[0], arg_strs[1])
+                // ===== Wave 20b: Vector Store =====
+                } else if method_name == "embed" {
+                    format!("varg_runtime::vector::__varg_embed(&{})", arg_strs[0])
+                } else if method_name == "vector_store_open" {
+                    format!("varg_runtime::vector::__varg_vector_store_open(&{})", arg_strs[0])
+                } else if method_name == "vector_store_upsert" {
+                    format!("varg_runtime::vector::__varg_vector_store_upsert(&{}, &{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3])
+                } else if method_name == "vector_store_search" {
+                    format!("varg_runtime::vector::__varg_vector_store_search(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "vector_store_delete" {
+                    format!("varg_runtime::vector::__varg_vector_store_delete(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "vector_store_count" {
+                    format!("varg_runtime::vector::__varg_vector_store_count(&{})", arg_strs[0])
+                // ===== Wave 21: Agent Memory =====
+                } else if method_name == "memory_open" {
+                    format!("varg_runtime::memory::__varg_memory_open(&{})", arg_strs[0])
+                } else if method_name == "memory_set" {
+                    format!("varg_runtime::memory::__varg_memory_set(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "memory_get" {
+                    format!("varg_runtime::memory::__varg_memory_get(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "memory_store" {
+                    format!("varg_runtime::memory::__varg_memory_store(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "memory_recall" {
+                    format!("varg_runtime::memory::__varg_memory_recall(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "memory_add_fact" {
+                    format!("varg_runtime::memory::__varg_memory_add_fact(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "memory_query_facts" {
+                    format!("varg_runtime::memory::__varg_memory_query_facts(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "memory_episode_count" {
+                    format!("varg_runtime::memory::__varg_memory_episode_count(&{})", arg_strs[0])
+                } else if method_name == "memory_clear_working" {
+                    format!("varg_runtime::memory::__varg_memory_clear_working(&{})", arg_strs[0])
+                // ===== Wave 22: Observability & Tracing =====
+                } else if method_name == "trace_start" {
+                    format!("varg_runtime::trace::__varg_trace_start(&{})", arg_strs[0])
+                } else if method_name == "trace_span" {
+                    format!("varg_runtime::trace::__varg_trace_span(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "trace_end" {
+                    format!("varg_runtime::trace::__varg_trace_end(&{}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "trace_error" {
+                    format!("varg_runtime::trace::__varg_trace_error(&{}, {}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "trace_event" {
+                    format!("varg_runtime::trace::__varg_trace_event(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "trace_set_attr" {
+                    format!("varg_runtime::trace::__varg_trace_set_attr(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "trace_span_count" {
+                    format!("varg_runtime::trace::__varg_trace_span_count(&{})", arg_strs[0])
+                } else if method_name == "trace_export" {
+                    format!("varg_runtime::trace::__varg_trace_export(&{})", arg_strs[0])
+                // ===== Wave 23: MCP Server =====
+                } else if method_name == "mcp_server_new" {
+                    format!("varg_runtime::mcp_server::__varg_mcp_server_new(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "mcp_server_register" {
+                    // mcp_server_register(server, name, description) — registers with a stub handler
+                    format!("{{ let __name = {}.clone(); varg_runtime::mcp_server::__varg_mcp_server_register(&{}, &{}, &{}, std::sync::Arc::new(move |args| format!(\"{{{{\\\"tool\\\": \\\"{{}}\\\", \\\"args\\\": \\\"{{}}\\\"}}}}\", __name, args))) }}", arg_strs[1], arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "mcp_server_tool_count" {
+                    format!("varg_runtime::mcp_server::__varg_mcp_server_tool_count(&{})", arg_strs[0])
+                } else if method_name == "mcp_server_handle_request" {
+                    format!("varg_runtime::mcp_server::__varg_mcp_server_handle_request(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "mcp_server_run" {
+                    format!("varg_runtime::mcp_server::__varg_mcp_server_run(&{})", arg_strs[0])
+                // ===== Wave 24: Reactive Pipelines =====
+                } else if method_name == "event_bus_new" {
+                    format!("varg_runtime::pipeline::__varg_event_bus_new(&{})", arg_strs[0])
+                } else if method_name == "event_emit" {
+                    format!("varg_runtime::pipeline::__varg_event_emit(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "event_count" {
+                    format!("varg_runtime::pipeline::__varg_event_count(&{})", arg_strs[0])
+                } else if method_name == "pipeline_new" {
+                    format!("varg_runtime::pipeline::__varg_pipeline_new(&{})", arg_strs[0])
+                } else if method_name == "pipeline_run" {
+                    format!("varg_runtime::pipeline::__varg_pipeline_run(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "pipeline_step_count" {
+                    format!("varg_runtime::pipeline::__varg_pipeline_step_count(&{})", arg_strs[0])
+                // ===== Wave 25: Agent Orchestration =====
+                } else if method_name == "orchestrator_new" {
+                    format!("varg_runtime::orchestration::__varg_orchestrator_new(&{})", arg_strs[0])
+                } else if method_name == "orchestrator_add_task" {
+                    format!("varg_runtime::orchestration::__varg_orchestrator_add_task(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "orchestrator_results" {
+                    format!("varg_runtime::orchestration::__varg_orchestrator_results(&{})", arg_strs[0])
+                } else if method_name == "orchestrator_task_count" {
+                    format!("varg_runtime::orchestration::__varg_orchestrator_task_count(&{})", arg_strs[0])
+                } else if method_name == "orchestrator_completed_count" {
+                    format!("varg_runtime::orchestration::__varg_orchestrator_completed_count(&{})", arg_strs[0])
+                // ===== Wave 26: Self-Improving Loop =====
+                } else if method_name == "self_improver_new" {
+                    format!("varg_runtime::self_improve::__varg_self_improver_new(&{}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "self_improver_record_success" {
+                    format!("varg_runtime::self_improve::__varg_self_improver_record_success(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "self_improver_record_failure" {
+                    format!("varg_runtime::self_improve::__varg_self_improver_record_failure(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "self_improver_recall" {
+                    format!("varg_runtime::self_improve::__varg_self_improver_recall(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "self_improver_success_rate" {
+                    format!("varg_runtime::self_improve::__varg_self_improver_success_rate(&{})", arg_strs[0])
+                } else if method_name == "self_improver_iterations" {
+                    format!("varg_runtime::self_improve::__varg_self_improver_iterations(&{})", arg_strs[0])
+                } else if method_name == "self_improver_stats" {
+                    format!("varg_runtime::self_improve::__varg_self_improver_stats(&{})", arg_strs[0])
                 } else {
                     // Plan 33: If caller is `self` and method is a known standalone function, call directly
                     if matches!(**caller, Expression::Identifier(ref name) if name == "self") && self.known_functions.contains(method_name.as_str()) {
@@ -1524,12 +1667,14 @@ impl RustGenerator {
             },
             Expression::IndexAccess { caller, index } => {
                 let idx_str = self.gen_expression(index);
-                if let Expression::String(_) = **index {
-                    // String literal key → map access
+                // Wave 19: Determine if caller is a map variable
+                let is_map = matches!(**index, Expression::String(_))
+                    || if let Expression::Identifier(name) = &**caller { self.map_vars.contains(name) } else { false };
+                if is_map {
                     format!("{}.get(&{}).unwrap().clone()", self.gen_expression(caller), idx_str)
                 } else {
-                    // Int literal or int variable → array access (no .clone() needed for Copy types)
-                    format!("{}[{} as usize]", self.gen_expression(caller), idx_str)
+                    // .clone() ensures String elements from Vec<String> are properly copied
+                    format!("{}[{} as usize].clone()", self.gen_expression(caller), idx_str)
                 }
             },
             Expression::ArrayLiteral(elements) => {
@@ -2612,7 +2757,7 @@ mod tests {
             caller: Box::new(Expression::Identifier("arr".to_string())),
             index: Box::new(Expression::Int(0)),
         };
-        assert_eq!(gen.gen_expression(&expr), "arr[0 as usize]");
+        assert_eq!(gen.gen_expression(&expr), "arr[0 as usize].clone()");
     }
 
     #[test]
@@ -2622,8 +2767,8 @@ mod tests {
             caller: Box::new(Expression::Identifier("map".to_string())),
             index: Box::new(Expression::Identifier("key".to_string())),
         };
-        // Identifier index → int-style array access
-        assert_eq!(gen.gen_expression(&expr), "map[key as usize]");
+        // Identifier index on non-map → array access with clone
+        assert_eq!(gen.gen_expression(&expr), "map[key as usize].clone()");
     }
 
     #[test]
@@ -3041,6 +3186,55 @@ mod tests {
         };
         let code = gen.gen_expression(&expr);
         assert!(code.contains("map.contains_key("));
+    }
+
+    // ===== Wave 19: map.get(key, default) =====
+
+    #[test]
+    fn test_codegen_map_get_with_default() {
+        let mut gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("data".to_string())),
+            method_name: "get".to_string(),
+            args: vec![
+                Expression::String("key".to_string()),
+                Expression::Int(0),
+            ],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("get("), "should generate .get() call");
+        assert!(code.contains("unwrap_or"), "should use unwrap_or for default");
+    }
+
+    #[test]
+    fn test_codegen_map_variable_index_access() {
+        // freq[word] where freq is a known map variable should use .get() not [as usize]
+        let mut gen = RustGenerator::new();
+        gen.map_vars.insert("freq".to_string());
+        let expr = Expression::IndexAccess {
+            caller: Box::new(Expression::Identifier("freq".to_string())),
+            index: Box::new(Expression::Identifier("word".to_string())),
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains(".get("), "map variable index should use .get(): {}", code);
+        assert!(!code.contains("as usize"), "map variable index should NOT use as usize: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_map_variable_index_assign() {
+        // freq[word] = val where freq is a known map variable should use .insert()
+        let mut gen = RustGenerator::new();
+        gen.map_vars.insert("freq".to_string());
+        let block = Block { statements: vec![
+            Statement::IndexAssign {
+                target: Expression::Identifier("freq".to_string()),
+                index: Expression::Identifier("word".to_string()),
+                value: Expression::Int(42),
+            }
+        ]};
+        let code = gen.gen_block(&block, 0);
+        assert!(code.contains(".insert("), "map variable index assign should use .insert(): {}", code);
+        assert!(!code.contains("as usize"), "map variable index assign should NOT use as usize: {}", code);
     }
 
     // ===== Wave 5: async / await =====
@@ -3695,6 +3889,33 @@ mod tests {
         let code = gen.generate(&program);
         assert!(code.contains("fn add(a: i64, b: i64) -> i64"));
         assert!(code.contains("return"));
+    }
+
+    // ===== Wave 19: Implicit Returns =====
+    #[test]
+    fn test_codegen_implicit_return() {
+        // fn double(int x) -> int { x * 2 }  (no explicit return)
+        let mut gen = RustGenerator::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Function(FunctionDef {
+                name: "double".to_string(),
+                is_public: false,
+                params: vec![
+                    FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None },
+                ],
+                return_ty: Some(TypeNode::Int),
+                body: Block { statements: vec![
+                    Statement::Expr(Expression::BinaryOp {
+                        left: Box::new(Expression::Identifier("x".to_string())),
+                        operator: BinaryOperator::Mul,
+                        right: Box::new(Expression::Int(2)),
+                    }),
+                ]},
+            })],
+        };
+        let code = gen.generate(&program);
+        assert!(code.contains("return x * 2"), "implicit return should generate return: {}", code);
     }
 
     // ===== Plan 27: Async Runtime =====

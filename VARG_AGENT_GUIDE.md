@@ -248,6 +248,110 @@ log_error("Something failed");
 var key = env("API_KEY");
 ```
 
+## 17. Vector Store & Embeddings
+Varg includes an embedded vector store using cosine similarity natively.
+```csharp
+var store = __varg_vector_store_open("my_store");
+var meta = {"source": "docs"};
+var embedding = __varg_embed("this is my text"); // LLM embedding wrapper
+__varg_vector_store_upsert(store, "doc1", embedding, meta);
+
+var results = __varg_vector_store_search(store, embedding, 5); // returns List<Map<string,string>>
+var count = __varg_vector_store_count(store);
+var deleted = __varg_vector_store_delete(store, "doc1");
+```
+
+## 18. Knowledge Graph
+Native embedded graph database for semantic relationships.
+```csharp
+var g = __varg_graph_open("my_graph");
+var p1 = __varg_graph_add_node(g, "Person", {"name": "Alice"});
+var p2 = __varg_graph_add_node(g, "Person", {"name": "Bob"});
+__varg_graph_add_edge(g, p1, "knows", p2, {});
+
+var persons = __varg_graph_query(g, "Person");
+var network = __varg_graph_traverse(g, p1, 2, "knows");
+var neighbors = __varg_graph_neighbors(g, p1);
+```
+
+## 19. Agent Memory (3-Layer Architecture)
+Manages working (KV), episodic (Vector), and semantic (Graph) memory.
+```csharp
+var mem = __varg_memory_open("bot");
+// Working memory
+__varg_memory_set(mem, "task", "coding");
+var t = __varg_memory_get(mem, "task", "default");
+__varg_memory_clear_working(mem);
+
+// Episodic memory
+__varg_memory_store(mem, "User asked for help with Rust", {"mood": "confused"});
+var episodes = __varg_memory_recall(mem, "help with Rust", 5);
+
+// Semantic memory
+var fact_id = __varg_memory_add_fact(mem, "User", {"name": "Alice"});
+var facts = __varg_memory_query_facts(mem, "User");
+```
+
+## 20. Event Bus & Pipelines
+Reactive message passing.
+```csharp
+var bus = __varg_event_bus_new("sys");
+// Note: Handlers are native Arc<dyn Fn> in compiled code, you can use closures in Varg
+__varg_event_on(bus, "user_joined", (data) => {
+    print $"Welcome {data["name"]}";
+    return "ok";
+});
+__varg_event_emit(bus, "user_joined", {"name": "Alice"});
+
+var pipe = __varg_pipeline_new("data_pipe");
+__varg_pipeline_add_step(pipe, "uppercase", (input) => input.to_upper());
+var result = __varg_pipeline_run(pipe, "hello");
+```
+
+## 21. Agent Orchestration (Fan-out / Fan-in)
+Distributed sub-task execution.
+```csharp
+var orch = __varg_orchestrator_new("workers");
+__varg_orchestrator_add_task(orch, "t1", "input1");
+__varg_orchestrator_add_task(orch, "t2", "input2");
+__varg_orchestrator_run_all(orch, (input) => { return input.to_upper(); });
+
+var results = __varg_orchestrator_results(orch); // List of maps with id, input, status, result
+```
+
+## 22. Self-Improving Agents
+Records successes/failures to learn from past mistakes.
+```csharp
+var si = __varg_self_improver_new("coder_agent", 5);
+__varg_self_improver_record_success(si, "Fix bug #12", "Used mutex lock");
+__varg_self_improver_record_failure(si, "Parse file", "Forgot to catch exception");
+
+var past_lessons = __varg_self_improver_recall(si, "Fix bug", 3);
+var stats = __varg_self_improver_stats(si);
+```
+
+## 23. Observability & Tracing
+Lightweight OTEL-compatible span tracing.
+```csharp
+var tracer = __varg_trace_start("my_agent");
+var span = __varg_trace_span(tracer, "process_order");
+__varg_trace_set_attr(tracer, "order_id", "1234");
+__varg_trace_event(tracer, "payment_received", {"amount": "50"});
+__varg_trace_end(tracer, span);
+
+var json_export = __varg_trace_export(tracer);
+```
+
+## 24. MCP Server Mode
+Expose your Varg agent tools via Model Context Protocol.
+```csharp
+var server = __varg_mcp_server_new("my_tools", "1.0.0");
+__varg_mcp_server_register(server, "greet", "Says hello", (args) => {
+    return $"Hello {args}";
+});
+__varg_mcp_server_run(server); // Blocks on stdio JSON-RPC
+```
+
 ---
 **INSTRUCTIONS FOR YOUR RESPONSE:**
 When asked to write Varg code, produce ONLY standard Varg syntax matching the specifications above. Do not use Python, C++, or Rust paradigms directly unless they overlap with the C#-like Varg syntax. ALWAYS honor the OCAP security model.

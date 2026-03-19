@@ -123,6 +123,13 @@ impl Parser {
         }
     }
 
+    /// Wave 19: Consume semicolon if present, otherwise silently skip (optional semicolons).
+    fn optional_semi(&mut self) {
+        if self.peek() == Some(&Token::Semicolon) {
+            self.advance();
+        }
+    }
+
     // Plan 35: Parse interpolated string $"Hello {name}!" into parts
     fn parse_interpolated_string(&mut self, raw: &str) -> Result<Expression, ParseError> {
         // raw = $"Hello {name}, age {age}!"
@@ -1087,7 +1094,8 @@ impl Parser {
                 let if_stmt = self.parse_if_statement()?;
                 Ok(Some(Block { statements: vec![if_stmt] }))
             } else {
-                Ok(Some(self.parse_block()?))
+                // Wave 19: Braceless else
+                Ok(Some(self.parse_block_or_single()?))
             }
         } else {
             Ok(None)
@@ -1102,9 +1110,55 @@ impl Parser {
         if has_paren { self.advance(); }
         let condition = self.parse_expression()?;
         if has_paren { self.consume(Token::RParen)?; }
-        let then_block = self.parse_block()?;
+        // Wave 19: Braceless single-statement if
+        let then_block = self.parse_block_or_single()?;
         let else_block = self.parse_else_branch()?;
         Ok(Statement::If { condition, then_block, else_block })
+    }
+
+    /// Wave 19: Parse a block (with braces) or a single statement (without braces) wrapped in a Block.
+    fn parse_block_or_single(&mut self) -> Result<Block, ParseError> {
+        if self.peek() == Some(&Token::LBrace) {
+            self.parse_block()
+        } else {
+            let stmt = self.parse_single_statement()?;
+            Ok(Block { statements: vec![stmt] })
+        }
+    }
+
+    /// Parse a single statement (expression + optional semicolon). Used for braceless if/while.
+    fn parse_single_statement(&mut self) -> Result<Statement, ParseError> {
+        // Handle statement keywords that aren't expressions
+        if let Some(Token::Return) = self.peek() {
+            self.advance();
+            let value = if self.peek() != Some(&Token::Semicolon) && self.peek() != Some(&Token::RBrace) && self.peek().is_some() {
+                Some(self.parse_expression()?)
+            } else { None };
+            if self.peek() == Some(&Token::Semicolon) { self.advance(); }
+            return Ok(Statement::Return(value));
+        }
+        if let Some(Token::Break) = self.peek() {
+            self.advance();
+            if self.peek() == Some(&Token::Semicolon) { self.advance(); }
+            return Ok(Statement::Break);
+        }
+        if let Some(Token::Continue) = self.peek() {
+            self.advance();
+            if self.peek() == Some(&Token::Semicolon) { self.advance(); }
+            return Ok(Statement::Continue);
+        }
+        let expr = self.parse_expression()?;
+        // Handle assignment: name = value;
+        if self.peek() == Some(&Token::Assign) {
+            if let Expression::Identifier(name) = expr {
+                self.advance();
+                let value = self.parse_expression()?;
+                if self.peek() == Some(&Token::Semicolon) { self.advance(); }
+                return Ok(Statement::Assign { name, value });
+            }
+        }
+        if self.peek() == Some(&Token::Semicolon) { self.advance(); }
+        Ok(Statement::Expr(expr))
     }
 
     fn parse_block(&mut self) -> Result<Block, ParseError> {
@@ -1220,7 +1274,7 @@ impl Parser {
                     if let Some(op) = compound_op {
                         self.advance(); // consume compound op
                         let rhs = self.parse_expression()?;
-                        self.consume(Token::Semicolon)?;
+                        self.optional_semi();
                         // Desugar: target op= value → target = target op value
                         let desugared = Expression::BinaryOp {
                             left: Box::new(expr.clone()),
@@ -1242,7 +1296,7 @@ impl Parser {
                     } else if let Some(Token::Assign) = self.peek() {
                         self.advance(); // consume =
                         let value = self.parse_expression()?;
-                        self.consume(Token::Semicolon)?;
+                        self.optional_semi();
                         match expr {
                             Expression::Identifier(name) => {
                                 statements.push(Statement::Assign { name, value });
@@ -1256,25 +1310,21 @@ impl Parser {
                             _ => return Err(ParseError::UnexpectedToken { expected: "Valid L-Value".to_string(), found: Some(Token::Assign), span: self.current_span() }),
                         }
                     } else {
-                        // Plan 47: Semicolon optional before closing brace (last expr in block)
-                        if let Some(Token::Semicolon) = self.peek() {
-                            self.advance();
-                        } else if self.peek() != Some(&Token::RBrace) {
-                            self.consume(Token::Semicolon)?; // will produce the error
-                        }
+                        // Wave 19: Semicolons fully optional in block statements
+                        self.optional_semi();
                         statements.push(Statement::Expr(expr));
                     }
                 },
                 Token::Stream => {
                     self.advance();
                     let expr = self.parse_expression()?;
-                    self.consume(Token::Semicolon)?;
+                    self.optional_semi();
                     statements.push(Statement::Stream(expr));
                 },
                 Token::Print => {
                     self.advance();
                     let expr = self.parse_expression()?;
-                    self.consume(Token::Semicolon)?;
+                    self.optional_semi();
                     statements.push(Statement::Print(expr));
                 },
                 Token::Const => {
@@ -1289,17 +1339,17 @@ impl Parser {
                     let name = self.parse_identifier()?;
                     self.consume(Token::Assign)?;
                     let value = self.parse_expression()?;
-                    self.consume(Token::Semicolon)?;
+                    self.optional_semi();
                     statements.push(Statement::Const { name, ty, value });
                 },
                 Token::Break => {
                     self.advance();
-                    self.consume(Token::Semicolon)?;
+                    self.optional_semi();
                     statements.push(Statement::Break);
                 },
                 Token::Continue => {
                     self.advance();
-                    self.consume(Token::Semicolon)?;
+                    self.optional_semi();
                     statements.push(Statement::Continue);
                 },
                 Token::If => {
@@ -1312,7 +1362,8 @@ impl Parser {
                     if has_paren { self.advance(); }
                     let condition = self.parse_expression()?;
                     if has_paren { self.consume(Token::RParen)?; }
-                    let body = self.parse_block()?;
+                    // Wave 19: Braceless single-statement while
+                    let body = self.parse_block_or_single()?;
                     statements.push(Statement::While { condition, body });
                 },
                 Token::For => {
@@ -1470,7 +1521,7 @@ impl Parser {
                     } else {
                         Some(self.parse_expression()?)
                     };
-                    self.consume(Token::Semicolon)?;
+                    self.optional_semi();
                     statements.push(Statement::Return(expr));
                 },
                 Token::Unsafe => {
@@ -1503,7 +1554,7 @@ impl Parser {
                 Token::Throw => {
                     self.advance();
                     let expr = self.parse_expression()?;
-                    self.consume(Token::Semicolon)?;
+                    self.optional_semi();
                     statements.push(Statement::Throw(expr));
                 },
                 Token::Match => {
@@ -1579,7 +1630,7 @@ impl Parser {
                     if let Some(Token::Semicolon) = self.peek() {
                         self.advance();
                     } else if self.peek() != Some(&Token::RBrace) {
-                        self.consume(Token::Semicolon)?;
+                        self.optional_semi();
                     }
                     statements.push(Statement::Expr(expr));
                 },
@@ -1671,7 +1722,43 @@ impl Parser {
             return Err(());
         }
 
-        // Try parsing typed params: (int a, string b, ...)
+        // Wave 19: Try untyped params first: (a, b) =>
+        // Check if this looks like untyped params: identifier followed by , or )
+        let untyped_start = self.pos;
+        let mut untyped_params = Vec::new();
+        let is_untyped = loop {
+            match self.peek() {
+                Some(Token::Identifier(name)) => {
+                    let name = name.clone();
+                    self.advance();
+                    untyped_params.push(name);
+                    match self.peek() {
+                        Some(Token::Comma) => { self.advance(); }
+                        Some(Token::RParen) => {
+                            self.advance(); // consume )
+                            if self.peek() == Some(&Token::FatArrow) {
+                                self.advance(); // consume =>
+                                break true;
+                            }
+                            break false;
+                        }
+                        _ => break false,
+                    }
+                }
+                _ => break false,
+            }
+        };
+
+        if is_untyped {
+            for name in untyped_params {
+                params.push(FieldDecl { name, ty: TypeNode::Custom("Dynamic".to_string()), default_value: None });
+            }
+            return Ok(params);
+        }
+
+        // Reset and try typed params: (int a, string b, ...)
+        self.pos = untyped_start;
+
         loop {
             let ty = self.parse_type().map_err(|_| ())?;
             let name = self.parse_identifier().map_err(|_| ())?;
@@ -1697,6 +1784,7 @@ impl Parser {
         match tok {
             Token::Tilde                              => Some((1, 2)),   // cosine_sim: lowest
             Token::DotDot | Token::DotDotEquals        => Some((2, 3)),  // Plan 37: range (very low)
+            Token::QuestionMark                        => Some((3, 2)),  // Wave 19: ternary (very low, right-assoc)
             Token::Or                                  => Some((3, 4)),  // ||
             Token::And                                 => Some((5, 6)),  // &&
             Token::Equals | Token::NotEquals           => Some((7, 8)),  // == !=
@@ -1948,6 +2036,28 @@ impl Parser {
                     break;
                 }
 
+                // Wave 19: Ternary / try-propagate — special-case for ?
+                if matches!(tok, Token::QuestionMark) {
+                    self.advance(); // consume ?
+                    match self.peek() {
+                        Some(Token::Semicolon) | Some(Token::RParen) | Some(Token::RBrace) |
+                        Some(Token::Comma) | Some(Token::RBracket) | None => {
+                            left = Expression::TryPropagate(Box::new(left));
+                        }
+                        _ => {
+                            let true_expr = self.parse_expression()?;
+                            self.consume(Token::Colon)?;
+                            let false_expr = self.parse_expression()?;
+                            left = Expression::IfExpr {
+                                condition: Box::new(left),
+                                then_block: Block { statements: vec![Statement::Expr(true_expr)] },
+                                else_block: Block { statements: vec![Statement::Expr(false_expr)] },
+                            };
+                        }
+                    }
+                    continue;
+                }
+
                 // Plan 37: Range expressions — special-case, not a BinaryOp
                 if matches!(tok, Token::DotDot | Token::DotDotEquals) {
                     let inclusive = tok == &Token::DotDotEquals;
@@ -2069,11 +2179,7 @@ impl Parser {
                         return Err(ParseError::UnexpectedToken { expected: "Identifier before call".to_string(), found: Some(Token::LParen), span: self.last_span() });
                     }
                 },
-                // Plan 24: ? postfix — try-propagate error
-                Token::QuestionMark => {
-                    self.advance(); // consume ?
-                    left = Expression::TryPropagate(Box::new(left));
-                },
+                // Plan 24: ? — handled above in binding power section
                 // Wave 11: Type casting — expr as Type
                 Token::As => {
                     self.advance(); // consume 'as'
@@ -3170,6 +3276,114 @@ mod tests {
             let body = a.methods[0].body.as_ref().unwrap();
             if let Statement::Let { value: Expression::Lambda { params, .. }, .. } = &body.statements[0] {
                 assert_eq!(params.len(), 0);
+            } else { panic!("Expected Let with Lambda"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 19: Braceless if/while =====
+
+    #[test]
+    fn test_parse_braceless_if() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                if x > 0 log_info("yes");
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::If { then_block, .. } = &body.statements[0] {
+                assert_eq!(then_block.statements.len(), 1);
+            } else { panic!("Expected If statement, got: {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_braceless_while() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                while x > 0 x = x - 1;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::While { body: while_body, .. } = &body.statements[0] {
+                assert_eq!(while_body.statements.len(), 1);
+            } else { panic!("Expected While statement"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 19: Optional semicolons =====
+
+    #[test]
+    fn test_parse_optional_semicolons() {
+        // All statements without semicolons should parse
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var x = 1
+                var y = 2
+                x = x + y
+                print $"result: {x}"
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            assert_eq!(body.statements.len(), 4, "Should parse 4 statements without semicolons");
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 19: Untyped lambda params =====
+
+    #[test]
+    fn test_parse_untyped_lambda_single_param() {
+        // (n) => n % 2 == 0  should parse as lambda with untyped param
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var is_even = (n) => n % 2 == 0;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value: Expression::Lambda { params, body: lambda_body, .. }, .. } = &body.statements[0] {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "n");
+                assert!(matches!(lambda_body.as_ref(), LambdaBody::Expression(_)));
+            } else { panic!("Expected Let with Lambda, got: {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_untyped_lambda_multi_param() {
+        let source = r#"
+        agent TestAgent {
+            public void Run() {
+                var add = (a, b) => a + b;
+            }
+        }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value: Expression::Lambda { params, .. }, .. } = &body.statements[0] {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].name, "a");
+                assert_eq!(params[1].name, "b");
             } else { panic!("Expected Let with Lambda"); }
         } else { panic!("Expected Agent"); }
     }
@@ -4284,6 +4498,48 @@ mod tests {
     // ---- Plan 24: Error Propagation Tests ----
     #[test]
     fn test_parse_try_propagate() {
+        let source = r#"
+            agent Test {
+                public string Run() {
+                    var data = fetch("url")?;
+                    return data;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value, .. } = &body.statements[0] {
+                assert!(matches!(value, Expression::TryPropagate(_)));
+            } else { panic!("Expected Let"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 19: Ternary operator =====
+
+    #[test]
+    fn test_parse_ternary_operator() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var result = x > 0 ? "positive" : "non-positive";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Let { value: Expression::IfExpr { .. }, .. } = &body.statements[0] {
+                // Ternary parsed as IfExpr — success
+            } else { panic!("Expected Let with IfExpr for ternary, got: {:?}", body.statements[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_try_propagate_still_works() {
+        // Ensure expr? (followed by ;) is still try-propagate, not ternary
         let source = r#"
             agent Test {
                 public string Run() {

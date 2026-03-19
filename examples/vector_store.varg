@@ -1,0 +1,28 @@
+// Wave 20b: Vector Store Example
+// Demonstrates embed, vector_store_open, upsert, search, delete, count
+
+fn main() {
+    var store = vector_store_open("documents")
+
+    // Create embeddings and store them
+    var e1 = embed("Alice works on the Varg compiler project")
+    var e2 = embed("Bob designs the user interface for Varg")
+    var e3 = embed("Quantum physics and string theory")
+
+    vector_store_upsert(store, "doc1", e1, {"source": "chat", "author": "Alice"})
+    vector_store_upsert(store, "doc2", e2, {"source": "chat", "author": "Bob"})
+    vector_store_upsert(store, "doc3", e3, {"source": "paper", "author": "Eve"})
+
+    print $"Documents stored: {vector_store_count(store)}"
+
+    // Search for similar documents
+    var search_vec = embed("Who works on Varg?")
+    var results = vector_store_search(store, search_vec, 2)
+    print $"Search results: {len(results)}"
+
+    // Delete a document
+    vector_store_delete(store, "doc3")
+    print $"After delete: {vector_store_count(store)}"
+
+    print "Vector store demo complete!"
+}

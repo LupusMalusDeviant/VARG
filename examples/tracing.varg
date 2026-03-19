@@ -1,0 +1,27 @@
+// Wave 22: Observability & Tracing Example
+
+fn main() {
+    var tracer = trace_start("order_processor")
+
+    // Span 1: Process order
+    var s1 = trace_span(tracer, "process_order")
+    trace_set_attr(tracer, "order_id", "ORD-42")
+
+    // Nested span: validate
+    var s2 = trace_span(tracer, "validate_input")
+    trace_event(tracer, "validation_passed", {"fields": "3"})
+    trace_end(tracer, s2)
+
+    // Nested span: db_write (simulated error)
+    var s3 = trace_span(tracer, "db_write")
+    trace_set_attr(tracer, "db.system", "sqlite")
+    trace_error(tracer, s3, "connection timeout")
+
+    trace_end(tracer, s1)
+
+    print $"Total spans: {trace_span_count(tracer)}"
+
+    var json = trace_export(tracer)
+    print $"Trace JSON length: {len(json)}"
+    print "Tracing demo complete!"
+}

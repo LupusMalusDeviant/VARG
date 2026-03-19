@@ -1,0 +1,15 @@
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\bin\Release\net10.0\data_cs.exe
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\bin\Release\net10.0\data_cs.deps.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\bin\Release\net10.0\data_cs.runtimeconfig.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\bin\Release\net10.0\data_cs.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\bin\Release\net10.0\data_cs.pdb
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\data_cs.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\data_cs.AssemblyInfoInputs.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\data_cs.AssemblyInfo.cs
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\data_cs.csproj.CoreCompileInputs.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\data_cs.sourcelink.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\data_cs.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\refint\data_cs.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\data_cs.pdb
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\data_cs.genruntimeconfig.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\data\cs_proj\obj\Release\net10.0\ref\data_cs.dll

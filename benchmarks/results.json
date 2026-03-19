@@ -1,0 +1,104 @@
+{
+  "fib": {
+    "Varg": {
+      "source_bytes": 351,
+      "tokens": 83,
+      "source_lines": 16,
+      "build_ms": 547,
+      "exec_ms": 552,
+      "self_ms": 15
+    },
+    "Python": {
+      "source_bytes": 242,
+      "tokens": 57,
+      "source_lines": 12,
+      "build_ms": 0,
+      "exec_ms": 720,
+      "self_ms": 695
+    },
+    "C#": {
+      "source_bytes": 291,
+      "tokens": 69,
+      "source_lines": 13,
+      "build_ms": 896,
+      "exec_ms": 1085,
+      "self_ms": 53
+    },
+    "TypeScript": {
+      "source_bytes": 292,
+      "tokens": 70,
+      "source_lines": 10,
+      "build_ms": 0,
+      "exec_ms": 105,
+      "self_ms": 53
+    }
+  },
+  "data": {
+    "Varg": {
+      "source_bytes": 1499,
+      "tokens": 364,
+      "source_lines": 40,
+      "build_ms": 647,
+      "exec_ms": 657,
+      "self_ms": 1
+    },
+    "Python": {
+      "source_bytes": 581,
+      "tokens": 139,
+      "source_lines": 25,
+      "build_ms": 0,
+      "exec_ms": 29,
+      "self_ms": 5
+    },
+    "C#": {
+      "source_bytes": 788,
+      "tokens": 189,
+      "source_lines": 29,
+      "build_ms": 879,
+      "exec_ms": 1042,
+      "self_ms": 15
+    },
+    "TypeScript": {
+      "source_bytes": 752,
+      "tokens": 182,
+      "source_lines": 23,
+      "build_ms": 0,
+      "exec_ms": 57,
+      "self_ms": 5
+    }
+  },
+  "json_bench": {
+    "Varg": {
+      "source_bytes": 838,
+      "tokens": 201,
+      "source_lines": 31,
+      "build_ms": 661,
+      "exec_ms": 680,
+      "self_ms": 1
+    },
+    "Python": {
+      "source_bytes": 542,
+      "tokens": 129,
+      "source_lines": 24,
+      "build_ms": 0,
+      "exec_ms": 33,
+      "self_ms": 1
+    },
+    "C#": {
+      "source_bytes": 767,
+      "tokens": 185,
+      "source_lines": 26,
+      "build_ms": 872,
+      "exec_ms": 1063,
+      "self_ms": 35
+    },
+    "TypeScript": {
+      "source_bytes": 641,
+      "tokens": 153,
+      "source_lines": 26,
+      "build_ms": 0,
+      "exec_ms": 52,
+      "self_ms": 1
+    }
+  }
+}

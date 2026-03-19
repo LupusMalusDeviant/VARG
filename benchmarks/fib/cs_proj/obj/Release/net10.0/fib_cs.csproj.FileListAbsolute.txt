@@ -1,0 +1,15 @@
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\bin\Release\net10.0\fib_cs.exe
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\bin\Release\net10.0\fib_cs.deps.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\bin\Release\net10.0\fib_cs.runtimeconfig.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\bin\Release\net10.0\fib_cs.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\bin\Release\net10.0\fib_cs.pdb
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\fib_cs.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\fib_cs.AssemblyInfoInputs.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\fib_cs.AssemblyInfo.cs
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\fib_cs.csproj.CoreCompileInputs.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\fib_cs.sourcelink.json
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\fib_cs.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\refint\fib_cs.dll
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\fib_cs.pdb
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\fib_cs.genruntimeconfig.cache
+C:\Users\Anwender\Documents\CodingAdventures\Project X\benchmarks\fib\cs_proj\obj\Release\net10.0\ref\fib_cs.dll

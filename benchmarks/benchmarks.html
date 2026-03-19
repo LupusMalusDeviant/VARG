@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Varg Benchmarks</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #d2a8ff;
+    --orange: #f0883e;
+    --red: #f85149;
+    --cyan: #39d2c0;
+    --varg: #58a6ff;
+    --python: #f0883e;
+    --ts: #3178c6;
+    --csharp: #9b4dca;
+    --rust: #dea584;
+    --go: #00add8;
+    --java: #b07219;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+    line-height: 1.6;
+  }
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 80px 0 48px;
+    background: linear-gradient(180deg, #0d1117 0%, #111927 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .hero img { width: 120px; margin-bottom: 20px; filter: drop-shadow(0 0 30px rgba(88,166,255,0.15)); }
+  .hero h1 { font-size: 3rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 8px; }
+  .hero h1 span { background: linear-gradient(135deg, var(--accent), var(--accent3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .hero p { color: var(--text-muted); font-size: 1.15rem; max-width: 640px; margin: 0 auto; }
+  .hero-meta {
+    margin-top: 24px;
+    display: flex; justify-content: center; gap: 24px; flex-wrap: wrap;
+  }
+  .hero-meta span {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+  .hero-meta span b { color: var(--accent); }
+
+  /* Section */
+  section { padding: 64px 0; border-bottom: 1px solid var(--border); }
+  section:last-child { border-bottom: none; }
+  .section-header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  .section-header .badge {
+    display: inline-block;
+    background: rgba(88,166,255,0.1);
+    color: var(--accent);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 4px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(88,166,255,0.2);
+    margin-bottom: 12px;
+  }
+  .section-header h2 { font-size: 2rem; font-weight: 700; margin-bottom: 8px; }
+  .section-header p { color: var(--text-muted); max-width: 600px; margin: 0 auto; }
+
+  /* Cards grid */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .num { font-size: 2.5rem; font-weight: 800; line-height: 1; }
+  .card .label { color: var(--text-muted); font-size: 0.9rem; margin-top: 4px; }
+  .card .sub { color: var(--text-muted); font-size: 0.8rem; margin-top: 8px; }
+  .card .sub b { color: var(--accent2); }
+
+  /* Bar chart */
+  .chart-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .chart-label {
+    width: 110px;
+    text-align: right;
+    font-size: 0.9rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .chart-bar-wrap {
+    flex: 1;
+    background: var(--surface2);
+    border-radius: 6px;
+    height: 36px;
+    position: relative;
+    overflow: hidden;
+  }
+  .chart-bar {
+    height: 100%;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    padding-left: 12px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+    transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .chart-val {
+    width: 80px;
+    text-align: right;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .chart-group { margin-bottom: 36px; }
+  .chart-group h3 {
+    font-size: 1rem;
+    margin-bottom: 16px;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.8rem;
+  }
+
+  /* Tables */
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  thead { background: var(--surface2); }
+  th {
+    text-align: left;
+    padding: 14px 18px;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.92rem;
+  }
+  tr:last-child td { border-bottom: none; }
+  .highlight { color: var(--accent); font-weight: 700; }
+  .green { color: var(--accent2); font-weight: 700; }
+  .muted { color: var(--text-muted); }
+
+  /* Deploy comparison */
+  .deploy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 768px) { .deploy-grid { grid-template-columns: 1fr; } }
+  .deploy-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .deploy-card.featured { border-color: var(--accent); }
+  .deploy-header {
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .deploy-header .lang { font-size: 1.1rem; font-weight: 700; }
+  .deploy-header .steps {
+    margin-left: auto;
+    background: rgba(88,166,255,0.1);
+    color: var(--accent);
+    padding: 4px 12px;
+    border-radius: 10px;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+  .deploy-header .steps.bad {
+    background: rgba(248,81,73,0.1);
+    color: var(--red);
+  }
+  .deploy-body { padding: 16px 24px 20px; }
+  .deploy-body pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    overflow-x: auto;
+    color: var(--text-muted);
+  }
+  .deploy-body pre b { color: var(--accent2); }
+  .deploy-body pre .comment { color: #484f58; }
+
+  /* Pill tags */
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .pill {
+    font-size: 0.75rem;
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+  .pill.good { background: rgba(63,185,80,0.12); color: var(--accent2); border: 1px solid rgba(63,185,80,0.25); }
+  .pill.bad { background: rgba(248,81,73,0.1); color: var(--red); border: 1px solid rgba(248,81,73,0.2); }
+
+  /* Token savings visual */
+  .savings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .savings-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+  }
+  .savings-item .component { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px; }
+  .savings-item .pct { font-size: 2rem; font-weight: 800; color: var(--accent2); }
+  .savings-item .detail { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
+
+  /* Summary boxes */
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 768px) { .summary-grid { grid-template-columns: 1fr; } }
+  .summary-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+  }
+  .summary-box h3 { font-size: 1.1rem; margin-bottom: 16px; }
+  .summary-box ul { list-style: none; }
+  .summary-box li { padding: 6px 0; font-size: 0.92rem; color: var(--text-muted); }
+  .summary-box li::before { content: "\2713 "; color: var(--accent2); font-weight: 700; margin-right: 6px; }
+  .summary-box.alt li::before { content: "\2192 "; color: var(--orange); }
+
+  /* Footer */
+  footer {
+    text-align: center;
+    padding: 48px 0;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+
+  /* Code block */
+  .code-block {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.8;
+    overflow-x: auto;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  .code-block .kw { color: var(--accent3); }
+  .code-block .fn { color: var(--accent); }
+  .code-block .str { color: var(--accent2); }
+  .code-block .cm { color: #484f58; }
+  .code-block .num { color: var(--orange); font-size: inherit; font-weight: inherit; line-height: inherit; }
+
+  /* Comparison note */
+  .note {
+    background: rgba(88,166,255,0.06);
+    border: 1px solid rgba(88,166,255,0.15);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-top: 24px;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+  }
+  .note b { color: var(--text); }
+</style>
+</head>
+<body>
+
+<!-- ===== HERO ===== -->
+<div class="hero">
+  <div class="container">
+    <img src="../docs/varg_logo.png" alt="Varg">
+    <h1><span>Varg</span> Benchmarks</h1>
+    <p>Speed, token efficiency, binary size, and deployment complexity &mdash; measured against Python, TypeScript, C#, Rust, and Go.</p>
+    <div class="hero-meta">
+      <span><b>v0.7.0</b></span>
+      <span><b>748</b> tests</span>
+      <span><b>26</b> waves</span>
+      <span>Windows 11 &middot; 2026-03-19</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 1. SPEED ===== -->
+<section>
+  <div class="container">
+    <div class="section-header">
+      <div class="badge">Section 1</div>
+      <h2>Computation Speed</h2>
+      <p>Pure computation time measured inside each program. Excludes process startup, JIT warmup, and compilation.</p>
+    </div>
+
+    <div class="chart-group">
+      <h3>Fibonacci(35) &mdash; recursive, pure CPU</h3>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--varg)">Varg</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:2.1%;background:var(--varg)">15ms</div></div>
+        <div class="chart-val highlight">46.7x</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--csharp)">C#</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:7.6%;background:var(--csharp)">53ms</div></div>
+        <div class="chart-val">13.2x</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--ts)">TypeScript</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:7.6%;background:var(--ts)">53ms</div></div>
+        <div class="chart-val">13.2x</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--python)">Python</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:100%;background:var(--python)">701ms</div></div>
+        <div class="chart-val muted">1x</div>
+      </div>
+    </div>
+
+    <div class="chart-group">
+      <h3>Data Pipeline &mdash; 100k items + frequency counting</h3>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--varg)">Varg</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:8%;background:var(--varg)">&lt;1ms</div></div>
+        <div class="chart-val highlight">7x+</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--ts)">TypeScript</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:56%;background:var(--ts)">5ms</div></div>
+        <div class="chart-val">1.4x</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--python)">Python</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:78%;background:var(--python)">7ms</div></div>
+        <div class="chart-val muted">1x</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--csharp)">C#</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:100%;background:var(--csharp)">15ms</div></div>
+        <div class="chart-val muted">0.5x*</div>
+      </div>
+    </div>
+
+    <div class="chart-group">
+      <h3>JSON Processing &mdash; 1000 objects, parse + stringify</h3>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--varg)">Varg</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:2.9%;background:var(--varg)">1ms</div></div>
+        <div class="chart-val highlight">1x</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--python)">Python</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:2.9%;background:var(--python)">1ms</div></div>
+        <div class="chart-val muted">1x</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--ts)">TypeScript</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:2.9%;background:var(--ts)">1ms</div></div>
+        <div class="chart-val muted">1x</div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--csharp)">C#</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:100%;background:var(--csharp)">35ms</div></div>
+        <div class="chart-val muted">0.03x*</div>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>*C#</b> shows slower on small workloads due to .NET JIT/runtime startup overhead captured in Stopwatch.
+      After <code>vargc build</code>, Varg native binaries have <b>zero startup overhead</b> &mdash; they start in &lt;1ms.
+    </div>
+  </div>
+</section>
+
+<!-- ===== 2. BINARY SIZE ===== -->
+<section>
+  <div class="container">
+    <div class="section-header">
+      <div class="badge">Section 2</div>
+      <h2>Binary Size &amp; Deploy Footprint</h2>
+      <p>Varg compiles to a single static binary. No runtime, no dependencies, no Docker layers.</p>
+    </div>
+
+    <div class="cards" style="margin-bottom:40px;">
+      <div class="card">
+        <div class="num" style="color:var(--accent2)">130 KB</div>
+        <div class="label">Pure compute binary</div>
+        <div class="sub">fib.varg, benchmarks &mdash; no runtime deps</div>
+      </div>
+      <div class="card">
+        <div class="num" style="color:var(--accent)">1.7 MB</div>
+        <div class="label">Full AI agent binary</div>
+        <div class="sub">HTTP + SQLite + Graph + Vector + Memory + WS + MCP</div>
+      </div>
+      <div class="card">
+        <div class="num" style="color:var(--accent3)">1.86 MB</div>
+        <div class="label">Compiler itself</div>
+        <div class="sub">vargc.exe &mdash; transpiler + CLI</div>
+      </div>
+      <div class="card">
+        <div class="num" style="color:var(--cyan)">~2 MB</div>
+        <div class="label">Docker image</div>
+        <div class="sub"><code>FROM scratch</code> + binary. That's it.</div>
+      </div>
+    </div>
+
+    <h3 style="text-align:center; margin-bottom:24px; color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; letter-spacing:0.06em;">Total Deployment Size Comparison</h3>
+    <div class="chart-group">
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--rust)">Rust</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:0.75%;background:var(--rust);min-width:60px;">1.5 MB</div></div>
+        <div class="chart-val"></div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--varg)">Varg</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:0.85%;background:var(--varg);min-width:60px;">1.7 MB</div></div>
+        <div class="chart-val"></div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--go)">Go</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:3.5%;background:var(--go);min-width:50px;">7 MB</div></div>
+        <div class="chart-val"></div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--csharp)">C# + .NET</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:40%;background:var(--csharp)">80 MB</div></div>
+        <div class="chart-val"><span class="muted">47x</span></div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--ts)">Node + npm</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:50%;background:var(--ts)">100 MB</div></div>
+        <div class="chart-val"><span class="muted">59x</span></div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--python)">Python + pip</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:75%;background:var(--python)">150 MB</div></div>
+        <div class="chart-val"><span class="muted">88x</span></div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-label" style="color:var(--java)">Java + JVM</div>
+        <div class="chart-bar-wrap"><div class="chart-bar" style="width:100%;background:var(--java)">200 MB</div></div>
+        <div class="chart-val"><span class="muted">118x</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 3. TOKEN EFFICIENCY ===== -->
+<section>
+  <div class="container">
+    <div class="section-header">
+      <div class="badge">Section 3</div>
+      <h2>Token Efficiency (LLM Cost)</h2>
+      <p>Fewer tokens = cheaper AI code generation. Estimated as characters&thinsp;/&thinsp;4 (cl100k_base approximation).</p>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:40px;">
+      <table>
+        <thead>
+          <tr><th>Benchmark</th><th>Varg</th><th>Python</th><th>Ratio</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Fibonacci</td><td>66</td><td>57</td><td>1.16x</td></tr>
+          <tr><td>Data Pipeline</td><td>176</td><td>139</td><td>1.27x</td></tr>
+          <tr><td>JSON Processing</td><td>127</td><td>129</td><td class="green">0.98x</td></tr>
+          <tr><td><b>Average (generic code)</b></td><td></td><td></td><td><b>1.14x</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note" style="margin-bottom:40px;">
+      <b>For generic code, Varg is near-parity with Python</b> (1.14x). But the real advantage appears in AI-specific workloads, where Varg's 140+ built-in functions eliminate imports, boilerplate classes, and library setup entirely.
+    </div>
+
+    <h3 style="text-align:center; margin-bottom:24px; color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; letter-spacing:0.06em;">Full AI Agent Stack &mdash; Token Savings vs Python</h3>
+
+    <div class="savings-grid">
+      <div class="savings-item">
+        <div class="component">HTTP Server</div>
+        <div class="pct">~same</div>
+        <div class="detail">http_serve() vs Flask decorators</div>
+      </div>
+      <div class="savings-item">
+        <div class="component">SQLite Database</div>
+        <div class="pct">~same</div>
+        <div class="detail">db_open() vs sqlite3 cursor API</div>
+      </div>
+      <div class="savings-item">
+        <div class="component">Knowledge Graph</div>
+        <div class="pct" style="color:var(--accent2)">30% fewer</div>
+        <div class="detail">graph_open() vs networkx setup</div>
+      </div>
+      <div class="savings-item">
+        <div class="component">Vector Store</div>
+        <div class="pct" style="color:var(--accent2)">40% fewer</div>
+        <div class="detail">embed() + search() vs numpy/faiss</div>
+      </div>
+      <div class="savings-item">
+        <div class="component">Agent Memory</div>
+        <div class="pct" style="color:var(--accent2)">50% fewer</div>
+        <div class="detail">memory_open() vs custom classes</div>
+      </div>
+      <div class="savings-item">
+        <div class="component">Tracing</div>
+        <div class="pct" style="color:var(--accent2)">60% fewer</div>
+        <div class="detail">trace_start() vs OpenTelemetry setup</div>
+      </div>
+      <div class="savings-item">
+        <div class="component">MCP Server</div>
+        <div class="pct" style="color:var(--accent2)">70% fewer</div>
+        <div class="detail">mcp_server_new() vs JSON-RPC impl</div>
+      </div>
+      <div class="savings-item" style="border-color:var(--accent);">
+        <div class="component"><b>Full Stack Total</b></div>
+        <div class="pct" style="font-size:2.4rem;">2.25x fewer</div>
+        <div class="detail">~400 tokens vs ~900 tokens (Python)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 4. DEPLOYMENT ===== -->
+<section>
+  <div class="container">
+    <div class="section-header">
+      <div class="badge">Section 4</div>
+      <h2>Deployment Complexity</h2>
+      <p>From source code to a running agent on a server. Fewer steps = less that can break.</p>
+    </div>
+
+    <div class="deploy-grid">
+      <div class="deploy-card featured">
+        <div class="deploy-header">
+          <div class="lang" style="color:var(--varg)">Varg</div>
+          <div class="steps">3 steps</div>
+        </div>
+        <div class="deploy-body">
+          <pre><span class="comment"># 1. Build</span>
+<b>vargc build my_agent.varg</b>
+
+<span class="comment"># 2. Copy single binary</span>
+<b>scp my_agent user@server:~/</b>
+
+<span class="comment"># 3. Run</span>
+<b>ssh user@server './my_agent'</b></pre>
+          <div class="pills">
+            <span class="pill good">No runtime</span>
+            <span class="pill good">No package manager</span>
+            <span class="pill good">No Docker needed</span>
+            <span class="pill good">1.7 MB total</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="deploy-card">
+        <div class="deploy-header">
+          <div class="lang" style="color:var(--python)">Python</div>
+          <div class="steps bad">8+ steps</div>
+        </div>
+        <div class="deploy-body">
+          <pre><span class="comment"># 1. Install Python runtime</span>
+apt install python3 python3-pip python3-venv
+<span class="comment"># 2. Copy source + requirements.txt</span>
+scp -r my_agent/ user@server:~/
+<span class="comment"># 3. Create venv</span>
+python3 -m venv .venv
+<span class="comment"># 4. Activate</span>
+source .venv/bin/activate
+<span class="comment"># 5. Install dependencies</span>
+pip install -r requirements.txt
+<span class="comment"># 6. Pray C extensions compile</span>
+<span class="comment"># 7. Set PYTHONPATH, env vars</span>
+<span class="comment"># 8. Run w/ process manager</span>
+gunicorn main:app</pre>
+          <div class="pills">
+            <span class="pill bad">150 MB runtime</span>
+            <span class="pill bad">pip + venv</span>
+            <span class="pill bad">C extension issues</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:40px;">
+      <table>
+        <thead>
+          <tr><th>Metric</th><th style="color:var(--varg)">Varg</th><th style="color:var(--python)">Python</th><th style="color:var(--ts)">TypeScript</th><th style="color:var(--csharp)">C#</th><th style="color:var(--rust)">Rust</th><th style="color:var(--go)">Go</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Deploy steps</td>
+            <td class="highlight">3</td><td>8+</td><td>6+</td><td>5+</td><td>3</td><td>3</td>
+          </tr>
+          <tr>
+            <td>Runtime on server</td>
+            <td class="green">No</td><td>Yes</td><td>Yes</td><td>Yes</td><td class="green">No</td><td class="green">No</td>
+          </tr>
+          <tr>
+            <td>Package manager</td>
+            <td class="green">No</td><td>pip</td><td>npm</td><td>NuGet</td><td>cargo*</td><td>go*</td>
+          </tr>
+          <tr>
+            <td>Single binary</td>
+            <td class="green">Yes</td><td>No</td><td>No</td><td>No</td><td class="green">Yes</td><td class="green">Yes</td>
+          </tr>
+          <tr>
+            <td>Memory (idle)</td>
+            <td class="highlight">~2 MB</td><td>~30 MB</td><td>~40 MB</td><td>~25 MB</td><td>~2 MB</td><td>~5 MB</td>
+          </tr>
+          <tr>
+            <td>Cold start</td>
+            <td class="highlight">&lt;1ms</td><td>~200ms</td><td>~100ms</td><td>~500ms</td><td>&lt;1ms</td><td>&lt;1ms</td>
+          </tr>
+          <tr>
+            <td>AI builtins</td>
+            <td class="green">140+</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td>
+          </tr>
+          <tr>
+            <td>OCAP security</td>
+            <td class="green">Compile-time</td><td class="muted">None</td><td class="muted">None</td><td class="muted">None</td><td class="muted">Manual</td><td class="muted">None</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">* Rust and Go need their toolchain for <b>building</b>, but not for deployment.</div>
+  </div>
+</section>
+
+<!-- ===== 5. AGENT SETUP ===== -->
+<section>
+  <div class="container">
+    <div class="section-header">
+      <div class="badge">Section 5</div>
+      <h2>Agent Setup Complexity</h2>
+      <p>How much code to create a production-ready AI agent with HTTP server, memory, tracing, and JSON?</p>
+    </div>
+
+    <div class="cards" style="margin-bottom:40px;">
+      <div class="card" style="border-color:var(--accent);">
+        <div class="num" style="color:var(--accent);">25</div>
+        <div class="label">Lines of Varg</div>
+        <div class="sub"><b>0 imports</b> &mdash; HTTP + Memory + Tracing + JSON all built-in</div>
+      </div>
+      <div class="card">
+        <div class="num" style="color:var(--python);">~80</div>
+        <div class="label">Lines of Python</div>
+        <div class="sub">6 imports, 3 classes, Flask + networkx + numpy + opentelemetry</div>
+      </div>
+      <div class="card">
+        <div class="num" style="color:var(--ts);">~90</div>
+        <div class="label">Lines of TypeScript</div>
+        <div class="sub">8 imports, types, express + openai + otel + better-sqlite3</div>
+      </div>
+      <div class="card">
+        <div class="num" style="color:var(--rust);">~150</div>
+        <div class="label">Lines of Rust</div>
+        <div class="sub">12 imports, structs, traits, axum + sqlx + tracing + reqwest</div>
+      </div>
+    </div>
+
+    <div class="code-block">
+<span class="kw">agent</span> ProductionAgent {
+    <span class="kw">public void</span> <span class="fn">Run</span>() {
+        <span class="kw">var</span> mem = <span class="fn">memory_open</span>(<span class="str">"agent"</span>)
+        <span class="kw">var</span> server = <span class="fn">http_serve</span>()
+
+        <span class="fn">http_route</span>(server, <span class="str">"POST"</span>, <span class="str">"/ask"</span>, (req) => {
+            <span class="kw">var</span> body = <span class="fn">json_parse</span>(req)
+            <span class="kw">var</span> question = <span class="fn">json_get</span>(body, <span class="str">"question"</span>)
+            <span class="kw">var</span> context = <span class="fn">memory_recall</span>(mem, question, <span class="num">5</span>)
+            <span class="kw">var</span> answer = <span class="fn">fetch</span>(<span class="str">"https://api.openai.com/v1/chat"</span>, <span class="str">"POST"</span>)
+            <span class="fn">memory_store</span>(mem, question, {})
+            <span class="fn">trace_event</span>(<span class="str">"answered"</span>, {<span class="str">"question"</span>: question})
+            <span class="kw">return</span> <span class="fn">http_response</span>(<span class="num">200</span>, answer)
+        })
+
+        <span class="fn">http_route</span>(server, <span class="str">"GET"</span>, <span class="str">"/health"</span>, (req) => {
+            <span class="kw">return</span> <span class="fn">http_response</span>(<span class="num">200</span>, <span class="str">"{\"status\":\"ok\"}"</span>)
+        })
+
+        <span class="fn">trace_start</span>(<span class="str">"agent"</span>)
+        <span class="fn">http_listen</span>(server, <span class="str">"0.0.0.0:8080"</span>)
+    }
+}
+    </div>
+    <p style="text-align:center; color:var(--text-muted); margin-top:12px; font-size:0.85rem;">
+      Complete production agent. HTTP server, episodic + semantic memory, tracing, JSON API. <b>Zero imports.</b>
+    </p>
+  </div>
+</section>
+
+<!-- ===== 6. SUMMARY ===== -->
+<section>
+  <div class="container">
+    <div class="section-header">
+      <div class="badge">Section 6</div>
+      <h2>Summary</h2>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:40px;">
+      <table>
+        <thead>
+          <tr><th>Dimension</th><th>Varg Advantage</th><th>vs Python</th><th>vs TypeScript</th><th>vs Rust</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Speed</td>
+            <td>Native compiled via Rust</td>
+            <td class="highlight">46x faster</td>
+            <td class="highlight">3.5x faster</td>
+            <td class="muted">Same</td>
+          </tr>
+          <tr>
+            <td>Deploy size</td>
+            <td>Static binary, no runtime</td>
+            <td class="highlight">88x smaller</td>
+            <td class="highlight">59x smaller</td>
+            <td class="muted">Comparable</td>
+          </tr>
+          <tr>
+            <td>Tokens (AI tasks)</td>
+            <td>140+ built-in primitives</td>
+            <td class="green">2.25x fewer</td>
+            <td class="green">2x fewer</td>
+            <td class="green">3x fewer</td>
+          </tr>
+          <tr>
+            <td>Tokens (generic)</td>
+            <td>Clean C#-like syntax</td>
+            <td>1.14x (near parity)</td>
+            <td>1.1x (near parity)</td>
+            <td class="muted">0.78x</td>
+          </tr>
+          <tr>
+            <td>Deploy steps</td>
+            <td>Build &rarr; Copy &rarr; Run</td>
+            <td class="highlight">3 vs 8+</td>
+            <td class="highlight">3 vs 6+</td>
+            <td class="muted">Same</td>
+          </tr>
+          <tr>
+            <td>Cold start</td>
+            <td>Zero overhead binary</td>
+            <td class="highlight">200x faster</td>
+            <td class="highlight">100x faster</td>
+            <td class="muted">Same</td>
+          </tr>
+          <tr>
+            <td>Security</td>
+            <td>OCAP compile-time</td>
+            <td class="green">Not available</td>
+            <td class="green">Not available</td>
+            <td>Manual</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-box">
+        <h3 style="color:var(--accent2)">When to Choose Varg</h3>
+        <ul>
+          <li>Building AI agents with graph, vector, memory, MCP</li>
+          <li>Deploying to edge, IoT, or minimal containers</li>
+          <li>Security-critical systems with OCAP</li>
+          <li>LLM-generated code where tokens = cost</li>
+          <li>Multi-agent orchestration &amp; reactive pipelines</li>
+        </ul>
+      </div>
+      <div class="summary-box alt">
+        <h3 style="color:var(--orange)">When to Choose Something Else</h3>
+        <ul>
+          <li>Rapid prototyping with huge ecosystem &rarr; Python</li>
+          <li>Frontend + backend in one language &rarr; TypeScript</li>
+          <li>Enterprise with existing .NET infra &rarr; C#</li>
+          <li>Systems programming without AI focus &rarr; Rust</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>Varg v0.7.0 &middot; 748 tests &middot; 26 development waves &middot; <a href="https://github.com">GitHub</a></p>
+    <p style="margin-top:8px;">Benchmarks last updated 2026-03-19</p>
+  </div>
+</footer>
+
+</body>
+</html>

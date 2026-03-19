@@ -1,0 +1,15 @@
+agent Server {
+    public async void Run() {
+        var server = http_serve()
+        http_route(server, "GET", "/health", (req) => {
+            return http_response(200, "{\"status\": \"ok\"}")
+        })
+        http_route(server, "POST", "/ask", (req) => {
+            var body = json_parse(req)
+            var question = json_get(body, "question")
+            var answer = fetch($"https://api.example.com/ask?q={question}", "GET")
+            return http_response(200, answer)
+        })
+        http_listen(server, "0.0.0.0:8080")
+    }
+}

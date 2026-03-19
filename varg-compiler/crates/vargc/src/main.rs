@@ -626,7 +626,15 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool) 
         } else { false }
     });
 
-    // We statically inject the bootstrap code.
+    // Wave 19: Check if program already has a standalone fn main()
+    let has_standalone_main = ast.items.iter().any(|item| {
+        if let varg_ast::ast::Item::Function(f) = item {
+            f.name == "main"
+        } else { false }
+    });
+
+    // We statically inject the bootstrap code (skip if standalone main exists).
+    if !has_standalone_main {
     if has_async {
         final_rust_source.push_str("\n#[tokio::main]\nasync fn main() {\n");
     } else {
@@ -857,10 +865,11 @@ fn {handler_name}(body: String) -> String {{
     }
 
     final_rust_source.push_str("}\n");
-    
+
     if has_api_endpoints {
         final_rust_source.push_str(&tcp_handlers);
     }
+    } // end if !has_standalone_main
 
 
     let cache_dir = PathBuf::from(".vargc_cache");

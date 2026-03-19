@@ -1,0 +1,20 @@
+fn main() {
+    var start = time_millis()
+
+    var items = "["
+    var i = 0
+    while i < 1000 {
+        if i > 0 items = items + ","
+        var active = i % 3 == 0 ? "false" : "true"
+        items = items + $"\{\"id\":{i},\"name\":\"item_{i}\",\"value\":{i * 17},\"active\":{active}\}"
+        i += 1
+    }
+    items = items + "]"
+
+    var parsed = json_parse(items)
+    var output = json_stringify(parsed)
+
+    var elapsed = time_millis() - start
+    print $"JSON length: {output.len()}"
+    print $"Time: {elapsed}ms"
+}

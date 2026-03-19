@@ -1,0 +1,21 @@
+agent RagAgent {
+    public void Run() {
+        var graph = graph_open("knowledge")
+        graph_add_node(graph, "rust", {"type": "language", "paradigm": "systems"})
+        graph_add_node(graph, "varg", {"type": "language", "paradigm": "agent"})
+        graph_add_edge(graph, "varg", "rust", "transpiles_to")
+
+        var store = vector_store_open("docs", 384)
+        var embedding = embed("Varg compiles to native code via Rust", 384)
+        vector_store_upsert(store, "doc1", embedding, {"source": "readme"})
+
+        var query_vec = embed("How does Varg compile?", 384)
+        var results = vector_store_search(store, query_vec, 3)
+
+        var neighbors = graph_neighbors(graph, "varg")
+        var traversal = graph_traverse(graph, "varg", "bfs", 2)
+
+        log_info($"Found {len(results)} similar docs")
+        log_info($"Graph neighbors: {len(neighbors)}")
+    }
+}
