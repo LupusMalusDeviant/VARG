@@ -208,10 +208,9 @@ agent SecureAgent {
 The easiest way to use Varg is to download the pre-compiled binary:
 
 1. Go to the [Releases](../../releases) page.
-2. Download the latest `varg-vX.Y.Z-windows-x64.zip` (currently v0.7.0).
+2. Download the latest `varg-v0.8.0-windows-x64.zip` (currently v0.8.0).
 3. Extract `vargc.exe` and place it somewhere in your system `PATH`.
 4. You're ready to go!
-
 ---
 
 ### Build from Source
