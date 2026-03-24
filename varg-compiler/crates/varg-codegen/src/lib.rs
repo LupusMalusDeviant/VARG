@@ -1650,6 +1650,26 @@ impl RustGenerator {
                     format!("varg_runtime::self_improve::__varg_self_improver_iterations(&{})", arg_strs[0])
                 } else if method_name == "self_improver_stats" {
                     format!("varg_runtime::self_improve::__varg_self_improver_stats(&{})", arg_strs[0])
+                // ===== Wave 27: Base64 Encoding/Decoding =====
+                } else if method_name == "base64_encode" {
+                    format!("varg_runtime::encoding::__varg_base64_encode(&{})", arg_strs[0])
+                } else if method_name == "base64_decode" {
+                    format!("varg_runtime::encoding::__varg_base64_decode(&{})", arg_strs[0])
+                } else if method_name == "base64_encode_file" {
+                    format!("varg_runtime::encoding::__varg_base64_encode_file(&{})", arg_strs[0])
+                } else if method_name == "http_download_base64" {
+                    format!("varg_runtime::encoding::__varg_http_download_base64(&{}, &{})", arg_strs[0], arg_strs[1])
+                // ===== Wave 27: PDF Generation =====
+                } else if method_name == "pdf_create" {
+                    format!("varg_runtime::pdf::__varg_pdf_create(&{})", arg_strs[0])
+                } else if method_name == "pdf_add_section" {
+                    format!("varg_runtime::pdf::__varg_pdf_add_section(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "pdf_add_text" {
+                    format!("varg_runtime::pdf::__varg_pdf_add_text(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "pdf_save" {
+                    format!("varg_runtime::pdf::__varg_pdf_save(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "pdf_to_base64" {
+                    format!("varg_runtime::pdf::__varg_pdf_to_base64(&{})", arg_strs[0])
                 } else {
                     // Plan 33: If caller is `self` and method is a known standalone function, call directly
                     if matches!(**caller, Expression::Identifier(ref name) if name == "self") && self.known_functions.contains(method_name.as_str()) {

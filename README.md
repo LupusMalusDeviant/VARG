@@ -19,14 +19,14 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 
 | Metric | Value |
 |--------|-------|
-| Test Suite | 748 tests, 0 failures |
+| Test Suite | 767 tests, 0 failures |
 | Crates | 10 specialized compiler crates |
 | Token Types | 119 lexer tokens |
 | AST Variants | 25 statements, 29 expressions |
-| Builtins | 140+ typechecker handlers, 170+ codegen handlers |
+| Builtins | 140+ typechecker handlers, 180+ codegen handlers |
 | Security | 5 OCAP capability types |
-| Runtime Modules | 16 (crypto, db, llm, net, vector, http-server, sqlite, websocket, mcp-client, mcp-server, graph, memory, trace, pipeline, orchestration, self-improve) |
-| Dev Waves | 26 completed development waves |
+| Runtime Modules | 18 (crypto, db, llm, net, vector, http-server, sqlite, websocket, mcp-client, mcp-server, graph, memory, trace, pipeline, orchestration, self-improve, encoding, pdf) |
+| Dev Waves | 27 completed development waves |
 
 ---
 
@@ -208,7 +208,7 @@ agent SecureAgent {
 The easiest way to use Varg is to download the pre-compiled binary:
 
 1. Go to the [Releases](../../releases) page.
-2. Download the latest `varg-v0.8.0-windows-x64.zip` (currently v0.8.0).
+2. Download the latest `varg-v0.9.0-windows-x64.zip` (currently v0.9.0).
 3. Extract `vargc.exe` and place it somewhere in your system `PATH`.
 4. You're ready to go!
 ---

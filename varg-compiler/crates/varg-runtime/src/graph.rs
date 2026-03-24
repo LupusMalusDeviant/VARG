@@ -1,12 +1,14 @@
-// Wave 20: Native Knowledge Graph Runtime
+// Wave 20 + Issue #3: Native Knowledge Graph Runtime with SQLite Persistence
 //
-// Embedded graph engine using adjacency lists.
-// No external dependencies — pure Rust implementation.
-// Can be swapped for SurrealDB backend later.
+// Embedded graph engine using adjacency lists with write-through SQLite storage.
+// On graph_open(name), opens {name}.graph.db — loads existing data into memory.
+// All mutations (add_node, add_edge) are written through to SQLite immediately.
+// Falls back to pure in-memory if name is ":memory:".
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use rusqlite::Connection;
 
 static NODE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -25,22 +27,118 @@ pub struct GraphEdge {
     pub properties: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
 pub struct GraphDb {
     pub name: String,
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
+    /// SQLite connection for persistence (None = pure in-memory)
+    db: Option<Connection>,
+}
+
+// Manual Debug since Connection doesn't implement Debug
+impl std::fmt::Debug for GraphDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphDb")
+            .field("name", &self.name)
+            .field("nodes", &self.nodes)
+            .field("edges", &self.edges)
+            .field("db", &self.db.is_some())
+            .finish()
+    }
 }
 
 /// Shared, thread-safe graph handle
 pub type GraphHandle = Arc<Mutex<GraphDb>>;
 
+/// Initialize SQLite schema for graph persistence
+fn init_graph_schema(conn: &Connection) {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS graph_nodes (
+            id INTEGER PRIMARY KEY,
+            label TEXT NOT NULL,
+            properties TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS graph_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_id INTEGER NOT NULL,
+            to_id INTEGER NOT NULL,
+            relation TEXT NOT NULL,
+            properties TEXT NOT NULL
+        );"
+    ).expect("Failed to initialize graph schema");
+}
+
+/// Load existing nodes and edges from SQLite into memory
+fn load_graph_from_db(conn: &Connection) -> (Vec<GraphNode>, Vec<GraphEdge>, u64) {
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut max_id: u64 = 0;
+
+    // Load nodes
+    let mut stmt = conn.prepare("SELECT id, label, properties FROM graph_nodes").unwrap();
+    let node_rows = stmt.query_map([], |row| {
+        let id: u64 = row.get::<_, i64>(0).unwrap() as u64;
+        let label: String = row.get(1).unwrap();
+        let props_json: String = row.get(2).unwrap();
+        let properties: HashMap<String, String> = serde_json::from_str(&props_json).unwrap_or_default();
+        Ok((id, label, properties))
+    }).unwrap();
+
+    for row in node_rows {
+        let (id, label, properties) = row.unwrap();
+        if id > max_id { max_id = id; }
+        nodes.push(GraphNode { id, label, properties });
+    }
+
+    // Load edges
+    let mut stmt = conn.prepare("SELECT from_id, to_id, relation, properties FROM graph_edges").unwrap();
+    let edge_rows = stmt.query_map([], |row| {
+        let from: u64 = row.get::<_, i64>(0).unwrap() as u64;
+        let to: u64 = row.get::<_, i64>(1).unwrap() as u64;
+        let relation: String = row.get(2).unwrap();
+        let props_json: String = row.get(3).unwrap();
+        let properties: HashMap<String, String> = serde_json::from_str(&props_json).unwrap_or_default();
+        Ok((from, to, relation, properties))
+    }).unwrap();
+
+    for row in edge_rows {
+        let (from, to, relation, properties) = row.unwrap();
+        edges.push(GraphEdge { from, to, relation, properties });
+    }
+
+    (nodes, edges, max_id)
+}
+
 /// Open or create a named graph database
+/// If name is ":memory:", uses pure in-memory mode.
+/// Otherwise, persists to {name}.graph.db
 pub fn __varg_graph_open(name: &str) -> GraphHandle {
+    if name == ":memory:" {
+        return Arc::new(Mutex::new(GraphDb {
+            name: name.to_string(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            db: None,
+        }));
+    }
+
+    let db_path = format!("{}.graph.db", name);
+    let conn = Connection::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open graph database '{}': {}", db_path, e));
+    init_graph_schema(&conn);
+    let (nodes, edges, max_id) = load_graph_from_db(&conn);
+
+    // Ensure NODE_COUNTER is above all loaded IDs
+    let current = NODE_COUNTER.load(Ordering::SeqCst);
+    if max_id >= current {
+        NODE_COUNTER.store(max_id + 1, Ordering::SeqCst);
+    }
+
     Arc::new(Mutex::new(GraphDb {
         name: name.to_string(),
-        nodes: Vec::new(),
-        edges: Vec::new(),
+        nodes,
+        edges,
+        db: Some(conn),
     }))
 }
 
@@ -56,7 +154,19 @@ pub fn __varg_graph_add_node(
         label: label.to_string(),
         properties: props.clone(),
     };
-    graph.lock().unwrap().nodes.push(node);
+
+    let mut g = graph.lock().unwrap();
+
+    // Write-through to SQLite if persisted
+    if let Some(ref conn) = g.db {
+        let props_json = serde_json::to_string(props).unwrap_or_else(|_| "{}".to_string());
+        conn.execute(
+            "INSERT INTO graph_nodes (id, label, properties) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id as i64, label, props_json],
+        ).ok();
+    }
+
+    g.nodes.push(node);
     id as i64
 }
 
@@ -74,7 +184,19 @@ pub fn __varg_graph_add_edge(
         relation: relation.to_string(),
         properties: props.clone(),
     };
-    graph.lock().unwrap().edges.push(edge);
+
+    let mut g = graph.lock().unwrap();
+
+    // Write-through to SQLite if persisted
+    if let Some(ref conn) = g.db {
+        let props_json = serde_json::to_string(props).unwrap_or_else(|_| "{}".to_string());
+        conn.execute(
+            "INSERT INTO graph_edges (from_id, to_id, relation, properties) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![from_id, to_id, relation, props_json],
+        ).ok();
+    }
+
+    g.edges.push(edge);
 }
 
 /// Query nodes by label, returns list of node property maps
@@ -175,16 +297,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_graph_open() {
-        let g = __varg_graph_open("test_graph");
+    fn test_graph_open_memory() {
+        let g = __varg_graph_open(":memory:");
         let db = g.lock().unwrap();
-        assert_eq!(db.name, "test_graph");
+        assert_eq!(db.name, ":memory:");
         assert!(db.nodes.is_empty());
+        assert!(db.db.is_none());
     }
 
     #[test]
-    fn test_graph_add_node() {
-        let g = __varg_graph_open("test");
+    fn test_graph_add_node_memory() {
+        let g = __varg_graph_open(":memory:");
         let props = HashMap::from([("name".to_string(), "Alice".to_string())]);
         let id = __varg_graph_add_node(&g, "Person", &props);
         assert!(id > 0);
@@ -194,8 +317,8 @@ mod tests {
     }
 
     #[test]
-    fn test_graph_add_edge() {
-        let g = __varg_graph_open("test");
+    fn test_graph_add_edge_memory() {
+        let g = __varg_graph_open(":memory:");
         let p1 = HashMap::from([("name".to_string(), "Alice".to_string())]);
         let p2 = HashMap::from([("name".to_string(), "Varg".to_string())]);
         let id1 = __varg_graph_add_node(&g, "Person", &p1);
@@ -208,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_graph_query_by_label() {
-        let g = __varg_graph_open("test");
+        let g = __varg_graph_open(":memory:");
         let p1 = HashMap::from([("name".to_string(), "Alice".to_string())]);
         let p2 = HashMap::from([("name".to_string(), "Bob".to_string())]);
         let p3 = HashMap::from([("name".to_string(), "Varg".to_string())]);
@@ -224,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_graph_traverse() {
-        let g = __varg_graph_open("test");
+        let g = __varg_graph_open(":memory:");
         let p1 = HashMap::from([("name".to_string(), "Alice".to_string())]);
         let p2 = HashMap::from([("name".to_string(), "Bob".to_string())]);
         let p3 = HashMap::from([("name".to_string(), "Charlie".to_string())]);
@@ -247,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_graph_neighbors() {
-        let g = __varg_graph_open("test");
+        let g = __varg_graph_open(":memory:");
         let p1 = HashMap::from([("name".to_string(), "Alice".to_string())]);
         let p2 = HashMap::from([("name".to_string(), "Bob".to_string())]);
         let id1 = __varg_graph_add_node(&g, "Person", &p1);
@@ -257,5 +380,38 @@ mod tests {
         let n = __varg_graph_neighbors(&g, id1);
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].get("name").unwrap(), "Bob");
+    }
+
+    #[test]
+    fn test_graph_persistence_roundtrip() {
+        let db_name = format!("test_graph_persist_{}", std::process::id());
+        let db_path = format!("{}.graph.db", db_name);
+
+        // Clean up from any previous run
+        std::fs::remove_file(&db_path).ok();
+
+        // Create graph and add data
+        {
+            let g = __varg_graph_open(&db_name);
+            let p1 = HashMap::from([("name".to_string(), "Alice".to_string())]);
+            let p2 = HashMap::from([("name".to_string(), "Bob".to_string())]);
+            let id1 = __varg_graph_add_node(&g, "Person", &p1);
+            let id2 = __varg_graph_add_node(&g, "Person", &p2);
+            __varg_graph_add_edge(&g, id1, "knows", id2, &HashMap::new());
+        }
+        // GraphDb dropped here, but SQLite has the data
+
+        // Reopen and verify data persisted
+        {
+            let g = __varg_graph_open(&db_name);
+            let db = g.lock().unwrap();
+            assert_eq!(db.nodes.len(), 2);
+            assert_eq!(db.edges.len(), 1);
+            assert_eq!(db.nodes[0].label, "Person");
+            assert_eq!(db.edges[0].relation, "knows");
+        }
+
+        // Clean up
+        std::fs::remove_file(&db_path).ok();
     }
 }

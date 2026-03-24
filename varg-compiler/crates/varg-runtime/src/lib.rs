@@ -20,6 +20,8 @@ pub mod mcp_server;  // Wave 23: MCP Server Mode
 pub mod pipeline;    // Wave 24: Reactive Pipelines
 pub mod orchestration; // Wave 25: Agent Orchestration
 pub mod self_improve;  // Wave 26: Self-Improving Loop
+pub mod encoding;      // Wave 27: Base64 Encoding/Decoding
+pub mod pdf;           // Wave 27: PDF Generation
 
 // Re-export everything so generated code can use `use varg_runtime::*;`
 pub use crypto::*;
@@ -38,3 +40,5 @@ pub use mcp_server::*;
 pub use pipeline::*;
 pub use orchestration::*;
 pub use self_improve::*;
+pub use encoding::*;
+pub use pdf::*;

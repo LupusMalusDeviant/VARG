@@ -1,11 +1,13 @@
-// Varg Runtime: Vector Math + Vector Store
+// Varg Runtime: Vector Math + Vector Store with SQLite Persistence
 //
-// Wave 20b: Embedded vector store using brute-force cosine similarity.
-// No external dependencies — pure Rust implementation.
-// Can be swapped for HNSW or lance backend later.
+// Wave 20b + Issue #3: Embedded vector store with write-through SQLite storage.
+// On vector_store_open(name), opens {name}.vector.db — loads existing data.
+// All mutations are written through to SQLite immediately.
+// Falls back to pure in-memory if name is ":memory:".
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use rusqlite::Connection;
 use varg_os_types::{Embedding, Tensor};
 
 /// Compute cosine similarity between two tensors
@@ -23,7 +25,7 @@ pub fn __varg_create_tensor(data: Vec<i64>) -> Tensor {
     Tensor { data: data_f32, shape: vec![len] }
 }
 
-// ===== Wave 20b: Vector Store =====
+// ===== Vector Store =====
 
 /// Cosine similarity between two float vectors
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -40,20 +42,79 @@ pub struct VectorEntry {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
 pub struct VectorStore {
     pub name: String,
     pub entries: Vec<VectorEntry>,
+    /// SQLite connection for persistence (None = pure in-memory)
+    db: Option<Connection>,
+}
+
+// Manual Debug since Connection doesn't implement Debug
+impl std::fmt::Debug for VectorStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VectorStore")
+            .field("name", &self.name)
+            .field("entries_count", &self.entries.len())
+            .field("persisted", &self.db.is_some())
+            .finish()
+    }
 }
 
 /// Shared, thread-safe vector store handle
 pub type VectorStoreHandle = Arc<Mutex<VectorStore>>;
 
+/// Initialize SQLite schema for vector persistence
+fn init_vector_schema(conn: &Connection) {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vector_entries (
+            id TEXT PRIMARY KEY,
+            embedding TEXT NOT NULL,
+            metadata TEXT NOT NULL
+        );"
+    ).expect("Failed to initialize vector schema");
+}
+
+/// Load existing vectors from SQLite into memory
+fn load_vectors_from_db(conn: &Connection) -> Vec<VectorEntry> {
+    let mut entries = Vec::new();
+    let mut stmt = conn.prepare("SELECT id, embedding, metadata FROM vector_entries").unwrap();
+    let rows = stmt.query_map([], |row| {
+        let id: String = row.get(0).unwrap();
+        let emb_json: String = row.get(1).unwrap();
+        let meta_json: String = row.get(2).unwrap();
+        let embedding: Vec<f32> = serde_json::from_str(&emb_json).unwrap_or_default();
+        let metadata: HashMap<String, String> = serde_json::from_str(&meta_json).unwrap_or_default();
+        Ok(VectorEntry { id, embedding, metadata })
+    }).unwrap();
+
+    for row in rows {
+        entries.push(row.unwrap());
+    }
+    entries
+}
+
 /// Open or create a named vector store
+/// If name is ":memory:", uses pure in-memory mode.
+/// Otherwise, persists to {name}.vector.db
 pub fn __varg_vector_store_open(name: &str) -> VectorStoreHandle {
+    if name == ":memory:" {
+        return Arc::new(Mutex::new(VectorStore {
+            name: name.to_string(),
+            entries: Vec::new(),
+            db: None,
+        }));
+    }
+
+    let db_path = format!("{}.vector.db", name);
+    let conn = Connection::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open vector database '{}': {}", db_path, e));
+    init_vector_schema(&conn);
+    let entries = load_vectors_from_db(&conn);
+
     Arc::new(Mutex::new(VectorStore {
         name: name.to_string(),
-        entries: Vec::new(),
+        entries,
+        db: Some(conn),
     }))
 }
 
@@ -65,7 +126,18 @@ pub fn __varg_vector_store_upsert(
     metadata: &HashMap<String, String>,
 ) {
     let mut s = store.lock().unwrap();
-    // Update existing or insert new
+
+    // Write-through to SQLite if persisted
+    if let Some(ref conn) = s.db {
+        let emb_json = serde_json::to_string(&embedding.to_vec()).unwrap_or_else(|_| "[]".to_string());
+        let meta_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
+        conn.execute(
+            "INSERT OR REPLACE INTO vector_entries (id, embedding, metadata) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, emb_json, meta_json],
+        ).ok();
+    }
+
+    // Update in-memory
     if let Some(entry) = s.entries.iter_mut().find(|e| e.id == id) {
         entry.embedding = embedding.to_vec();
         entry.metadata = metadata.clone();
@@ -108,6 +180,12 @@ pub fn __varg_vector_store_search(
 /// Delete a vector by ID
 pub fn __varg_vector_store_delete(store: &VectorStoreHandle, id: &str) -> bool {
     let mut s = store.lock().unwrap();
+
+    // Write-through to SQLite if persisted
+    if let Some(ref conn) = s.db {
+        conn.execute("DELETE FROM vector_entries WHERE id = ?1", rusqlite::params![id]).ok();
+    }
+
     let before = s.entries.len();
     s.entries.retain(|e| e.id != id);
     s.entries.len() < before
@@ -173,19 +251,18 @@ mod tests {
         assert_eq!(t.shape, vec![3]);
     }
 
-    // Wave 20b: Vector Store tests
-
     #[test]
-    fn test_vector_store_open() {
-        let store = __varg_vector_store_open("test_store");
+    fn test_vector_store_open_memory() {
+        let store = __varg_vector_store_open(":memory:");
         let s = store.lock().unwrap();
-        assert_eq!(s.name, "test_store");
+        assert_eq!(s.name, ":memory:");
         assert!(s.entries.is_empty());
+        assert!(s.db.is_none());
     }
 
     #[test]
     fn test_vector_store_upsert_and_count() {
-        let store = __varg_vector_store_open("test");
+        let store = __varg_vector_store_open(":memory:");
         let meta = HashMap::from([("source".to_string(), "test".to_string())]);
         __varg_vector_store_upsert(&store, "doc1", &[1.0, 0.0, 0.0], &meta);
         __varg_vector_store_upsert(&store, "doc2", &[0.0, 1.0, 0.0], &meta);
@@ -194,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_vector_store_upsert_overwrites() {
-        let store = __varg_vector_store_open("test");
+        let store = __varg_vector_store_open(":memory:");
         let meta1 = HashMap::from([("v".to_string(), "1".to_string())]);
         let meta2 = HashMap::from([("v".to_string(), "2".to_string())]);
         __varg_vector_store_upsert(&store, "doc1", &[1.0, 0.0], &meta1);
@@ -206,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_vector_store_search() {
-        let store = __varg_vector_store_open("test");
+        let store = __varg_vector_store_open(":memory:");
         let empty = HashMap::new();
         __varg_vector_store_upsert(&store, "a", &[1.0, 0.0, 0.0], &empty);
         __varg_vector_store_upsert(&store, "b", &[0.9, 0.1, 0.0], &empty);
@@ -220,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_vector_store_delete() {
-        let store = __varg_vector_store_open("test");
+        let store = __varg_vector_store_open(":memory:");
         let empty = HashMap::new();
         __varg_vector_store_upsert(&store, "doc1", &[1.0], &empty);
         __varg_vector_store_upsert(&store, "doc2", &[2.0], &empty);
@@ -257,5 +334,60 @@ mod tests {
         let e = __varg_embed("test text");
         let mag: f32 = e.iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!((mag - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_vector_persistence_roundtrip() {
+        let store_name = format!("test_vec_persist_{}", std::process::id());
+        let db_path = format!("{}.vector.db", store_name);
+
+        // Clean up from any previous run
+        std::fs::remove_file(&db_path).ok();
+
+        // Create store and add data
+        {
+            let store = __varg_vector_store_open(&store_name);
+            let meta = HashMap::from([("tag".to_string(), "test".to_string())]);
+            __varg_vector_store_upsert(&store, "v1", &[1.0, 0.0, 0.0], &meta);
+            __varg_vector_store_upsert(&store, "v2", &[0.0, 1.0, 0.0], &meta);
+        }
+        // Store dropped, SQLite has the data
+
+        // Reopen and verify data persisted
+        {
+            let store = __varg_vector_store_open(&store_name);
+            assert_eq!(__varg_vector_store_count(&store), 2);
+            let results = __varg_vector_store_search(&store, &[1.0, 0.0, 0.0], 1);
+            assert_eq!(results[0].get("_id").unwrap(), "v1");
+            assert_eq!(results[0].get("tag").unwrap(), "test");
+        }
+
+        // Clean up
+        std::fs::remove_file(&db_path).ok();
+    }
+
+    #[test]
+    fn test_vector_persistence_delete() {
+        let store_name = format!("test_vec_del_{}", std::process::id());
+        let db_path = format!("{}.vector.db", store_name);
+        std::fs::remove_file(&db_path).ok();
+
+        {
+            let store = __varg_vector_store_open(&store_name);
+            let empty = HashMap::new();
+            __varg_vector_store_upsert(&store, "a", &[1.0], &empty);
+            __varg_vector_store_upsert(&store, "b", &[2.0], &empty);
+            __varg_vector_store_delete(&store, "a");
+        }
+
+        // Reopen — should only have "b"
+        {
+            let store = __varg_vector_store_open(&store_name);
+            assert_eq!(__varg_vector_store_count(&store), 1);
+            let s = store.lock().unwrap();
+            assert_eq!(s.entries[0].id, "b");
+        }
+
+        std::fs::remove_file(&db_path).ok();
     }
 }
