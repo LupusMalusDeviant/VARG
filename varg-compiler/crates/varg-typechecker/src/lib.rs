@@ -1576,6 +1576,29 @@ impl TypeChecker {
                 } else if method_name == "self_improver_stats" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (improver)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                // ===== Wave 27: Base64 Encoding/Decoding =====
+                } else if method_name == "base64_encode" || method_name == "base64_decode" || method_name == "base64_encode_file" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "http_download_base64" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (url, headers)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== Wave 27: PDF Generation =====
+                } else if method_name == "pdf_create" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (title)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("PdfDocHandle".to_string()))
+                } else if method_name == "pdf_add_section" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (doc, heading, body)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "pdf_add_text" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (doc, text)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "pdf_save" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (doc, path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "pdf_to_base64" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (doc)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
                 // ===== Wave 12: Math Methods =====
                 } else if method_name == "abs" {
                     let caller_ty = self.infer_expression_type(caller)?;
@@ -1681,6 +1704,11 @@ impl TypeChecker {
                     // Plan 33: Check known standalone functions first
                     if let Some(sig) = self.known_functions.get(method_name.as_str()) {
                         return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
+                    }
+                    // Issue #4: When caller is synthetic 'self' (bare function call in standalone fn),
+                    // don't try to resolve 'self' — treat as forward-declared function call
+                    if matches!(&**caller, Expression::Identifier(n) if n == "self") && self.current_agent_name.is_none() {
+                        return Ok(TypeNode::Custom("Dynamic".to_string()));
                     }
                     // Plan 30: Look up method signatures on known types
                     let caller_ty = self.infer_expression_type(caller)?;
@@ -6924,5 +6952,92 @@ mod tests {
         let result = checker.infer_expression_type(&expr);
         assert!(result.is_ok(), "Method call on contract-typed var should resolve: {:?}", result);
         assert_eq!(result.unwrap(), TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
+    }
+
+    // ===== Issue #4: Regression tests =====
+
+    #[test]
+    fn test_issue4_self_in_standalone_fn_no_error() {
+        // Bare function calls in standalone fn bodies use synthetic 'self' as caller.
+        // The typechecker must not fail with "undeclared variable self".
+        let mut checker = TypeChecker::new();
+        // Register a helper function
+        checker.known_functions.insert("helper".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::String),
+            args: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::String, default_value: None }],
+        });
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Function(FunctionDef {
+                name: "main_fn".to_string(),
+                is_public: false,
+                params: vec![],
+                return_ty: Some(TypeNode::String),
+                body: Block { statements: vec![
+                    // var result = helper("test") — parser makes this MethodCall with caller=self
+                    Statement::Let {
+                        name: "result".to_string(),
+                        ty: None,
+                        value: Expression::MethodCall {
+                            caller: Box::new(Expression::Identifier("self".to_string())),
+                            method_name: "helper".to_string(),
+                            args: vec![Expression::String("test".to_string())],
+                        },
+                    },
+                    Statement::Return(Some(Expression::Identifier("result".to_string()))),
+                ] },
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok(), "Standalone fn with bare function calls must not fail");
+    }
+
+    #[test]
+    fn test_issue4_unknown_fn_in_standalone_fn_no_crash() {
+        // Even forward-declared / unknown functions should not crash with 'self' error
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Function(FunctionDef {
+                name: "caller_fn".to_string(),
+                is_public: false,
+                params: vec![],
+                return_ty: Some(TypeNode::Void),
+                body: Block { statements: vec![
+                    Statement::Expr(Expression::MethodCall {
+                        caller: Box::new(Expression::Identifier("self".to_string())),
+                        method_name: "unknown_future_fn".to_string(),
+                        args: vec![],
+                    }),
+                ] },
+            })],
+        };
+        // Should not crash — returns Dynamic for unknown calls
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_issue4_base64_builtins_typecheck() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "base64_encode".to_string(),
+            args: vec![Expression::String("hello".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), TypeNode::String);
+    }
+
+    #[test]
+    fn test_issue4_pdf_builtins_typecheck() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "pdf_create".to_string(),
+            args: vec![Expression::String("My Doc".to_string())],
+        };
+        let result = checker.infer_expression_type(&expr);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), TypeNode::Custom("PdfDocHandle".to_string()));
     }
 }

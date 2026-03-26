@@ -191,6 +191,8 @@ impl Parser {
         let span = self.current_span();
         match self.advance() {
             Some(Token::Identifier(name)) => Ok(name),
+            // Issue #4: 'stream' is a contextual keyword — allow as identifier
+            Some(Token::Stream) => Ok("stream".to_string()),
             Some(t) => Err(ParseError::UnexpectedToken {
                 expected: "Identifier".to_string(),
                 found: Some(t),
@@ -1745,6 +1747,23 @@ impl Parser {
                         _ => break false,
                     }
                 }
+                // Issue #4: Allow 'stream' as lambda parameter name
+                Some(Token::Stream) => {
+                    self.advance();
+                    untyped_params.push("stream".to_string());
+                    match self.peek() {
+                        Some(Token::Comma) => { self.advance(); }
+                        Some(Token::RParen) => {
+                            self.advance();
+                            if self.peek() == Some(&Token::FatArrow) {
+                                self.advance();
+                                break true;
+                            }
+                            break false;
+                        }
+                        _ => break false,
+                    }
+                }
                 _ => break false,
             }
         };
@@ -1859,6 +1878,8 @@ impl Parser {
             },
             Some(Token::BoolLiteral(val)) => Expression::Bool(val),
             Some(Token::Identifier(name)) => Expression::Identifier(name),
+            // Issue #4: 'stream' is a contextual keyword — allow as identifier in expressions
+            Some(Token::Stream) => Expression::Identifier("stream".to_string()),
             Some(Token::LBracket) => {
                 let mut elements = Vec::new();
                 if self.peek() != Some(&Token::RBracket) {
@@ -6300,6 +6321,54 @@ mod tests {
                 assert_eq!(item_name, "k");
                 assert_eq!(value_name, &Some("v".to_string()));
             } else { panic!("Expected Foreach, got {:?}", stmts[0]); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Issue #4: 'stream' as contextual keyword =====
+
+    #[test]
+    fn test_issue4_stream_as_variable_name() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var stream = "hello";
+                    print stream;
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "Should allow 'stream' as variable name: {:?}", program.err());
+    }
+
+    #[test]
+    fn test_issue4_stream_as_function_param() {
+        let source = r#"
+            fn process(string stream) -> string {
+                return stream;
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "Should allow 'stream' as function param: {:?}", program.err());
+    }
+
+    #[test]
+    fn test_issue4_stream_keyword_still_works() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    stream "hello world";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "'stream' as statement keyword should still work");
+        let program = program.unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            assert!(matches!(&stmts[0], Statement::Stream(_)));
         } else { panic!("Expected Agent"); }
     }
 }
