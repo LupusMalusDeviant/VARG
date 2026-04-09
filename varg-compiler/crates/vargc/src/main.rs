@@ -88,7 +88,7 @@ fn main() {
 }
 
 fn print_usage() {
-    println!("Varg Compiler (vargc) v0.1.0");
+    println!("Varg Compiler (vargc) v0.10.0");
     println!("Usage:");
     println!("  vargc build <file.varg>   - Compiles down to a native executable in the current directory");
     println!("  vargc run <file.varg>     - Compiles and immediately executes the script");
@@ -105,7 +105,7 @@ fn print_usage() {
 fn run_repl() {
     use std::io::{self, Write, BufRead};
 
-    println!("Varg REPL v0.1.0  (type :quit to exit, :help for commands)");
+    println!("Varg REPL v0.10.0  (type :quit to exit, :help for commands)");
     println!();
 
     let stdin = io::stdin();

@@ -287,6 +287,20 @@ impl TypeChecker {
             "pipeline_new", "pipeline_run", "pipeline_step_count",
             "orchestrator_new", "orchestrator_add_task", "orchestrator_run_all", "orchestrator_results", "orchestrator_task_count", "orchestrator_completed_count",
             "self_improver_new", "self_improver_record_success", "self_improver_record_failure", "self_improver_recall", "self_improver_success_rate", "self_improver_iterations", "self_improver_stats",
+            // Wave 28: System Primitives
+            "args", "stdin_read", "stdin_read_line", "is_dir", "is_file", "path_resolve",
+            "fs_copy", "fs_rename", "ansi_color", "ansi_bold", "ansi_reset",
+            // Wave 28 Batch 2: Streaming + Process Management
+            "sse_client_connect", "sse_client_post", "sse_client_next", "sse_client_close",
+            "proc_spawn", "proc_spawn_args", "proc_write_stdin", "proc_close_stdin",
+            "proc_read_line", "proc_wait", "proc_kill", "proc_is_alive", "proc_pid",
+            // Wave 29: Binary I/O
+            "fs_read_bytes", "fs_write_bytes", "fs_append_bytes", "fs_size",
+            // Wave 29: Config cascade + platform dirs
+            "home_dir", "config_dir", "data_dir", "cache_dir", "config_load_cascade",
+            // Wave 29: Readline / REPL
+            "readline_new", "readline_read", "readline_add_history",
+            "readline_load_history", "readline_save_history",
         ];
         candidates.extend(builtins.iter());
         let suggestions = suggest_similar(method_name, &candidates);
@@ -332,7 +346,9 @@ impl TypeChecker {
         }
     }
 
-    /// Plan 21: Check that capability arguments being passed are actually available
+    /// Plan 21: Check that capability arguments being passed are actually available.
+    /// Currently unused — retained for future OCAP propagation work.
+    #[allow(dead_code)]
     fn check_capability_propagation(&self, args: &[Expression]) -> Result<(), TypeError> {
         for arg in args {
             if let Expression::Identifier(name) = arg {
@@ -1326,6 +1342,137 @@ impl TypeChecker {
                 } else if method_name == "regex_replace" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (pattern, string, replacement)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                // ===== Wave 28: System Primitives — CLI args, stdin, path checks, fs ops, ANSI =====
+                } else if method_name == "args" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "stdin_read_line" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::SystemAccess, "stdin_read_line")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "stdin_read" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::SystemAccess, "stdin_read")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "is_dir" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "is_file" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "path_resolve" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "fs_copy" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (src, dst)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_copy")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
+                } else if method_name == "fs_rename" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (src, dst)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_rename")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "ansi_color" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (color_name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "ansi_bold" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "ansi_reset" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== Wave 28 Batch 2: SSE Client =====
+                } else if method_name == "sse_client_connect" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (url, headers)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::NetworkAccess, "sse_client_connect")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("SseClientHandle".to_string())), Box::new(TypeNode::String)))
+                } else if method_name == "sse_client_post" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (url, headers, body)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::NetworkAccess, "sse_client_post")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("SseClientHandle".to_string())), Box::new(TypeNode::String)))
+                } else if method_name == "sse_client_next" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "sse_client_close" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                // ===== Wave 28 Batch 2: Process Management =====
+                } else if method_name == "proc_spawn" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (command)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::SystemAccess, "proc_spawn")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("ProcHandle".to_string())), Box::new(TypeNode::String)))
+                } else if method_name == "proc_spawn_args" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (program, args)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::SystemAccess, "proc_spawn_args")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("ProcHandle".to_string())), Box::new(TypeNode::String)))
+                } else if method_name == "proc_write_stdin" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, data)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "proc_close_stdin" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "proc_read_line" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "proc_wait" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
+                } else if method_name == "proc_kill" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "proc_is_alive" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "proc_pid" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                // ===== Wave 29: Binary I/O =====
+                } else if method_name == "fs_read_bytes" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_read_bytes")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::Int))), Box::new(TypeNode::String)))
+                } else if method_name == "fs_write_bytes" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (path, bytes)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_write_bytes")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
+                } else if method_name == "fs_append_bytes" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (path, bytes)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_append_bytes")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
+                } else if method_name == "fs_size" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "fs_size")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
+                // ===== Wave 29: Config Cascade + Platform Dirs =====
+                } else if method_name == "home_dir" || method_name == "config_dir"
+                    || method_name == "data_dir" || method_name == "cache_dir"
+                {
+                    if !args.is_empty() {
+                        return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    Ok(TypeNode::String)
+                } else if method_name == "config_load_cascade" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (paths: List<string>)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "config_load_cascade")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                // ===== Wave 29: Readline / REPL =====
+                } else if method_name == "readline_new" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::SystemAccess, "readline_new")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("ReadlineHandle".to_string())), Box::new(TypeNode::String)))
+                } else if method_name == "readline_read" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, prompt)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)))
+                } else if method_name == "readline_add_history" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, line)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "readline_load_history" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "readline_load_history")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                } else if method_name == "readline_save_history" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "readline_save_history")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
                 // ===== Wave 13: Stdlib Expansion — time =====
                 } else if method_name == "sleep" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (ms)".to_string(), found: format!("{} arguments", args.len()) }); }
@@ -6231,7 +6378,7 @@ mod tests {
             method_name: "lenght".to_string(),
             args: vec![],
         };
-        let result = checker.infer_expression_type(&expr);
+        let _ = checker.infer_expression_type(&expr);
         // For Custom types with registered methods, unknown methods get suggestions
         checker.env.insert("obj".to_string(), TypeNode::Custom("MyType".to_string()));
         // Register type with some methods so UnknownMethod triggers
@@ -7039,5 +7186,682 @@ mod tests {
         let result = checker.infer_expression_type(&expr);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), TypeNode::Custom("PdfDocHandle".to_string()));
+    }
+
+    // ===== Wave 28: System Primitives Tests =====
+    #[test]
+    fn test_wave28_args_returns_string_array() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "args".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_wave28_args_rejects_arguments() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "args".to_string(),
+            args: vec![Expression::String("oops".to_string())],
+        };
+        assert!(checker.infer_expression_type(&expr).is_err());
+    }
+
+    #[test]
+    fn test_wave28_stdin_read_line_requires_system_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "stdin_read_line".to_string(),
+            args: vec![],
+        };
+        assert!(checker.infer_expression_type(&expr).is_err());
+    }
+
+    #[test]
+    fn test_wave28_stdin_read_line_with_capability() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "stdin_read_line".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_wave28_stdin_read_with_capability() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "stdin_read".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_wave28_is_dir_returns_bool() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "is_dir".to_string(),
+            args: vec![Expression::String("/tmp".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_wave28_is_file_returns_bool() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "is_file".to_string(),
+            args: vec![Expression::String("/tmp/x".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_wave28_path_resolve_returns_result() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "path_resolve".to_string(),
+            args: vec![Expression::String("./foo".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_wave28_fs_copy_requires_capability() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_copy".to_string(),
+            args: vec![Expression::String("a".to_string()), Expression::String("b".to_string())],
+        };
+        assert!(checker.infer_expression_type(&expr).is_err());
+    }
+
+    #[test]
+    fn test_wave28_fs_copy_with_capability() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_copy".to_string(),
+            args: vec![Expression::String("a".to_string()), Expression::String("b".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_wave28_fs_rename_requires_capability() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_rename".to_string(),
+            args: vec![Expression::String("a".to_string()), Expression::String("b".to_string())],
+        };
+        assert!(checker.infer_expression_type(&expr).is_err());
+    }
+
+    #[test]
+    fn test_wave28_fs_rename_with_capability() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_rename".to_string(),
+            args: vec![Expression::String("a".to_string()), Expression::String("b".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_wave28_ansi_color_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "ansi_color".to_string(),
+            args: vec![Expression::String("red".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_wave28_ansi_bold_zero_args() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "ansi_bold".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_wave28_ansi_reset_zero_args() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "ansi_reset".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    // ===== Wave 28 Batch 2: SSE Client Tests =====
+
+    #[test]
+    fn test_wave28b_sse_client_connect_requires_network() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_connect".to_string(),
+            args: vec![
+                Expression::String("https://api.example.com/stream".to_string()),
+                Expression::Identifier("headers".to_string()),
+            ],
+        };
+        assert!(checker.infer_expression_type(&expr).is_err(), "should require NetworkAccess");
+    }
+
+    #[test]
+    fn test_wave28b_sse_client_connect_returns_handle() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_connect".to_string(),
+            args: vec![
+                Expression::String("https://api.example.com/stream".to_string()),
+                Expression::Identifier("headers".to_string()),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(
+                Box::new(TypeNode::Custom("SseClientHandle".to_string())),
+                Box::new(TypeNode::String)
+            )
+        );
+    }
+
+    #[test]
+    fn test_wave28b_sse_client_post_returns_handle() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_post".to_string(),
+            args: vec![
+                Expression::String("https://api.anthropic.com/v1/messages".to_string()),
+                Expression::Identifier("headers".to_string()),
+                Expression::String("{}".to_string()),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert!(matches!(ty, TypeNode::Result(_, _)));
+    }
+
+    #[test]
+    fn test_wave28b_sse_client_next_returns_result_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_next".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave28b_sse_client_close_returns_result_void() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_close".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String))
+        );
+    }
+
+    // ===== Wave 28 Batch 2: Process Management Tests =====
+
+    #[test]
+    fn test_wave28b_proc_spawn_requires_system_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_spawn".to_string(),
+            args: vec![Expression::String("echo hi".to_string())],
+        };
+        assert!(checker.infer_expression_type(&expr).is_err());
+    }
+
+    #[test]
+    fn test_wave28b_proc_spawn_returns_handle() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_spawn".to_string(),
+            args: vec![Expression::String("echo hi".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(
+                Box::new(TypeNode::Custom("ProcHandle".to_string())),
+                Box::new(TypeNode::String)
+            )
+        );
+    }
+
+    #[test]
+    fn test_wave28b_proc_spawn_args_returns_handle() {
+        let mut checker = TypeChecker::new();
+        checker.in_unsafe_block = true;
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_spawn_args".to_string(),
+            args: vec![
+                Expression::String("python".to_string()),
+                Expression::Identifier("argv".to_string()),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert!(matches!(ty, TypeNode::Result(_, _)));
+    }
+
+    #[test]
+    fn test_wave28b_proc_read_line_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_read_line".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave28b_proc_write_stdin_returns_void() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_write_stdin".to_string(),
+            args: vec![
+                Expression::Identifier("handle".to_string()),
+                Expression::String("data".to_string()),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave28b_proc_wait_returns_int() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_wait".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave28b_proc_kill_returns_void() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_kill".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave28b_proc_is_alive_returns_bool() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_is_alive".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_wave28b_proc_pid_returns_int() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_pid".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    // ===== Wave 29: Binary I/O tests =====
+
+    #[test]
+    fn test_wave29_fs_read_bytes_requires_file_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_read_bytes".to_string(),
+            args: vec![Expression::String("/tmp/x.bin".to_string())],
+        };
+        let err = checker.infer_expression_type(&expr).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_wave29_fs_read_bytes_returns_result_array_int() {
+        let mut checker = TypeChecker::new();
+        checker.available_capabilities.push(CapabilityType::FileAccess);
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_read_bytes".to_string(),
+            args: vec![Expression::String("/tmp/x.bin".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(
+                Box::new(TypeNode::Array(Box::new(TypeNode::Int))),
+                Box::new(TypeNode::String)
+            )
+        );
+    }
+
+    #[test]
+    fn test_wave29_fs_write_bytes_requires_file_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_write_bytes".to_string(),
+            args: vec![
+                Expression::String("/tmp/x.bin".to_string()),
+                Expression::ArrayLiteral(vec![Expression::Int(1), Expression::Int(2)]),
+            ],
+        };
+        let err = checker.infer_expression_type(&expr).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_wave29_fs_write_bytes_returns_result_int() {
+        let mut checker = TypeChecker::new();
+        checker.available_capabilities.push(CapabilityType::FileAccess);
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_write_bytes".to_string(),
+            args: vec![
+                Expression::String("/tmp/x.bin".to_string()),
+                Expression::ArrayLiteral(vec![Expression::Int(65), Expression::Int(66)]),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave29_fs_append_bytes_returns_result_int() {
+        let mut checker = TypeChecker::new();
+        checker.available_capabilities.push(CapabilityType::FileAccess);
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_append_bytes".to_string(),
+            args: vec![
+                Expression::String("/tmp/log.bin".to_string()),
+                Expression::ArrayLiteral(vec![Expression::Int(0)]),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave29_fs_size_returns_result_int() {
+        let mut checker = TypeChecker::new();
+        checker.available_capabilities.push(CapabilityType::FileAccess);
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_size".to_string(),
+            args: vec![Expression::String("/tmp/x.bin".to_string())],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave29_home_dir_returns_string_no_ocap() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "home_dir".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_wave29_config_dir_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "config_dir".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::String);
+    }
+
+    #[test]
+    fn test_wave29_data_dir_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "data_dir".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::String);
+    }
+
+    #[test]
+    fn test_wave29_cache_dir_returns_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "cache_dir".to_string(),
+            args: vec![],
+        };
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::String);
+    }
+
+    #[test]
+    fn test_wave29_config_load_cascade_requires_file_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "config_load_cascade".to_string(),
+            args: vec![Expression::ArrayLiteral(vec![
+                Expression::String("/a.json".to_string()),
+            ])],
+        };
+        let err = checker.infer_expression_type(&expr).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_wave29_config_load_cascade_returns_result_string() {
+        let mut checker = TypeChecker::new();
+        checker.available_capabilities.push(CapabilityType::FileAccess);
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "config_load_cascade".to_string(),
+            args: vec![Expression::ArrayLiteral(vec![
+                Expression::String("/a.json".to_string()),
+            ])],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave29_readline_new_requires_system_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_new".to_string(),
+            args: vec![],
+        };
+        let err = checker.infer_expression_type(&expr).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_wave29_readline_new_returns_handle() {
+        let mut checker = TypeChecker::new();
+        checker.available_capabilities.push(CapabilityType::SystemAccess);
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_new".to_string(),
+            args: vec![],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(
+                Box::new(TypeNode::Custom("ReadlineHandle".to_string())),
+                Box::new(TypeNode::String)
+            )
+        );
+    }
+
+    #[test]
+    fn test_wave29_readline_read_returns_result_string() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_read".to_string(),
+            args: vec![
+                Expression::Identifier("handle".to_string()),
+                Expression::String("> ".to_string()),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave29_readline_add_history_returns_result_void() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_add_history".to_string(),
+            args: vec![
+                Expression::Identifier("handle".to_string()),
+                Expression::String("ls".to_string()),
+            ],
+        };
+        let ty = checker.infer_expression_type(&expr).unwrap();
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String))
+        );
+    }
+
+    #[test]
+    fn test_wave29_readline_load_history_requires_file_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_load_history".to_string(),
+            args: vec![
+                Expression::Identifier("handle".to_string()),
+                Expression::String("/tmp/hist".to_string()),
+            ],
+        };
+        let err = checker.infer_expression_type(&expr).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_wave29_readline_save_history_requires_file_access() {
+        let mut checker = TypeChecker::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_save_history".to_string(),
+            args: vec![
+                Expression::Identifier("handle".to_string()),
+                Expression::String("/tmp/hist".to_string()),
+            ],
+        };
+        let err = checker.infer_expression_type(&expr).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
     }
 }

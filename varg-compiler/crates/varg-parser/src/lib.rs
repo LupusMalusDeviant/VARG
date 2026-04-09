@@ -9,6 +9,11 @@ pub struct Parser {
     source_len: usize,
     /// Plan 23: Raw source for prompt template body extraction
     raw_source: String,
+    /// Wave 28: Suppress struct-literal parsing in expression contexts where a
+    /// trailing `{` belongs to the surrounding statement (e.g. `if cond { ... }`,
+    /// `while cond { ... }`, `for x in collection { ... }`, `match scrutinee { ... }`).
+    /// Without this, `if Foo {}` would parse `Foo {}` as an empty struct literal.
+    no_struct_literal: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -34,7 +39,7 @@ impl Parser {
             .filter_map(|(res, span)| res.ok().map(|tok| (tok, span)))
             .collect();
         let source_len = source.len();
-        Self { tokens, pos: 0, source_len, raw_source: source.to_string() }
+        Self { tokens, pos: 0, source_len, raw_source: source.to_string(), no_struct_literal: false }
     }
 
     fn advance(&mut self) -> Option<Token> {
@@ -357,7 +362,6 @@ impl Parser {
                             self.consume(Token::Semicolon)?;
                             // We can only return one Item, so generate a UseExtern with {items} suffix
                             // Store as path + braced names by appending each name
-                            let base = path.clone();
                             // Return first, queue rest — actually, just use a compound path notation
                             // Simple approach: return multiple items is not possible, so use a single
                             // UseExtern per braced name via the first one and store as special case
@@ -813,6 +817,13 @@ impl Parser {
         while let Some(tok) = self.peek() {
             if *tok == Token::RBrace { break; }
 
+            // Wave 29: Skip doc comments inside agent body (currently not attached
+            // to member declarations, but must not crash the parser).
+            while let Some(Token::DocComment(_)) = self.peek() {
+                self.advance();
+            }
+            if self.peek() == Some(&Token::RBrace) { break; }
+
             let annotations = self.parse_annotations()?;
 
             // Optional: async modifier
@@ -950,7 +961,13 @@ impl Parser {
             if *tok == Token::RBrace {
                 break;
             }
-            
+
+            // Wave 29: Skip doc comments inside methods block
+            while let Some(Token::DocComment(_)) = self.peek() {
+                self.advance();
+            }
+            if self.peek() == Some(&Token::RBrace) { break; }
+
             let annotations = self.parse_annotations()?;
 
             // Optional: async modifier
@@ -1110,7 +1127,11 @@ impl Parser {
         // Plan 47: Parentheses around condition are optional (Rust/Go-style)
         let has_paren = self.peek() == Some(&Token::LParen);
         if has_paren { self.advance(); }
+        // Wave 28: Suppress struct-literal parsing in the condition so `{` belongs to the body
+        let prev_no_struct = self.no_struct_literal;
+        self.no_struct_literal = !has_paren;
         let condition = self.parse_expression()?;
+        self.no_struct_literal = prev_no_struct;
         if has_paren { self.consume(Token::RParen)?; }
         // Wave 19: Braceless single-statement if
         let then_block = self.parse_block_or_single()?;
@@ -1362,7 +1383,11 @@ impl Parser {
                     // Plan 47: Parentheses optional
                     let has_paren = self.peek() == Some(&Token::LParen);
                     if has_paren { self.advance(); }
+                    // Wave 28: Suppress struct literal in braceless condition
+                    let prev_no_struct = self.no_struct_literal;
+                    self.no_struct_literal = !has_paren;
                     let condition = self.parse_expression()?;
+                    self.no_struct_literal = prev_no_struct;
                     if has_paren { self.consume(Token::RParen)?; }
                     // Wave 19: Braceless single-statement while
                     let body = self.parse_block_or_single()?;
@@ -1381,7 +1406,11 @@ impl Parser {
                         }
                         let item_name = self.parse_identifier()?;
                         self.consume(Token::In)?;
+                        // Wave 28: Suppress struct literal in for-in collection so `{` is the body
+                        let prev_no_struct = self.no_struct_literal;
+                        self.no_struct_literal = true;
                         let collection = self.parse_expression()?;
+                        self.no_struct_literal = prev_no_struct;
                         let body = self.parse_block()?;
                         statements.push(Statement::Foreach { item_name, value_name: None, collection, body });
                         continue;
@@ -1420,7 +1449,11 @@ impl Parser {
                             let val_name = self.parse_identifier()?;
                             self.consume(Token::RParen)?;
                             self.consume(Token::In)?;
+                            // Wave 28: Suppress struct literal in for-in collection
+                            let prev_no_struct = self.no_struct_literal;
+                            self.no_struct_literal = true;
                             let collection = self.parse_expression()?;
+                            self.no_struct_literal = prev_no_struct;
                             let body = self.parse_block()?;
                             statements.push(Statement::Foreach { item_name: key_name, value_name: Some(val_name), collection, body });
                             continue;
@@ -1511,7 +1544,11 @@ impl Parser {
                         Some(vn)
                     } else { None };
                     self.consume(Token::In)?;
+                    // Wave 28: Suppress struct literal in braceless foreach collection
+                    let prev_no_struct = self.no_struct_literal;
+                    self.no_struct_literal = !has_paren;
                     let collection = self.parse_expression()?;
+                    self.no_struct_literal = prev_no_struct;
                     if has_paren { self.consume(Token::RParen)?; }
                     let body = self.parse_block()?;
                     statements.push(Statement::Foreach { item_name, value_name, collection, body });
@@ -1547,9 +1584,13 @@ impl Parser {
                     self.advance();
                     let try_block = self.parse_block()?;
                     self.consume(Token::Catch)?;
-                    self.consume(Token::LParen)?;
+                    // Wave 29: parens around catch variable are optional (consistent
+                    // with Wave 19 braceless if/while). Both `catch (err) {` and
+                    // `catch err {` parse identically.
+                    let has_parens = self.peek() == Some(&Token::LParen);
+                    if has_parens { self.advance(); }
                     let catch_var = self.parse_identifier()?;
-                    self.consume(Token::RParen)?;
+                    if has_parens { self.consume(Token::RParen)?; }
                     let catch_block = self.parse_block()?;
                     statements.push(Statement::TryCatch { try_block, catch_var, catch_block });
                 },
@@ -1561,7 +1602,11 @@ impl Parser {
                 },
                 Token::Match => {
                     self.advance();
+                    // Wave 28: Suppress struct literal in match scrutinee — `{` opens arms
+                    let prev_no_struct = self.no_struct_literal;
+                    self.no_struct_literal = true;
                     let subject = self.parse_expression()?;
+                    self.no_struct_literal = prev_no_struct;
                     self.consume(Token::LBrace)?;
                     let mut arms = Vec::new();
                     while self.peek() != Some(&Token::RBrace) {
@@ -1843,7 +1888,11 @@ impl Parser {
             },
             // Wave 11: if-expression — if cond { a } else { b }
             Some(Token::If) => {
+                // Wave 28: Suppress struct literal in condition
+                let prev_no_struct = self.no_struct_literal;
+                self.no_struct_literal = true;
                 let condition = self.parse_expression()?;
+                self.no_struct_literal = prev_no_struct;
                 let then_block = self.parse_block()?;  // parse_block consumes { and }
                 self.consume(Token::Else)?;
                 let else_block = self.parse_block()?;
@@ -2263,6 +2312,9 @@ impl Parser {
                 },
                 // Wave 12: Struct literal — Point { x: 5, y: 10 }
                 Token::LBrace => {
+                    if self.no_struct_literal {
+                        break; // condition/scrutinee context — { belongs to surrounding stmt
+                    }
                     if let Expression::Identifier(ref type_name) = left {
                         if self.is_struct_literal_ahead() {
                             let type_name = type_name.clone();
@@ -2322,15 +2374,23 @@ impl Parser {
     }
 
     /// Wave 12: Lookahead to check if `{` starts a struct literal (Ident : pattern)
+    /// Wave 28: Also accept the empty struct literal `{}` so that capability tokens
+    /// like `SystemAccess {}` can be constructed without fields. This is gated by
+    /// `no_struct_literal` upstream so it cannot eat an `if cond {}` body.
     fn is_struct_literal_ahead(&self) -> bool {
         // pos points to LBrace — check tokens[pos+1] is Identifier and tokens[pos+2] is Colon
         let base = self.pos + 1; // skip LBrace
-        if base + 1 < self.tokens.len() {
-            matches!(self.tokens[base].0, Token::Identifier(_))
-                && self.tokens[base + 1].0 == Token::Colon
-        } else {
-            false
+        if base < self.tokens.len() {
+            // Empty struct literal: `Foo {}` — token after `{` is `}`
+            if matches!(self.tokens[base].0, Token::RBrace) {
+                return true;
+            }
+            if base + 1 < self.tokens.len() {
+                return matches!(self.tokens[base].0, Token::Identifier(_))
+                    && self.tokens[base + 1].0 == Token::Colon;
+            }
         }
+        false
     }
 }
 
@@ -2500,6 +2560,32 @@ mod tests {
                 if let Statement::Print(expr) = &catch_block.statements[0] {
                     assert_eq!(*expr, Expression::Identifier("err".to_string()));
                 } else { panic!("Expected Print"); }
+            } else { panic!("Expected TryCatch"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_wave29_parse_try_catch_without_parens() {
+        // Wave 29: parens around the catch variable are optional.
+        let source = r#"
+            agent TestAgent {
+                public void DoWork() {
+                    try {
+                        throw "Failed";
+                    } catch err {
+                        print err;
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+
+        if let Item::Agent(a) = &program.items[0] {
+            let m = &a.methods[0];
+            let body = m.body.as_ref().unwrap();
+            if let Statement::TryCatch { catch_var, .. } = &body.statements[0] {
+                assert_eq!(catch_var, "err");
             } else { panic!("Expected TryCatch"); }
         } else { panic!("Expected Agent"); }
     }
@@ -6370,5 +6456,84 @@ mod tests {
             let stmts = &a.methods[0].body.as_ref().unwrap().statements;
             assert!(matches!(&stmts[0], Statement::Stream(_)));
         } else { panic!("Expected Agent"); }
+    }
+
+    // ===== Wave 28: Empty struct literal + no-struct-literal context =====
+
+    #[test]
+    fn test_wave28_parse_empty_struct_literal() {
+        // Regression: `var sys = SystemAccess {};` used to fail parsing because
+        // `is_struct_literal_ahead` required `Ident :` after `{`.
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    unsafe {
+                        var sys = SystemAccess {};
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "Empty struct literal should parse: {:?}", program.err());
+        if let Item::Agent(a) = &program.unwrap().items[0] {
+            if let Statement::UnsafeBlock(ub) = &a.methods[0].body.as_ref().unwrap().statements[0] {
+                if let Statement::Let { value, .. } = &ub.statements[0] {
+                    assert!(matches!(value, Expression::StructLiteral { fields, .. } if fields.is_empty()));
+                } else { panic!("Expected Let"); }
+            } else { panic!("Expected UnsafeBlock"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_wave28_if_empty_body_is_not_struct_literal() {
+        // `if cond {}` must keep `{}` as the body, not parse `cond {}` as struct literal
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var cond = true;
+                    if cond {}
+                    print "after";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "`if cond {{}}` should parse: {:?}", program.err());
+        if let Item::Agent(a) = &program.unwrap().items[0] {
+            let stmts = &a.methods[0].body.as_ref().unwrap().statements;
+            assert!(matches!(&stmts[1], Statement::If { .. }));
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_wave28_for_in_empty_body_is_not_struct_literal() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var items = [1, 2, 3];
+                    for x in items {}
+                    print "done";
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "`for x in items {{}}` should parse: {:?}", program.err());
+    }
+
+    #[test]
+    fn test_wave28_while_empty_body_is_not_struct_literal() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    var x = false;
+                    while x {}
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "`while x {{}}` should parse: {:?}", program.err());
     }
 }

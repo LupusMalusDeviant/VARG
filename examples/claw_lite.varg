@@ -1,0 +1,215 @@
+/// claw_lite — a tiny CLI agent harness in pure Varg.
+/// Demonstrates Wave 28 system primitives: args(), ANSI colors,
+/// path checks, process spawning, stdin reading.
+///
+/// Usage:
+///   vargc run claw_lite.varg -- doctor
+///   vargc run claw_lite.varg -- exec "echo hello world"
+///   vargc run claw_lite.varg -- colors
+///   vargc run claw_lite.varg -- inspect /tmp
+
+agent ClawLite {
+    public void PrintUsage() {
+        var bold = ansi_bold();
+        var cyan = ansi_color("cyan");
+        var reset = ansi_reset();
+
+        print $"{bold}claw_lite{reset} — tiny CLI agent harness in Varg";
+        print "";
+        print $"{cyan}USAGE{reset}";
+        print "  claw_lite <subcommand> [args...]";
+        print "";
+        print $"{cyan}SUBCOMMANDS{reset}";
+        print "  doctor          Check environment health";
+        print "  exec <cmd>      Spawn a subprocess and stream its stdout";
+        print "  colors          Show all ANSI color codes";
+        print "  inspect <path>  Inspect a filesystem path";
+    }
+
+    public void Doctor() {
+        var bold = ansi_bold();
+        var green = ansi_color("green");
+        var red = ansi_color("red");
+        var yellow = ansi_color("yellow");
+        var reset = ansi_reset();
+
+        print $"{bold}claw_lite doctor{reset}";
+        print "";
+
+        // Check 1: HOME / USERPROFILE env
+        var home = env("HOME");
+        if home == "" {
+            home = env("USERPROFILE");
+        }
+        if home == "" {
+            print $"  {red}FAIL{reset}  no HOME or USERPROFILE in environment";
+        } else {
+            print $"  {green}OK{reset}    home directory: {home}";
+        }
+
+        // Check 2: Does HOME actually exist on disk?
+        if home != "" {
+            if is_dir(home) {
+                print $"  {green}OK{reset}    home is a directory";
+            } else {
+                print $"  {red}FAIL{reset}  home path does not point to a directory";
+            }
+        }
+
+        // Check 3: API key present?
+        var anthropic_key = env("ANTHROPIC_API_KEY");
+        if anthropic_key == "" {
+            print $"  {yellow}WARN{reset}  ANTHROPIC_API_KEY not set (LLM features unavailable)";
+        } else {
+            print $"  {green}OK{reset}    ANTHROPIC_API_KEY is set";
+        }
+
+        // Check 4: current working directory exists
+        var cwd = ".";
+        if is_dir(cwd) {
+            print $"  {green}OK{reset}    cwd is accessible";
+        } else {
+            print $"  {red}FAIL{reset}  cwd is not accessible";
+        }
+
+        print "";
+        print "doctor complete.";
+    }
+
+    public void Colors() {
+        var reset = ansi_reset();
+        var names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white", "gray"];
+
+        print $"{ansi_bold()}ANSI color palette{reset}";
+        print "";
+        for name in names {
+            var color = ansi_color(name);
+            print $"  {color}██{reset} {name}";
+        }
+        print "";
+        print $"  {ansi_bold()}bold text{reset} (no color)";
+    }
+
+    public void Inspect(string path) {
+        var bold = ansi_bold();
+        var cyan = ansi_color("cyan");
+        var reset = ansi_reset();
+
+        print $"{bold}inspecting{reset} {path}";
+        print "";
+
+        if is_dir(path) {
+            print $"  {cyan}type{reset}     directory";
+        } else if is_file(path) {
+            print $"  {cyan}type{reset}     file";
+        } else {
+            print $"  {cyan}type{reset}     does not exist";
+            return;
+        }
+
+        print $"  {cyan}parent{reset}   {path_parent(path)}";
+
+        unsafe {
+            var resolved = path_resolve(path);
+            match resolved {
+                Ok(abs) => { print $"  {cyan}absolute{reset} {abs}"; }
+                Err(e) => { print $"  {cyan}absolute{reset} (error: {e})"; }
+            }
+        }
+    }
+
+    public void Exec(string cmd, SystemAccess sys) {
+        var bold = ansi_bold();
+        var dim = ansi_color("gray");
+        var red = ansi_color("red");
+        var green = ansi_color("green");
+        var reset = ansi_reset();
+
+        print $"{bold}exec{reset} {dim}${reset} {cmd}";
+        print "";
+
+        var spawned = proc_spawn(cmd);
+        match spawned {
+            Err(e) => {
+                print $"{red}spawn failed:{reset} {e}";
+                return;
+            }
+            Ok(handle) => {
+                // Stream stdout line by line
+                var line_count = 0;
+                while true {
+                    var line_result = proc_read_line(handle);
+                    match line_result {
+                        Err(e) => {
+                            print $"{red}read error:{reset} {e}";
+                            break;
+                        }
+                        Ok(line) => {
+                            if line == "" {
+                                break;
+                            }
+                            print $"  {line}";
+                            line_count = line_count + 1;
+                        }
+                    }
+                }
+
+                // Wait for exit
+                var code_result = proc_wait(handle);
+                match code_result {
+                    Err(e) => { print $"{red}wait error:{reset} {e}"; }
+                    Ok(code) => {
+                        var color = green;
+                        if code != 0 {
+                            color = red;
+                        }
+                        print "";
+                        print $"  {color}exit{reset} {code} ({line_count} lines)";
+                    }
+                }
+            }
+        }
+    }
+
+    public void Run() {
+        var argv = args();
+
+        if argv.len() == 0 {
+            self.PrintUsage();
+            return;
+        }
+
+        var subcommand = argv[0];
+
+        if subcommand == "doctor" {
+            self.Doctor();
+            return;
+        }
+        if subcommand == "colors" {
+            self.Colors();
+            return;
+        }
+        if subcommand == "inspect" {
+            if argv.len() < 2 {
+                print "usage: claw_lite inspect <path>";
+                return;
+            }
+            self.Inspect(argv[1]);
+            return;
+        }
+        if subcommand == "exec" {
+            if argv.len() < 2 {
+                print "usage: claw_lite exec <cmd>";
+                return;
+            }
+            unsafe {
+                var sys = SystemAccess {};
+                self.Exec(argv[1], sys);
+            }
+            return;
+        }
+        print $"unknown subcommand: {subcommand}";
+        print "";
+        self.PrintUsage();
+    }
+}

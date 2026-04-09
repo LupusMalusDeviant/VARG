@@ -111,7 +111,7 @@ pub fn __varg_self_improver_stats(improver: &SelfImproverHandle) -> HashMap<Stri
         ("successes".to_string(), si.successes.to_string()),
         ("failures".to_string(), si.failures.to_string()),
         ("success_rate".to_string(), format!("{}%",
-            if si.iterations == 0 { 0 } else { (si.successes * 100 / si.iterations) })),
+            if si.iterations == 0 { 0 } else { si.successes * 100 / si.iterations })),
         ("max_retries".to_string(), si.max_retries.to_string()),
     ])
 }

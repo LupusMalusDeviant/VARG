@@ -9,7 +9,7 @@ use axum::{
     Router,
     body::Body,
     extract::Request,
-    http::{Method, StatusCode},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post, put, delete, patch},
 };

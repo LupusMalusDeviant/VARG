@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_format_expressions() {
-        let mut fmt = VargFormatter::new();
+        let fmt = VargFormatter::new();
         assert_eq!(fmt.format_expression(&Expression::Int(42)), "42");
         assert_eq!(fmt.format_expression(&Expression::String("hello".to_string())), "\"hello\"");
         assert_eq!(fmt.format_expression(&Expression::Bool(true)), "true");

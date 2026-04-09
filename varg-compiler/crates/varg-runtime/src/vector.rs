@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
-use varg_os_types::{Embedding, Tensor};
+use varg_os_types::Tensor;
 
 /// Compute cosine similarity between two tensors
 pub fn __varg_cosine_sim(a: &Tensor, b: &Tensor) -> f32 {
@@ -196,18 +196,72 @@ pub fn __varg_vector_store_count(store: &VectorStoreHandle) -> i64 {
     store.lock().unwrap().entries.len() as i64
 }
 
-/// Create an embedding from text using simple bag-of-characters hash
-/// This is a LOCAL placeholder — real embed() would call an LLM provider
+/// Create an embedding from text.
+/// Uses Gemini embedding-001 API if GEMINI_API_KEY is set, otherwise falls back to local hash.
 pub fn __varg_embed(text: &str) -> Vec<f32> {
-    // Simple deterministic embedding: hash each character position
-    // 64-dimensional embedding for demonstration purposes
+    // Try Gemini embedding-001 API first
+    if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
+        if !api_key.is_empty() {
+            if let Some(embedding) = gemini_embed(text, &api_key) {
+                return embedding;
+            }
+            eprintln!("[EMBED] Gemini API call failed, falling back to local hash");
+        }
+    }
+    // Fallback: deterministic bag-of-characters hash (64-dim)
+    local_embed_fallback(text)
+}
+
+/// Call Gemini embedding-001 API for real semantic embeddings
+fn gemini_embed(text: &str, api_key: &str) -> Option<Vec<f32>> {
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={}",
+        api_key
+    );
+    let body = serde_json::json!({
+        "content": {
+            "parts": [{"text": text}]
+        }
+    });
+    let body_str = body.to_string();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body(body_str)
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        eprintln!("[EMBED] Gemini API returned status: {}", resp.status());
+        return None;
+    }
+    let resp_text = resp.text().ok()?;
+    let json: serde_json::Value = serde_json::from_str(&resp_text).ok()?;
+    let values = json
+        .get("embedding")?
+        .get("values")?
+        .as_array()?;
+    let embedding: Vec<f32> = values
+        .iter()
+        .filter_map(|v: &serde_json::Value| v.as_f64().map(|f| f as f32))
+        .collect();
+    if embedding.is_empty() {
+        return None;
+    }
+    Some(embedding)
+}
+
+/// Local fallback: simple bag-of-characters hash (64-dim, not semantic)
+fn local_embed_fallback(text: &str) -> Vec<f32> {
     let dim = 64;
     let mut vec = vec![0.0f32; dim];
     for (i, ch) in text.chars().enumerate() {
         let idx = (ch as usize + i * 7) % dim;
         vec[idx] += 1.0;
     }
-    // Normalize
     let mag: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
     if mag > 0.0 {
         for v in &mut vec {
