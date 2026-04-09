@@ -19,15 +19,15 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 
 | Metrik | Wert |
 |--------|------|
-| Compiler-Codebase | 22.682 Zeilen Rust |
-| Testsuite | 767 Tests, 0 Fehler |
+| Version | **0.10.0** |
+| Testsuite | 889 Tests, 0 Fehler, 0 Warnungen |
 | Crates | 10 spezialisierte Compiler-Crates |
 | Token-Typen | 119 Lexer-Tokens |
 | AST-Varianten | 25 Statements, 29 Expressions |
-| Builtins | 140+ TypeChecker-Handler, 180+ CodeGen-Handler |
+| Builtins | 150+ TypeChecker-Handler, 190+ CodeGen-Handler |
 | Sicherheit | 5 OCAP-Capability-Typen |
-| Runtime-Module | 18 (Crypto, DB, LLM, Net, Vector, HTTP-Server, SQLite, WebSocket, MCP-Client, MCP-Server, Graph, Memory, Trace, Pipeline, Orchestration, Self-Improve, Encoding, PDF) |
-| Entwicklungswellen | 27 abgeschlossene Wellen |
+| Runtime-Module | 22 (Crypto, DB, LLM, Net, Vector, HTTP-Server, SQLite, WebSocket, MCP-Client, MCP-Server, Graph, Memory, Trace, Pipeline, Orchestration, Self-Improve, Encoding, PDF, Config, Readline, Proc, SSE-Client) |
+| Entwicklungswellen | 29 abgeschlossene Wellen |
 
 ---
 
@@ -70,6 +70,13 @@ vargc run weather.varg
 | Zugaengliche Syntax | Ja | Ja | Ja | - |
 | Retry/Fallback-Syntax | Ja | - | - | - |
 | Prompt als Typ | Ja | - | - | - |
+| Knowledge Graph eingebaut | Ja | - | - | - |
+| Vector Store eingebaut | Ja | - | - | - |
+| Agent Memory (3-Schichten) | Ja | - | - | - |
+| Observability / Tracing | Ja | - | - | - |
+| MCP Server + Client | Ja | - | - | - |
+| Readline/REPL eingebaut | Ja | - | - | - |
+| Platform-Config-Kaskade | Ja | - | - | - |
 
 ---
 
@@ -99,20 +106,40 @@ vargc run weather.varg
 - **Agent Lifecycle** -- `on_start`, `on_stop`, `on_message` Hooks
 - **Agent Messaging** -- `spawn`, `send`, `request` fuer Actor-Model-Kommunikation
 - **Prompt-Templates** -- erstklassiges `prompt`-Keyword
-- **MCP-Schema-Generierung** -- `@[McpTool]`-Annotation erzeugt automatisch Tool-Schemas
-- **Impliziter Kontext** -- `@[WithContext]` fuer automatische Kontext-Propagation
-- **Typisierte Tool-Antworten** -- `@[ToolResponse]` fuer strukturierte LLM-Ausgaben
+- **MCP Client** -- verbinde dich mit MCP-Servern, liste Tools, rufe Tools auf (JSON-RPC ueber Stdio)
+- **MCP Server** -- stelle Agent-Methoden als MCP-Tools fuer andere KI-Systeme bereit
+- **Knowledge Graph** -- eingebettete Graph-Engine mit Knoten, Kanten, Traversal, Queries
+- **Vector Store** -- Text einbetten, Vektoren speichern, Cosine-Similarity-Suche
+- **Agent Memory** -- 3-Schichten-Architektur: Working (Key-Value), Episodic (Vector), Semantic (Graph)
+- **Observability** -- hierarchisches Span-Tracing mit Events, Attributen, JSON-Export
+- **Reactive Pipelines** -- Event Bus (Pub/Sub) + sequentieller Pipeline-Runner
+- **Agent Orchestration** -- Fan-Out/Fan-In Parallelisierung, Task-Queues
+- **Self-Improving Loop** -- Feedback-Tracking, Success/Failure-Recall via Similarity-Suche
 - **LLM-Provider-Abstraktion** -- OpenAI, Anthropic, Ollama mit einheitlicher API
 
-### Standardbibliothek (77+ Builtins)
+### Standardbibliothek (150+ Builtins)
 - **Strings** -- `split`, `contains`, `starts_with`, `ends_with`, `replace`, `trim`, `to_upper`, `to_lower`, `substring`, `index_of`, `pad_left`, `pad_right`, `chars`, `reverse`, `repeat`
 - **Collections** -- `push`, `pop`, `len`, `filter`, `map`, `find`, `any`, `all`, `sort`, `contains`, `remove`, `keys`, `values`
 - **Datei-I/O** -- `fs_read`, `fs_write`, `fs_append`, `fs_read_lines`, `fs_read_dir`
-- **HTTP** -- `fetch` (GET/POST/PUT/DELETE), `http_request` (mit Status, Headers)
+- **Binaere I/O** -- `fs_read_bytes`, `fs_write_bytes`, `fs_append_bytes`, `fs_size`
+- **Config + Platform-Dirs** -- `home_dir`, `config_dir`, `data_dir`, `cache_dir`, `config_load_cascade` (Deep-JSON-Merge ueber mehrere Quellen)
+- **REPL / Readline** -- `readline_new`, `readline_read`, `readline_add_history`, `readline_load_history`, `readline_save_history` (rustyline-basierter Line-Editor)
+- **HTTP Client** -- `fetch` (GET/POST/PUT/DELETE), `http_request` (mit Status, Headers)
+- **HTTP Server** -- `http_serve`, `http_route`, `http_listen` (echter axum-basierter Async-Server)
+- **Datenbank** -- `db_open`, `db_execute`, `db_query` (echtes SQLite via rusqlite, gebundelt)
+- **WebSocket** -- `ws_connect`, `ws_send`, `ws_receive`, `ws_close` (echter tungstenite)
+- **SSE Streaming** -- `sse_connect`, `sse_read`, `sse_close` (Streaming-LLM-Antworten)
+- **Prozess-Management** -- `proc_spawn`, `proc_wait`, `proc_kill`, `proc_status`
+- **MCP Client** -- `mcp_connect`, `mcp_list_tools`, `mcp_call_tool`, `mcp_disconnect`
+- **MCP Server** -- `mcp_server_new`, `mcp_server_register`, `mcp_server_run`
+- **Knowledge Graph** -- `graph_open`, `graph_add_node`, `graph_add_edge`, `graph_query`, `graph_traverse`, `graph_neighbors`
+- **Vector Store** -- `embed`, `vector_store_open`, `vector_store_upsert`, `vector_store_search`, `vector_store_delete`, `vector_store_count`
+- **Agent Memory** -- `memory_open`, `memory_set`, `memory_get`, `memory_store`, `memory_recall`, `memory_add_fact`, `memory_query_facts`
+- **Tracing** -- `trace_start`, `trace_span`, `trace_end`, `trace_error`, `trace_event`, `trace_set_attr`, `trace_export`
 - **JSON** -- `json_parse`, `json_get`, `json_get_int`, `json_get_bool`, `json_get_array`, `json_stringify`
+- **Base64 + PDF** -- `base64_encode`, `base64_decode`, `pdf_create`, `pdf_add_section`, `pdf_add_text`, `pdf_save`
 - **Shell** -- `exec`, `exec_status`
 - **Datum/Zeit** -- `time_millis`, `time_format`, `time_parse`, `time_add`, `time_diff`
-- **Regex** -- `regex_match`, `regex_find_all`, `regex_replace`
 - **Kryptographie** -- `encrypt`, `decrypt`
 - **Logging** -- `log_debug`, `log_info`, `log_warn`, `log_error`
 - **Mathematik** -- `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `parse_int`, `parse_float`
@@ -169,7 +196,7 @@ agent SecureAgent {
 Der einfachste Weg, Varg zu nutzen, ist das Herunterladen der vorkompilierten Programmdatei:
 
 1. Gehe zur [Releases](../../releases)-Seite.
-2. Lade `varg-v0.9.0-windows-x64.zip` herunter.
+2. Lade die neueste `varg-v0.10.0-windows-x64.zip` herunter.
 3. Entpacke `vargc.exe` und lege sie irgendwo in deinen System-`PATH` ab.
 4. Fertig! Los geht's.
 ---
@@ -237,33 +264,23 @@ Siehe das [`examples/`](examples/)-Verzeichnis:
 | [`api_client.varg`](examples/api_client.varg) | HTTP-Anfragen mit Retry/Fallback und JSON-Parsing |
 | [`data_pipeline.varg`](examples/data_pipeline.varg) | Iteratoren, Enums, Maps, Sets, Pattern Matching |
 | [`chat_agent.varg`](examples/chat_agent.varg) | Multi-Agent-System mit spawn, send, on_message |
+| [`knowledge_graph.varg`](examples/knowledge_graph.varg) | Graph-Knoten, Kanten, Traversal, Queries |
+| [`vector_store.varg`](examples/vector_store.varg) | Text-Embedding, Vector-Upsert, Similarity-Suche |
+| [`agent_memory.varg`](examples/agent_memory.varg) | 3-Schichten-Memory: Working, Episodic, Semantic |
+| [`tracing.varg`](examples/tracing.varg) | Span-basiertes Tracing mit Events und JSON-Export |
+| [`claw_lite.varg`](examples/claw_lite.varg) | REPL-artiger CLI-Agent mit doctor/colors/inspect/exec Subkommandos |
+| [`wave29_bytes.varg`](examples/wave29_bytes.varg) | Binaere Datei-I/O: lesen, schreiben, anhaengen, Groesse |
 
 ---
 
-## Compiler-Architektur
-
-```
-varg-compiler/crates/             22.682 LOC gesamt
-  varg-ast/          683 LOC      Token-Definitionen (119 Typen, Logos) + AST (25 Stmt, 28 Expr)
-  varg-lexer/        403 LOC      Tokenisierung (29 Tests)
-  varg-parser/     5.965 LOC      Recursive-Descent-Parser (164 Tests)
-  varg-typechecker/6.398 LOC      Semantische Analyse + OCAP-Enforcement (190 Tests)
-  varg-codegen/    5.775 LOC      AST -> Rust-Code-Generierung (193 Tests)
-  vargc/           1.962 LOC      CLI-Treiber (build/run/emit-rs/test/watch)
-  varg-os-types/      91 LOC      Native Typen: Prompt, Context, Tensor, Embedding
-  varg-runtime/      749 LOC      Runtime-Bibliothek (Crypto, Net, DB, LLM, Vector)
-  varg-lsp/          641 LOC      Language Server Protocol (Diagnosen, Hover, Completion)
-  varg-playground/    15 LOC      Ausfuehrungs-Sandbox
-```
-
-### Kompilierungs-Pipeline
+## Kompilierungs-Pipeline
 
 ```
   .varg Quellcode
       |
-  [1] Lexer (Logos)        -- Tokenisierung in 119 Token-Typen
+  [1] Lexer (Logos)         -- Tokenisierung in 119 Token-Typen
       |
-  [2] Parser               -- Recursive Descent -> typisierter AST
+  [2] Parser                -- Recursive Descent -> typisierter AST
       |
   [3] TypeChecker           -- Semantische Analyse, Typinferenz, OCAP-Validierung
       |
@@ -276,21 +293,24 @@ varg-compiler/crates/             22.682 LOC gesamt
 
 ## Testsuite
 
-577 Tests ueber 5 Kern-Crates, alle bestanden:
+889 Tests ueber alle Crates, alle bestanden, null Warnungen:
 
 ```bash
 cd varg-compiler
-cargo test --lib -p varg-ast -p varg-lexer -p varg-parser -p varg-typechecker -p varg-codegen
+cargo test
 ```
 
 | Crate | Tests | Abdeckung |
 |-------|------:|-----------|
 | varg-ast | 1 | AST-Konstruktion |
 | varg-lexer | 29 | Alle Token-Typen, Randfaelle |
-| varg-parser | 164 | Jede Statement/Expression-Variante |
-| varg-typechecker | 190 | Typinferenz, OCAP, Fehlerpfade |
-| varg-codegen | 193 | End-to-End Rust-Generierung, Kompilierung |
-| **Gesamt** | **577** | **0 Fehler** |
+| varg-parser | 183 | Jede Statement/Expression-Variante, Ternary, Braceless if/while/catch, leere Struct-Literals |
+| varg-typechecker | 250 | Typinferenz, OCAP, DI, alle 150+ Builtins |
+| varg-codegen | 256 | Rust-Generierung, alle Runtime-Module, Index-Precedence, fs_*-Borrowing |
+| varg-runtime | 141 | Echtes HTTP/SQLite/WS/MCP + graph, vector, memory, trace, pipeline, orchestration, self-improve, config, readline, proc |
+| varg-lsp | 11 | Diagnosen, Hover, Completion |
+| vargc | 18 | CLI-Treiber, Formatter, REPL |
+| **Gesamt** | **889** | **0 Fehler, 0 Warnungen** |
 
 ---
 
@@ -303,8 +323,8 @@ Project X/
   REFERENCE.md            Vollstaendige Sprachreferenz
   VARG_AGENT_GUIDE.md     Anleitung/Prompt fuer KI-Agenten
   docs/                   Bilder und Assets
-  examples/               5 Beispielprogramme
-  varg-compiler/          Rust Workspace (10 Crates, 22.682 LOC)
+  examples/               11 Beispielprogramme
+  varg-compiler/          Rust Workspace (10 Crates)
   varg-vscode/            VS Code Extension (Syntax Highlighting)
 ```
 
@@ -313,9 +333,11 @@ Project X/
 ## Status
 
 Varg wird aktiv entwickelt. Der Compiler ist funktionsfaehig und erzeugt lauffaehige native Binaries.
-16 Entwicklungswellen abgeschlossen, 577 Tests bestanden.
+**Aktuelles Release: v0.10.0** -- 29 Entwicklungswellen abgeschlossen, 889 Tests bestanden, null Warnungen.
 
-Die Sprache eignet sich fuer den Bau von echten Agenten, CLI-Tools, API-Clients und Automatisierungsskripten.
+Die Sprache eignet sich fuer den Bau von echten Agenten, CLI-Tools, API-Clients, Web-Servern,
+Knowledge-Graph-gestuetzten RAG-Systemen, Multi-Agent-Orchestration-Pipelines und REPL-getriebenen
+Agent-Frontends (wie ein Claude-Code-artiges Terminal-UI).
 
 ---
 
