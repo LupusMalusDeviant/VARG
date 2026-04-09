@@ -811,8 +811,9 @@ impl RustGenerator {
                         let val_str = self.gen_expression(value);
                         out.push_str(&format!("{}{{ let __v = {}; {}.insert({}.clone(), __v); }}\n", indent, val_str, self.gen_expression(target), idx_str));
                     } else {
-                        // Array index assign
-                        out.push_str(&format!("{}{}[{} as usize] = {};\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
+                        // Array index assign. Parenthesize index to keep `arr[len - 1]`
+                        // from being parsed as `len - (1 as usize)`.
+                        out.push_str(&format!("{}{}[({}) as usize] = {};\n", indent, self.gen_expression(target), idx_str, self.gen_expression(value)));
                     }
                 },
                 Statement::PropertyAssign { target, property, value } => {
@@ -1251,7 +1252,9 @@ impl RustGenerator {
                     } else {
                         self.gen_expression(caller)
                     };
-                    format!("{}.len() as i64", target)
+                    // Parens are required so that `len() as i64 < N` does not get
+                    // parsed by rustc as the start of a turbofish (`i64<...>`).
+                    format!("({}.len() as i64)", target)
                 } else if method_name == "contains" {
                     format!("{}.contains(&{})", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "starts_with" {
@@ -1354,21 +1357,54 @@ impl RustGenerator {
                 } else if method_name == "env" {
                     format!("std::env::var({}).unwrap_or_default()", arg_strs[0])
                 // ===== Wave 13/14: Stdlib Expansion — fs (Result-based) =====
+                // Wave 29: Borrow path arguments (`&{}`) so String variables
+                // aren't consumed by the first fs_* call.
                 } else if method_name == "fs_read" {
-                    format!("std::fs::read_to_string({}).map_err(|e| e.to_string())", arg_strs[0])
+                    format!("std::fs::read_to_string(&{}).map_err(|e| e.to_string())", arg_strs[0])
                 } else if method_name == "fs_write" {
-                    format!("std::fs::write({}, {}).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
+                    format!("std::fs::write(&{}, &{}).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
                 } else if method_name == "fs_read_dir" {
-                    format!("std::fs::read_dir({}).map_err(|e| e.to_string()).map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.path().to_string_lossy().to_string()).collect::<Vec<String>>())", arg_strs[0])
+                    format!("std::fs::read_dir(&{}).map_err(|e| e.to_string()).map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.path().to_string_lossy().to_string()).collect::<Vec<String>>())", arg_strs[0])
                 } else if method_name == "create_dir" {
-                    format!("std::fs::create_dir_all({}).map_err(|e| e.to_string())", arg_strs[0])
+                    format!("std::fs::create_dir_all(&{}).map_err(|e| e.to_string())", arg_strs[0])
                 } else if method_name == "delete_file" {
-                    format!("std::fs::remove_file({}).map_err(|e| e.to_string())", arg_strs[0])
+                    format!("std::fs::remove_file(&{}).map_err(|e| e.to_string())", arg_strs[0])
+                // ===== Wave 29: Binary I/O =====
+                } else if method_name == "fs_read_bytes" {
+                    format!("std::fs::read(&{}).map(|v| v.into_iter().map(|b| b as i64).collect::<Vec<i64>>()).map_err(|e| e.to_string())", arg_strs[0])
+                } else if method_name == "fs_write_bytes" {
+                    format!("{{ let __varg_bytes: Vec<u8> = {}.iter().map(|b: &i64| *b as u8).collect(); std::fs::write(&{}, &__varg_bytes).map(|_| __varg_bytes.len() as i64).map_err(|e| e.to_string()) }}", arg_strs[1], arg_strs[0])
+                } else if method_name == "fs_append_bytes" {
+                    format!("{{ let __varg_bytes: Vec<u8> = {}.iter().map(|b: &i64| *b as u8).collect(); std::fs::OpenOptions::new().append(true).create(true).open(&{}).and_then(|mut f| {{ use std::io::Write; f.write_all(&__varg_bytes).map(|_| __varg_bytes.len() as i64) }}).map_err(|e| e.to_string()) }}", arg_strs[1], arg_strs[0])
+                } else if method_name == "fs_size" {
+                    format!("std::fs::metadata(&{}).map(|m| m.len() as i64).map_err(|e| e.to_string())", arg_strs[0])
+                // ===== Wave 29: Config Cascade + Platform Dirs =====
+                } else if method_name == "home_dir" {
+                    "varg_runtime::config::__varg_home_dir()".to_string()
+                } else if method_name == "config_dir" {
+                    "varg_runtime::config::__varg_config_dir()".to_string()
+                } else if method_name == "data_dir" {
+                    "varg_runtime::config::__varg_data_dir()".to_string()
+                } else if method_name == "cache_dir" {
+                    "varg_runtime::config::__varg_cache_dir()".to_string()
+                } else if method_name == "config_load_cascade" {
+                    format!("varg_runtime::config::__varg_config_load_cascade(&{})", arg_strs[0])
+                // ===== Wave 29: Readline / REPL =====
+                } else if method_name == "readline_new" {
+                    "varg_runtime::readline::__varg_readline_new()".to_string()
+                } else if method_name == "readline_read" {
+                    format!("varg_runtime::readline::__varg_readline_read(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "readline_add_history" {
+                    format!("varg_runtime::readline::__varg_readline_add_history(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "readline_load_history" {
+                    format!("varg_runtime::readline::__varg_readline_load_history(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "readline_save_history" {
+                    format!("varg_runtime::readline::__varg_readline_save_history(&{}, &{})", arg_strs[0], arg_strs[1])
                 // ===== Wave 15: fs_append + fs_read_lines =====
                 } else if method_name == "fs_append" {
-                    format!("std::fs::OpenOptions::new().append(true).create(true).open({}).and_then(|mut f| std::io::Write::write_all(&mut f, {}.as_bytes())).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
+                    format!("std::fs::OpenOptions::new().append(true).create(true).open(&{}).and_then(|mut f| std::io::Write::write_all(&mut f, {}.as_bytes())).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
                 } else if method_name == "fs_read_lines" {
-                    format!("std::fs::read_to_string({}).map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>()).map_err(|e| e.to_string())", arg_strs[0])
+                    format!("std::fs::read_to_string(&{}).map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>()).map_err(|e| e.to_string())", arg_strs[0])
                 // ===== Wave 15: Shell Command Execution =====
                 } else if method_name == "exec" {
                     format!("std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", &{}] }} else {{ vec![\"-c\", &{}] }}).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[0])
@@ -1427,6 +1463,57 @@ impl RustGenerator {
                     format!("regex::Regex::new(&{}).map(|r| r.find_iter(&{}).map(|m| m.as_str().to_string()).collect::<Vec<String>>()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
                 } else if method_name == "regex_replace" {
                     format!("regex::Regex::new(&{}).map(|r| r.replace_all(&{}, {}).to_string()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1], arg_strs[2])
+                // ===== Wave 28: System Primitives =====
+                } else if method_name == "args" {
+                    "std::env::args().skip(1).collect::<Vec<String>>()".to_string()
+                } else if method_name == "stdin_read_line" {
+                    "{ let mut __varg_line = String::new(); std::io::stdin().read_line(&mut __varg_line).map(|_| __varg_line.trim_end_matches(|c| c == '\\n' || c == '\\r').to_string()).map_err(|e| e.to_string()) }".to_string()
+                } else if method_name == "stdin_read" {
+                    "{ use std::io::Read; let mut __varg_buf = String::new(); std::io::stdin().read_to_string(&mut __varg_buf).map(|_| __varg_buf).map_err(|e| e.to_string()) }".to_string()
+                } else if method_name == "is_dir" {
+                    format!("std::path::Path::new(&{}).is_dir()", arg_strs[0])
+                } else if method_name == "is_file" {
+                    format!("std::path::Path::new(&{}).is_file()", arg_strs[0])
+                } else if method_name == "path_resolve" {
+                    format!("std::fs::canonicalize(&{}).map(|p| p.to_string_lossy().to_string()).map_err(|e| e.to_string())", arg_strs[0])
+                } else if method_name == "fs_copy" {
+                    format!("std::fs::copy(&{}, &{}).map(|n| n as i64).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
+                } else if method_name == "fs_rename" {
+                    format!("std::fs::rename(&{}, &{}).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
+                } else if method_name == "ansi_color" {
+                    format!("(match {}.as_str() {{ \"black\" => \"\\x1b[30m\", \"red\" => \"\\x1b[31m\", \"green\" => \"\\x1b[32m\", \"yellow\" => \"\\x1b[33m\", \"blue\" => \"\\x1b[34m\", \"magenta\" => \"\\x1b[35m\", \"cyan\" => \"\\x1b[36m\", \"white\" => \"\\x1b[37m\", \"gray\" | \"grey\" => \"\\x1b[90m\", _ => \"\" }}).to_string()", arg_strs[0])
+                } else if method_name == "ansi_bold" {
+                    "\"\\x1b[1m\".to_string()".to_string()
+                } else if method_name == "ansi_reset" {
+                    "\"\\x1b[0m\".to_string()".to_string()
+                // ===== Wave 28 Batch 2: SSE Client =====
+                } else if method_name == "sse_client_connect" {
+                    format!("varg_runtime::sse_client::__varg_sse_client_connect(&{}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "sse_client_post" {
+                    format!("varg_runtime::sse_client::__varg_sse_client_post(&{}, {}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "sse_client_next" {
+                    format!("varg_runtime::sse_client::__varg_sse_client_next(&{})", arg_strs[0])
+                } else if method_name == "sse_client_close" {
+                    format!("varg_runtime::sse_client::__varg_sse_client_close(&{})", arg_strs[0])
+                // ===== Wave 28 Batch 2: Process Management =====
+                } else if method_name == "proc_spawn" {
+                    format!("varg_runtime::proc::__varg_proc_spawn(&{})", arg_strs[0])
+                } else if method_name == "proc_spawn_args" {
+                    format!("varg_runtime::proc::__varg_proc_spawn_args(&{}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "proc_write_stdin" {
+                    format!("varg_runtime::proc::__varg_proc_write_stdin(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "proc_close_stdin" {
+                    format!("varg_runtime::proc::__varg_proc_close_stdin(&{})", arg_strs[0])
+                } else if method_name == "proc_read_line" {
+                    format!("varg_runtime::proc::__varg_proc_read_line(&{})", arg_strs[0])
+                } else if method_name == "proc_wait" {
+                    format!("varg_runtime::proc::__varg_proc_wait(&{})", arg_strs[0])
+                } else if method_name == "proc_kill" {
+                    format!("varg_runtime::proc::__varg_proc_kill(&{})", arg_strs[0])
+                } else if method_name == "proc_is_alive" {
+                    format!("varg_runtime::proc::__varg_proc_is_alive(&{})", arg_strs[0])
+                } else if method_name == "proc_pid" {
+                    format!("varg_runtime::proc::__varg_proc_pid(&{})", arg_strs[0])
                 // ===== Wave 13: Stdlib Expansion — time =====
                 } else if method_name == "sleep" {
                     format!("std::thread::sleep(std::time::Duration::from_millis({} as u64))", arg_strs[0])
@@ -1693,8 +1780,12 @@ impl RustGenerator {
                 if is_map {
                     format!("{}.get(&{}).unwrap().clone()", self.gen_expression(caller), idx_str)
                 } else {
-                    // .clone() ensures String elements from Vec<String> are properly copied
-                    format!("{}[{} as usize].clone()", self.gen_expression(caller), idx_str)
+                    // .clone() ensures String elements from Vec<String> are properly copied.
+                    // Wave 29: parenthesize the index expression so binary ops like
+                    // `arr[len - 1]` don't get tangled by `as` precedence:
+                    // `arr[len - 1 as usize]` is `len - (1 as usize)`, which fails
+                    // to type-check. `arr[(len - 1) as usize]` is correct.
+                    format!("{}[({}) as usize].clone()", self.gen_expression(caller), idx_str)
                 }
             },
             Expression::ArrayLiteral(elements) => {
@@ -2370,7 +2461,7 @@ mod tests {
     #[test]
     fn test_codegen_all_type_mappings() {
         // Test that all Varg types map to correct Rust types
-        let mut gen = RustGenerator::new();
+        let gen = RustGenerator::new();
         assert_eq!(gen.gen_type(&TypeNode::Int), "i64");
         assert_eq!(gen.gen_type(&TypeNode::Ulong), "u64");
         assert_eq!(gen.gen_type(&TypeNode::String), "String");
@@ -2491,7 +2582,7 @@ mod tests {
 
     #[test]
     fn test_codegen_capability_type_mapping() {
-        let mut gen = RustGenerator::new();
+        let gen = RustGenerator::new();
         assert_eq!(gen.gen_type(&TypeNode::Capability(CapabilityType::NetworkAccess)), "NetworkAccess");
         assert_eq!(gen.gen_type(&TypeNode::Capability(CapabilityType::FileAccess)), "FileAccess");
         assert_eq!(gen.gen_type(&TypeNode::Capability(CapabilityType::DbAccess)), "DbAccess");
@@ -2649,7 +2740,7 @@ mod tests {
 
     #[test]
     fn test_codegen_func_type_mapping() {
-        let mut gen = RustGenerator::new();
+        let gen = RustGenerator::new();
         let func_ty = TypeNode::Func(vec![TypeNode::Int, TypeNode::String], Box::new(TypeNode::Bool));
         assert_eq!(gen.gen_type(&func_ty), "Box<dyn Fn(i64, String) -> bool>");
     }
@@ -2777,7 +2868,39 @@ mod tests {
             caller: Box::new(Expression::Identifier("arr".to_string())),
             index: Box::new(Expression::Int(0)),
         };
-        assert_eq!(gen.gen_expression(&expr), "arr[0 as usize].clone()");
+        assert_eq!(gen.gen_expression(&expr), "arr[(0) as usize].clone()");
+    }
+
+    #[test]
+    fn test_wave29_codegen_index_access_binop_precedence() {
+        // Wave 29: `arr[len - 1]` must parenthesize the index before `as usize`.
+        // Previously produced `arr[len - 1 as usize]` which is `len - (1 as usize)`
+        // and fails to type-check (i64 vs usize).
+        let mut gen = RustGenerator::new();
+        let expr = Expression::IndexAccess {
+            caller: Box::new(Expression::Identifier("arr".to_string())),
+            index: Box::new(Expression::BinaryOp {
+                operator: BinaryOperator::Sub,
+                left: Box::new(Expression::Identifier("len".to_string())),
+                right: Box::new(Expression::Int(1)),
+            }),
+        };
+        let out = gen.gen_expression(&expr);
+        assert!(out.contains("(len - 1) as usize"), "expected parenthesized index, got: {}", out);
+    }
+
+    #[test]
+    fn test_wave29_codegen_fs_write_borrows_path() {
+        // Wave 29: fs_* codegen must borrow the path argument so the caller's
+        // String is not moved. Previously `std::fs::write(path, ...)` consumed path.
+        let mut gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_write".to_string(),
+            args: vec![Expression::Identifier("path".to_string()), Expression::String("data".to_string())],
+        };
+        let out = gen.gen_expression(&expr);
+        assert!(out.contains("std::fs::write(&path"), "fs_write must borrow path: {}", out);
     }
 
     #[test]
@@ -2788,7 +2911,7 @@ mod tests {
             index: Box::new(Expression::Identifier("key".to_string())),
         };
         // Identifier index on non-map → array access with clone
-        assert_eq!(gen.gen_expression(&expr), "map[key as usize].clone()");
+        assert_eq!(gen.gen_expression(&expr), "map[(key) as usize].clone()");
     }
 
     #[test]
@@ -3122,7 +3245,9 @@ mod tests {
             method_name: "len".to_string(),
             args: vec![],
         };
-        assert_eq!(gen.gen_expression(&expr), "s.len() as i64");
+        // Wave 28 fix: parens required so `len() as i64 < N` doesn't parse
+        // as a turbofish (i64<...>) on the rustc side.
+        assert_eq!(gen.gen_expression(&expr), "(s.len() as i64)");
     }
 
     #[test]
@@ -3171,7 +3296,7 @@ mod tests {
             method_name: "len".to_string(),
             args: vec![],
         };
-        assert_eq!(gen.gen_expression(&expr), "arr.len() as i64");
+        assert_eq!(gen.gen_expression(&expr), "(arr.len() as i64)");
     }
 
     #[test]
@@ -3338,7 +3463,7 @@ mod tests {
                 value: Expression::Int(42) },
         ]};
         let code = gen.gen_block(&block, 1);
-        assert!(code.contains("arr[0 as usize] = 42;"));
+        assert!(code.contains("arr[(0) as usize] = 42;"));
     }
 
     #[test]
@@ -6213,7 +6338,7 @@ mod tests {
 
     #[test]
     fn test_codegen_json_value_type() {
-        let mut gen = RustGenerator::new();
+        let gen = RustGenerator::new();
         let ty = gen.gen_type(&TypeNode::JsonValue);
         assert_eq!(ty, "serde_json::Value");
     }
@@ -6487,5 +6612,506 @@ mod tests {
         assert!(code.contains("println!(\"[INFO]"), "log_info: {}", code);
         assert!(code.contains("eprintln!(\"[WARN]"), "log_warn: {}", code);
         assert!(code.contains("eprintln!(\"[ERROR]"), "log_error: {}", code);
+    }
+
+    // ===== Wave 28: System Primitives Codegen Tests =====
+
+    #[test]
+    fn test_codegen_wave28_args() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "args".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("std::env::args()"), "args should use env::args: {}", code);
+        assert!(code.contains("skip(1)"), "args should skip program name: {}", code);
+        assert!(code.contains("Vec<String>"), "args should produce Vec<String>: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_stdin_read_line() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "stdin_read_line".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("std::io::stdin()"), "stdin_read_line should use stdin: {}", code);
+        assert!(code.contains("read_line"), "stdin_read_line should call read_line: {}", code);
+        assert!(code.contains("map_err"), "stdin_read_line should return Result: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_stdin_read() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "stdin_read".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("read_to_string"), "stdin_read should call read_to_string: {}", code);
+        assert!(code.contains("map_err"), "stdin_read should return Result: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_is_dir() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "is_dir".to_string(),
+            args: vec![Expression::String("/tmp".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("Path::new"), "is_dir should use Path::new: {}", code);
+        assert!(code.contains("is_dir"), "is_dir should call .is_dir(): {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_is_file() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "is_file".to_string(),
+            args: vec![Expression::String("/tmp/x".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("Path::new"), "is_file should use Path::new: {}", code);
+        assert!(code.contains("is_file"), "is_file should call .is_file(): {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_path_resolve() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "path_resolve".to_string(),
+            args: vec![Expression::String("./foo".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("canonicalize"), "path_resolve should use canonicalize: {}", code);
+        assert!(code.contains("map_err"), "path_resolve should return Result: {}", code);
+        assert!(!code.contains("unwrap"), "path_resolve must NOT unwrap: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_fs_copy() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_copy".to_string(),
+            args: vec![Expression::String("a".to_string()), Expression::String("b".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("std::fs::copy"), "fs_copy should use std::fs::copy: {}", code);
+        assert!(code.contains("map_err"), "fs_copy should return Result: {}", code);
+        assert!(!code.contains("unwrap"), "fs_copy must NOT unwrap: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_fs_rename() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_rename".to_string(),
+            args: vec![Expression::String("a".to_string()), Expression::String("b".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("std::fs::rename"), "fs_rename should use std::fs::rename: {}", code);
+        assert!(code.contains("map_err"), "fs_rename should return Result: {}", code);
+        assert!(!code.contains("unwrap"), "fs_rename must NOT unwrap: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_ansi_color() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "ansi_color".to_string(),
+            args: vec![Expression::String("red".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("\\x1b[31m"), "ansi_color should produce escape codes: {}", code);
+        assert!(code.contains("match"), "ansi_color should use match: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_ansi_bold() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "ansi_bold".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("\\x1b[1m"), "ansi_bold should be ESC[1m: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28_ansi_reset() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "ansi_reset".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("\\x1b[0m"), "ansi_reset should be ESC[0m: {}", code);
+    }
+
+    // ===== Wave 28 Batch 2: SSE Client + Process Management Codegen Tests =====
+
+    #[test]
+    fn test_codegen_wave28b_sse_client_connect() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_connect".to_string(),
+            args: vec![
+                Expression::String("https://api/stream".to_string()),
+                Expression::Identifier("headers".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_sse_client_connect"), "should call runtime: {}", code);
+        assert!(code.contains("sse_client::"), "should use sse_client module: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_sse_client_post() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_post".to_string(),
+            args: vec![
+                Expression::String("https://api".to_string()),
+                Expression::Identifier("h".to_string()),
+                Expression::String("{}".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_sse_client_post"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_sse_client_next() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_next".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_sse_client_next"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_sse_client_close() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "sse_client_close".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_sse_client_close"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_proc_spawn() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_spawn".to_string(),
+            args: vec![Expression::String("echo hi".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_proc_spawn"), "should call runtime: {}", code);
+        assert!(code.contains("proc::"), "should use proc module: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_proc_spawn_args() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_spawn_args".to_string(),
+            args: vec![
+                Expression::String("python".to_string()),
+                Expression::Identifier("argv".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_proc_spawn_args"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_proc_write_stdin() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_write_stdin".to_string(),
+            args: vec![
+                Expression::Identifier("handle".to_string()),
+                Expression::String("data".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_proc_write_stdin"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_proc_read_line() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_read_line".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_proc_read_line"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_proc_wait() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_wait".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_proc_wait"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_proc_kill() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_kill".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_proc_kill"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_proc_is_alive() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_is_alive".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_proc_is_alive"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave28b_proc_pid() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "proc_pid".to_string(),
+            args: vec![Expression::Identifier("handle".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_proc_pid"), "should call runtime: {}", code);
+    }
+
+    // ===== Wave 29: Binary I/O codegen tests =====
+
+    #[test]
+    fn test_codegen_wave29_fs_read_bytes() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_read_bytes".to_string(),
+            args: vec![Expression::String("/tmp/x.bin".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("std::fs::read"), "should call std::fs::read: {}", code);
+        assert!(code.contains("as i64"), "should cast bytes to i64: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_fs_write_bytes() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_write_bytes".to_string(),
+            args: vec![
+                Expression::String("/tmp/x.bin".to_string()),
+                Expression::Identifier("data".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("std::fs::write"), "should call std::fs::write: {}", code);
+        assert!(code.contains("as u8"), "should cast i64 to u8: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_fs_append_bytes() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_append_bytes".to_string(),
+            args: vec![
+                Expression::String("/tmp/log.bin".to_string()),
+                Expression::Identifier("data".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("OpenOptions"), "should use OpenOptions: {}", code);
+        assert!(code.contains("append(true)"), "should set append mode: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_fs_size() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "fs_size".to_string(),
+            args: vec![Expression::String("/tmp/x.bin".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("std::fs::metadata"), "should call metadata: {}", code);
+        assert!(code.contains(".len()"), "should read .len(): {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_home_dir() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "home_dir".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_home_dir"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_config_dir() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "config_dir".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_config_dir"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_data_dir() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "data_dir".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_data_dir"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_cache_dir() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "cache_dir".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_cache_dir"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_config_load_cascade() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "config_load_cascade".to_string(),
+            args: vec![Expression::Identifier("paths".to_string())],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_config_load_cascade"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_readline_new() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_new".to_string(),
+            args: vec![],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_readline_new"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_readline_read() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_read".to_string(),
+            args: vec![
+                Expression::Identifier("ed".to_string()),
+                Expression::String("> ".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_readline_read"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_readline_add_history() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_add_history".to_string(),
+            args: vec![
+                Expression::Identifier("ed".to_string()),
+                Expression::String("ls".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_readline_add_history"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_readline_load_history() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_load_history".to_string(),
+            args: vec![
+                Expression::Identifier("ed".to_string()),
+                Expression::String("/tmp/hist".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_readline_load_history"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_wave29_readline_save_history() {
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "readline_save_history".to_string(),
+            args: vec![
+                Expression::Identifier("ed".to_string()),
+                Expression::String("/tmp/hist".to_string()),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("__varg_readline_save_history"), "should call runtime: {}", code);
     }
 }

@@ -13,7 +13,7 @@
 //   ANTHROPIC_API_KEY   - Required for Anthropic provider
 
 use varg_os_types::Context;
-use crate::net::{__varg_fetch, __varg_fetch_stream};
+use crate::net::__varg_fetch;
 use std::collections::HashMap;
 
 // ─── Provider Detection ───────────────────────────────────────────────

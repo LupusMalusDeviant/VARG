@@ -20,3 +20,7 @@ tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tungstenite = { version = "0.24", features = ["native-tls"] }
 printpdf = "0.7"
+# Wave 29: Platform-specific directories for config cascade
+dirs = "5.0"
+# Wave 29: Line editing / REPL primitives
+rustyline = "14.0"

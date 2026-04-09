@@ -22,6 +22,10 @@ pub mod orchestration; // Wave 25: Agent Orchestration
 pub mod self_improve;  // Wave 26: Self-Improving Loop
 pub mod encoding;      // Wave 27: Base64 Encoding/Decoding
 pub mod pdf;           // Wave 27: PDF Generation
+pub mod sse_client;    // Wave 28: SSE Client (streaming LLM responses)
+pub mod proc;          // Wave 28: Process Management (spawn/wait/kill)
+pub mod config;        // Wave 29: Platform dirs + JSON config cascade
+pub mod readline;      // Wave 29: Readline / REPL primitives (rustyline)
 
 // Re-export everything so generated code can use `use varg_runtime::*;`
 pub use crypto::*;
@@ -42,3 +46,7 @@ pub use orchestration::*;
 pub use self_improve::*;
 pub use encoding::*;
 pub use pdf::*;
+pub use sse_client::*;
+pub use proc::*;
+pub use config::*;
+pub use readline::*;

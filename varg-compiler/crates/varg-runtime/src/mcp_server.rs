@@ -4,7 +4,6 @@
 // Implements JSON-RPC over stdio (standard MCP transport).
 // Tools are registered with name, description, and a handler function.
 
-use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};
 

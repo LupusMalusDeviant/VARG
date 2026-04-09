@@ -1,0 +1,31 @@
+/// Wave 29 end-to-end smoke test for binary I/O.
+/// Also exercises the two codegen fixes that used to break this file:
+///   (1) Using `path` as a String variable across multiple fs_* calls
+///       (the first call used to MOVE the String).
+///   (2) Indexing with `arr[arr.len() - 1]` (the `- 1 as usize` precedence bug).
+agent BytesTest {
+    public void Run() {
+        unsafe {
+            var cap = FileAccess {};
+            var path = "target/wave29_test.bin";
+
+            var bytes = [72, 101, 108, 108, 111, 44, 32, 66, 121, 116, 101, 115, 33];
+            var written = fs_write_bytes(path, bytes) or 0;
+            print $"wrote {written} bytes";
+
+            var size = fs_size(path) or 0;
+            print $"size: {size}";
+
+            var read = fs_read_bytes(path) or [];
+            print $"read {read.len()} bytes";
+            print $"first byte: {read[0]}";
+            print $"last byte: {read[read.len() - 1]}";
+
+            var appended = fs_append_bytes(path, [10, 33]) or 0;
+            print $"appended {appended} bytes";
+
+            var final_size = fs_size(path) or 0;
+            print $"final size: {final_size}";
+        }
+    }
+}
