@@ -11,99 +11,83 @@
 use varg_os_types::*;
 use varg_runtime::*;
 
+struct BytesTest {}
+
+impl BytesTest {
+    pub fn Run(&mut self) {
+        // .varg:1
+        unsafe {
+            // .varg:2
+            let mut cap = FileAccess {};
+            // .varg:3
+            let mut path = "target/wave29_test.bin".to_string();
+            // .varg:4
+            let mut bytes = vec![72, 101, 108, 108, 111, 44, 32, 66, 121, 116, 101, 115, 33];
+            // .varg:5
+            let mut written = ({
+                let __varg_bytes: Vec<u8> = bytes.iter().map(|b: &i64| *b as u8).collect();
+                std::fs::write(&path, &__varg_bytes)
+                    .map(|_| __varg_bytes.len() as i64)
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap_or_else(|_| 0);
+            // .varg:6
+            println!("{}", format!("wrote {} bytes", written));
+            // .varg:7
+            let mut size = (std::fs::metadata(&path)
+                .map(|m| m.len() as i64)
+                .map_err(|e| e.to_string()))
+            .unwrap_or_else(|_| 0);
+            // .varg:8
+            println!("{}", format!("size: {}", size));
+            // .varg:9
+            let mut read = (std::fs::read(&path)
+                .map(|v| v.into_iter().map(|b| b as i64).collect::<Vec<i64>>())
+                .map_err(|e| e.to_string()))
+            .unwrap_or_else(|_| vec![]);
+            // .varg:10
+            println!("{}", format!("read {} bytes", (read.len() as i64)));
+            // .varg:11
+            println!("{}", format!("first byte: {}", read[(0) as usize].clone()));
+            // .varg:12
+            println!(
+                "{}",
+                format!(
+                    "last byte: {}",
+                    read[((read.len() as i64) - 1) as usize].clone()
+                )
+            );
+            // .varg:13
+            let mut appended = ({
+                let __varg_bytes: Vec<u8> = vec![10, 33].iter().map(|b: &i64| *b as u8).collect();
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&path)
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        f.write_all(&__varg_bytes)
+                            .map(|_| __varg_bytes.len() as i64)
+                    })
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap_or_else(|_| 0);
+            // .varg:14
+            println!("{}", format!("appended {} bytes", appended));
+            // .varg:15
+            let mut final_size = (std::fs::metadata(&path)
+                .map(|m| m.len() as i64)
+                .map_err(|e| e.to_string()))
+            .unwrap_or_else(|_| 0);
+            // .varg:16
+            println!("{}", format!("final size: {}", final_size));
+        }
+    }
+}
+
 fn main() {
-    // .varg:1
-    let mut g = varg_runtime::graph::__varg_graph_open(&"team_graph".to_string());
-    // .varg:2
-    let mut alice = varg_runtime::graph::__varg_graph_add_node(
-        &g,
-        &"Person".to_string(),
-        &std::collections::HashMap::from([
-            ("name".to_string(), "Alice".to_string()),
-            ("role".to_string(), "Engineer".to_string()),
-        ]),
-    );
-    // .varg:3
-    let mut bob = varg_runtime::graph::__varg_graph_add_node(
-        &g,
-        &"Person".to_string(),
-        &std::collections::HashMap::from([
-            ("name".to_string(), "Bob".to_string()),
-            ("role".to_string(), "Designer".to_string()),
-        ]),
-    );
-    // .varg:4
-    let mut charlie = varg_runtime::graph::__varg_graph_add_node(
-        &g,
-        &"Person".to_string(),
-        &std::collections::HashMap::from([
-            ("name".to_string(), "Charlie".to_string()),
-            ("role".to_string(), "PM".to_string()),
-        ]),
-    );
-    // .varg:5
-    let mut varg = varg_runtime::graph::__varg_graph_add_node(
-        &g,
-        &"Project".to_string(),
-        &std::collections::HashMap::from([
-            ("name".to_string(), "Varg".to_string()),
-            ("status".to_string(), "active".to_string()),
-        ]),
-    );
-    // .varg:6
-    varg_runtime::graph::__varg_graph_add_edge(
-        &g,
-        alice,
-        &"works_on".to_string(),
-        varg,
-        &std::collections::HashMap::from([]),
-    );
-    // .varg:7
-    varg_runtime::graph::__varg_graph_add_edge(
-        &g,
-        bob,
-        &"works_on".to_string(),
-        varg,
-        &std::collections::HashMap::from([]),
-    );
-    // .varg:8
-    varg_runtime::graph::__varg_graph_add_edge(
-        &g,
-        alice,
-        &"knows".to_string(),
-        bob,
-        &std::collections::HashMap::from([]),
-    );
-    // .varg:9
-    varg_runtime::graph::__varg_graph_add_edge(
-        &g,
-        bob,
-        &"knows".to_string(),
-        charlie,
-        &std::collections::HashMap::from([]),
-    );
-    // .varg:10
-    let mut people = varg_runtime::graph::__varg_graph_query(&g, &"Person".to_string());
-    // .varg:11
-    println!("{}", format!("People: {}", self.len() as i64));
-    // .varg:12
-    let mut projects = varg_runtime::graph::__varg_graph_query(&g, &"Project".to_string());
-    // .varg:13
-    println!("{}", format!("Projects: {}", self.len() as i64));
-    // .varg:14
-    let mut one_hop =
-        varg_runtime::graph::__varg_graph_traverse(&g, alice, 1, &"knows".to_string());
-    // .varg:15
-    println!("{}", format!("Alice knows (1 hop): {}", self.len() as i64));
-    // .varg:16
-    let mut two_hop =
-        varg_runtime::graph::__varg_graph_traverse(&g, alice, 2, &"knows".to_string());
-    // .varg:17
-    println!("{}", format!("Alice knows (2 hops): {}", self.len() as i64));
-    // .varg:18
-    let mut bob_neighbors = varg_runtime::graph::__varg_graph_neighbors(&g, bob);
-    // .varg:19
-    println!("{}", format!("Bob neighbors: {}", self.len() as i64));
-    // .varg:20
-    println!("{}", "Knowledge graph demo complete!".to_string());
+    let _varg_args: Vec<String> = std::env::args().collect();
+    let mut instance = BytesTest {};
+    println!("[VargOS] Bootstrapping Runtime...");
+    instance.Run();
 }

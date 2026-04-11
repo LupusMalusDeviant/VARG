@@ -826,37 +826,38 @@ impl Parser {
 
             let annotations = self.parse_annotations()?;
 
-            // Optional: async modifier
-            let is_async = if let Some(Token::Async) = self.peek() {
-                self.advance();
-                true
-            } else {
-                false
-            };
-
+            let mut is_async = false;
             let mut is_public = false;
-            let mut return_ty = TypeNode::Void;
+            let mut is_varg_min = false;
 
-            match self.peek() {
-                Some(Token::PlusM) | Some(Token::PlusV) => {
-                    self.advance();
-                    is_public = true;
-                },
-                Some(Token::Public) | Some(Token::Pub) => {
-                    self.advance();
-                    is_public = true;
-                    return_ty = self.parse_type()?;
-                },
-                // Plan 47: Explicit private modifier
-                Some(Token::Private) => {
-                    self.advance();
-                    is_public = false;
-                    return_ty = self.parse_type()?;
-                },
-                _ => {
-                    return_ty = self.parse_type()?;
+            loop {
+                match self.peek() {
+                    Some(Token::Async) => {
+                        self.advance();
+                        is_async = true;
+                    },
+                    Some(Token::PlusM) | Some(Token::PlusV) => {
+                        self.advance();
+                        is_public = true;
+                        is_varg_min = true;
+                    },
+                    Some(Token::Public) | Some(Token::Pub) => {
+                        self.advance();
+                        is_public = true;
+                    },
+                    Some(Token::Private) => {
+                        self.advance();
+                        is_public = false;
+                    },
+                    _ => break,
                 }
             }
+
+            let return_ty = if is_varg_min {
+                TypeNode::Void
+            } else {
+                self.parse_type()?
+            };
 
             let name = self.parse_identifier()?;
 
@@ -970,32 +971,38 @@ impl Parser {
 
             let annotations = self.parse_annotations()?;
 
-            // Optional: async modifier
-            let is_async = if let Some(Token::Async) = self.peek() {
-                self.advance();
-                true
-            } else {
-                false
-            };
-
+            let mut is_async = false;
             let mut is_public = false;
-            let mut return_ty = TypeNode::Void;
+            let mut is_varg_min = false;
 
-            match self.peek() {
-                Some(Token::PlusM) | Some(Token::PlusV) => {
-                    self.advance();
-                    is_public = true;
-                    // Varg-Min defaults to void return for methods
-                },
-                Some(Token::Public) | Some(Token::Pub) => {
-                    self.advance();
-                    is_public = true;
-                    return_ty = self.parse_type()?;
-                },
-                _ => {
-                    return_ty = self.parse_type()?;
+            loop {
+                match self.peek() {
+                    Some(Token::Async) => {
+                        self.advance();
+                        is_async = true;
+                    },
+                    Some(Token::PlusM) | Some(Token::PlusV) => {
+                        self.advance();
+                        is_public = true;
+                        is_varg_min = true;
+                    },
+                    Some(Token::Public) | Some(Token::Pub) => {
+                        self.advance();
+                        is_public = true;
+                    },
+                    Some(Token::Private) => {
+                        self.advance();
+                        is_public = false;
+                    },
+                    _ => break,
                 }
             }
+
+            let return_ty = if is_varg_min {
+                TypeNode::Void
+            } else {
+                self.parse_type()?
+            };
 
             let name = self.parse_identifier()?;
             

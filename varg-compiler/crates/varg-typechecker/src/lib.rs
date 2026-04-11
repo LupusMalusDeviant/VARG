@@ -1039,6 +1039,7 @@ impl TypeChecker {
                 }
             },
             Expression::MethodCall { caller, method_name, args } => {
+                let method_name = method_name.trim_start_matches("__varg_").trim_start_matches("__varg_min_");
                 if method_name == "fetch" {
                     self.check_ocap(&CapabilityType::NetworkAccess, "fetch")?;
                     if args.len() < 1 || args.len() > 4 {
@@ -1849,7 +1850,7 @@ impl TypeChecker {
                     Ok(TypeNode::Bool)
                 } else {
                     // Plan 33: Check known standalone functions first
-                    if let Some(sig) = self.known_functions.get(method_name.as_str()) {
+                    if let Some(sig) = self.known_functions.get(method_name) {
                         return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
                     }
                     // Issue #4: When caller is synthetic 'self' (bare function call in standalone fn),
@@ -1861,7 +1862,7 @@ impl TypeChecker {
                     let caller_ty = self.infer_expression_type(caller)?;
                     if let TypeNode::Custom(ref type_name) = caller_ty {
                         if let Some(methods) = self.method_signatures.get(type_name) {
-                            if let Some(sig) = methods.get(method_name.as_str()) {
+                            if let Some(sig) = methods.get(method_name) {
                                 return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
                             }
                             // Known type but unknown method → check standalone fns before erroring

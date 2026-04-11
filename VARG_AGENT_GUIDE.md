@@ -8,8 +8,9 @@ You are an AI assistant tasked with writing code in **Varg**, a compiled program
 - **Statically Typed:** Variables are declared with `var` (type inferred) or explicitly (e.g., `string name = "Bot";`).
 - **Mutable by Default:** All variables can be reassigned.
 - **Statements:** End with semicolons `;`.
-- **String Interpolation:** Use `$"Hello {name}"`.
+- **String Interpolation:** Use `$"Hello {name}"`. Varg's robust string interpolator supports nested expressions and character escaping safely.
 - **Functions:** Use `fn name(type arg) -> ret_type { ... }` natively.
+- **Method Modifiers:** Flexible modifier ordering is supported (e.g., `public async void` or `async public void`). Methods without visibility modifiers are private by default. Available modifiers include `public`, `private`, and `async`.
 - **Entry Point:** Either an `agent` with `public void Run()` or a standalone `fn main()`.
 
 ## 2. Agents vs. Classes
@@ -76,15 +77,16 @@ agent WebFetcher {
 - **Sets (`set<T>`):** `set_of("a", "b")`. Methods: `.add(x)`, `.contains(x)`, `.remove(x)`.
 - **Iterator Chains:** `.filter((x) => x > 0).map((x) => x * 2).find(...).any(...).all(...)`
 
-## 6. Strings and Standard Library
+## 6. Strings, Built-ins and Standard Library
 - **Strings:** `.split()`, `.contains()`, `.starts_with()`, `.ends_with()`, `.replace()`, `.trim()`, `.to_upper()`, `.to_lower()`, `.substring()`, `.index_of()`, `.pad_left()`, `.pad_right()`, `.chars()`, `.reverse()`, `.repeat()`.
 - **JSON:** `json_parse()`, `json_get()`, `json_get_int()`, `json_get_bool()`, `json_get_array()`, `json_stringify()`.
+- **Built-in Prefix Stripping:** For all built-in methods (like Vector Store, Graph, Memory), you can omit the `__varg_` prefix when calling them as a method on their respective objects. For example, `store.vector_store_count()` instead of `__varg_vector_store_count(store)`.
 
 ## 7. Advanced Agent Features
 - **Actor Messaging:** `spawn Worker {}`, `worker.send("task", args)`, `worker.request("status")`. Worker implements `public void on_message(string msg, string[] args)`.
 - **Retry / Fallback:**
 ```csharp
-var html = retry(3, backoff: 1000) {
+var html = retry(3) {
     fetch(url, "GET")?
 } fallback {
     ""

@@ -1,6 +1,38 @@
 use logos::Logos;
-
 pub mod ast;
+
+fn lex_interpolated_string<'a>(lex: &mut logos::Lexer<'a, Token>) -> Option<String> {
+    let remainder = lex.remainder();
+    let mut depth = 0;
+    let mut bytes_consumed = 0;
+    let mut escaped = false;
+    
+    for c in remainder.chars() {
+        bytes_consumed += c.len_utf8();
+        
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            if depth > 0 {
+                depth -= 1;
+            }
+        } else if c == '"' && depth == 0 {
+            lex.bump(bytes_consumed);
+            return Some(lex.slice().to_string());
+        }
+    }
+    None
+}
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(skip r"[ \t\r\n\f]+")] // Skip whitespace
@@ -106,7 +138,7 @@ pub enum Token {
     MultilineStringLiteral(String),
 
     // Interpolated strings: $"Hello {name}!" (Plan 35)
-    #[regex(r#"\$"(?:[^"\\]|\\.)*""#, |lex| lex.slice().to_string())]
+    #[token("$\"", lex_interpolated_string)]
     InterpolatedStringLiteral(String),
 
     // Strings (extremely simplified for now, captures "anything" or 'anything')

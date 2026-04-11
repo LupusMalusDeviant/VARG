@@ -85,25 +85,34 @@ fn main() {
     // .varg:10
     let mut people = varg_runtime::graph::__varg_graph_query(&g, &"Person".to_string());
     // .varg:11
-    println!("{}", format!("People: {}", self.len() as i64));
+    println!("{}", format!("People: {}", people.len() as i64));
     // .varg:12
     let mut projects = varg_runtime::graph::__varg_graph_query(&g, &"Project".to_string());
     // .varg:13
-    println!("{}", format!("Projects: {}", self.len() as i64));
+    println!("{}", format!("Projects: {}", projects.len() as i64));
     // .varg:14
     let mut one_hop =
         varg_runtime::graph::__varg_graph_traverse(&g, alice, 1, &"knows".to_string());
     // .varg:15
-    println!("{}", format!("Alice knows (1 hop): {}", self.len() as i64));
+    println!(
+        "{}",
+        format!("Alice knows (1 hop): {}", one_hop.len() as i64)
+    );
     // .varg:16
     let mut two_hop =
         varg_runtime::graph::__varg_graph_traverse(&g, alice, 2, &"knows".to_string());
     // .varg:17
-    println!("{}", format!("Alice knows (2 hops): {}", self.len() as i64));
+    println!(
+        "{}",
+        format!("Alice knows (2 hops): {}", two_hop.len() as i64)
+    );
     // .varg:18
     let mut bob_neighbors = varg_runtime::graph::__varg_graph_neighbors(&g, bob);
     // .varg:19
-    println!("{}", format!("Bob neighbors: {}", self.len() as i64));
+    println!(
+        "{}",
+        format!("Bob neighbors: {}", bob_neighbors.len() as i64)
+    );
     // .varg:20
     println!("{}", "Knowledge graph demo complete!".to_string());
 }

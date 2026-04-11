@@ -775,7 +775,7 @@ var result = data
 ## Retry / Fallback
 
 ```csharp
-var response = retry(3, backoff: 1000) {
+var response = retry(3) {
     fetch(url, "GET")?
 } fallback {
     "cached response"
