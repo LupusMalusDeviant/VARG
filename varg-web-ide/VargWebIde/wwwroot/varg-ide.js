@@ -5,23 +5,35 @@
 // ── Default starter code ──────────────────────────────────────────────────────
 const DEFAULT_CODE = `agent Hello {
     public void Run() {
+        // String interpolation
         var name = "World";
         print($"Hello, {name}!");
 
-        // Range + iterator chain
-        var nums = [1, 2, 3, 4, 5];
-        var doubled = nums.map((x) => x * 2);
-        print($"Doubled: {doubled}");
+        // Iterator chain — map / filter / any
+        var nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        var evens   = nums.filter((x) => x % 2 == 0);
+        var doubled = evens.map((x) => x * 2);
+        print($"Evens doubled: {doubled}");
+        print($"Any > 15? {any(doubled, (x) => x > 15)}");
 
-        // Pattern matching
-        var score = 42;
-        var grade = match score {
-            90..100 => "A",
-            70..89  => "B",
-            50..69  => "C",
-            _       => "F",
-        };
-        print($"Grade: {grade}");
+        // Closures + variables
+        var threshold = 5;
+        var big = nums.filter((x) => x > threshold);
+        print($"Numbers above {threshold}: {big}");
+
+        // String operations
+        var greeting = "Hello, Varg!";
+        print($"Upper: {to_upper(greeting)}");
+        print($"Length: {len(greeting)}");
+
+        // Pattern matching (as statement)
+        var score = 72;
+        match score {
+            90..100 => print("Grade: A"),
+            70..89  => print("Grade: B"),
+            50..69  => print("Grade: C"),
+            _       => print("Grade: F"),
+        }
     }
 }
 `;

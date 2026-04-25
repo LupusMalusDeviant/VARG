@@ -10,9 +10,10 @@ public class VargCompilerService
 
     public VargCompilerService(IConfiguration config)
     {
-        _vargcPath = config["Varg:VargcPath"] ?? "vargc";
-        _cacheDir = config["Varg:BuildCache"]
-            ?? Path.Combine(Path.GetTempPath(), "varg-playground-cache");
+        _vargcPath = string.IsNullOrEmpty(config["Varg:VargcPath"]) ? "vargc" : config["Varg:VargcPath"]!;
+        _cacheDir = string.IsNullOrEmpty(config["Varg:BuildCache"])
+            ? Path.Combine(Path.GetTempPath(), "varg-playground-cache")
+            : config["Varg:BuildCache"]!;
         Directory.CreateDirectory(_cacheDir);
     }
 
