@@ -648,12 +648,17 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool) 
     for item in &ast.items {
         if let varg_ast::ast::Item::Agent(a) = item {
             main_agent_name = Some(a.name.clone());
-            // Look for `Run` or `Main`, otherwise just the first method *if it has 0 args*
-            if let Some(run_m) = a.methods.iter().find(|m| m.name == "Run" || m.name == "Main") {
-                if run_m.args.is_empty() { main_method_name = Some(run_m.name.clone()); }
-            } else if let Some(first_m) = a.methods.first() {
-                if first_m.args.is_empty() {
-                    main_method_name = Some(first_m.name.clone());
+            // @[CliCommand] on the agent → run_cli() dispatches all public methods
+            if a.annotations.iter().any(|ann| ann.name == "CliCommand") {
+                main_method_name = Some("run_cli".to_string());
+            } else {
+                // Look for `Run` or `Main`, otherwise just the first method *if it has 0 args*
+                if let Some(run_m) = a.methods.iter().find(|m| m.name == "Run" || m.name == "Main") {
+                    if run_m.args.is_empty() { main_method_name = Some(run_m.name.clone()); }
+                } else if let Some(first_m) = a.methods.first() {
+                    if first_m.args.is_empty() {
+                        main_method_name = Some(first_m.name.clone());
+                    }
                 }
             }
             break;

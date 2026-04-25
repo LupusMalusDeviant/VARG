@@ -396,7 +396,7 @@ impl RustGenerator {
                 // Agent-level Annotations
                 for ann in &a.annotations {
                     if ann.name == "CliCommand" {
-                        out.push_str(&format!("    pub fn run_cli(&mut self) {{\n        println!(\"Starting CLI for agent {}...\");\n        // TODO: Map clap args to methods\n    }}\n", a.name));
+                        out.push_str(&self.gen_run_cli_method(&a.methods));
                     }
                 }
 
@@ -474,6 +474,58 @@ impl RustGenerator {
                 out
             }
         }
+    }
+
+    fn gen_run_cli_method(&self, methods: &[MethodDecl]) -> String {
+        let skip = ["Run", "Main", "Init", "Destroy", "on_start", "on_stop", "on_message"];
+        let cli_methods: Vec<&MethodDecl> = methods.iter()
+            .filter(|m| m.is_public && !skip.contains(&m.name.as_str()))
+            .collect();
+
+        let mut out = String::from("    pub fn run_cli(&mut self) {\n");
+        out.push_str("        let __args: Vec<String> = std::env::args().collect();\n");
+        out.push_str("        let __cmd = if __args.len() > 1 { __args[1].as_str() } else { \"\" };\n");
+        out.push_str("        match __cmd {\n");
+
+        let command_names: Vec<String> = cli_methods.iter()
+            .map(|m| m.name.to_lowercase())
+            .collect();
+
+        for m in &cli_methods {
+            let cmd_lower = m.name.to_lowercase();
+            out.push_str(&format!("            \"{}\" | \"{}\" => {{\n", cmd_lower, m.name));
+            let mut arg_vars = Vec::new();
+            for (i, arg) in m.args.iter().enumerate() {
+                let idx = i + 2;
+                out.push_str(&format!(
+                    "                if __args.len() <= {idx} {{ eprintln!(\"Missing argument '{}'\"); std::process::exit(1); }}\n",
+                    arg.name
+                ));
+                match arg.ty {
+                    TypeNode::Int  => out.push_str(&format!("                let __a{i} = __args[{idx}].parse::<i64>().unwrap_or(0);\n")),
+                    TypeNode::Bool => out.push_str(&format!("                let __a{i} = __args[{idx}].parse::<bool>().unwrap_or(false);\n")),
+                    TypeNode::Float => out.push_str(&format!("                let __a{i} = __args[{idx}].parse::<f64>().unwrap_or(0.0);\n")),
+                    _ => out.push_str(&format!("                let __a{i} = __args[{idx}].clone();\n")),
+                }
+                arg_vars.push(format!("__a{i}"));
+            }
+            let call = format!("self.{}({})", m.name, arg_vars.join(", "));
+            match &m.return_ty {
+                Some(TypeNode::Void) | None => out.push_str(&format!("                {call};\n")),
+                _ => out.push_str(&format!("                println!(\"{{:?}}\", {call});\n")),
+            }
+            out.push_str("            }\n");
+        }
+
+        let cmds = command_names.join(", ");
+        out.push_str(&format!(
+            "            \"--help\" | \"-h\" | \"\" => {{\n                println!(\"Commands: {cmds}\");\n            }}\n"
+        ));
+        out.push_str(
+            "            _ => { eprintln!(\"Unknown command '{}'\", __cmd); std::process::exit(1); }\n",
+        );
+        out.push_str("        }\n    }\n");
+        out
     }
 
     fn gen_method_signature(&self, method: &MethodDecl, force_no_vis: bool) -> String {
@@ -7132,5 +7184,62 @@ mod tests {
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
         assert!(code.contains("__varg_readline_save_history"), "should call runtime: {}", code);
+    }
+
+    #[test]
+    fn test_codegen_cli_command_agent_generates_run_cli() {
+        use varg_ast::ast::*;
+        let program = Program {
+            no_std: false,
+            docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "Calculator".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![Annotation { name: "CliCommand".to_string(), values: vec![] }],
+                implements: vec![],
+                fields: vec![],
+                methods: vec![
+                    MethodDecl {
+                        name: "Add".to_string(),
+                        is_public: true,
+                        is_async: false,
+                        annotations: vec![],
+                        type_params: vec![],
+                        constraints: vec![],
+                        args: vec![
+                            FieldDecl { name: "a".to_string(), ty: TypeNode::Int, default_value: None },
+                            FieldDecl { name: "b".to_string(), ty: TypeNode::Int, default_value: None },
+                        ],
+                        return_ty: Some(TypeNode::Int),
+                        body: Some(Block { statements: vec![Statement::Return(Some(Expression::Int(0)))] }),
+                    },
+                    MethodDecl {
+                        name: "Run".to_string(),
+                        is_public: true,
+                        is_async: false,
+                        annotations: vec![],
+                        type_params: vec![],
+                        constraints: vec![],
+                        args: vec![],
+                        return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![] }),
+                    },
+                ],
+            })],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        // run_cli() must exist
+        assert!(code.contains("pub fn run_cli("), "missing run_cli: {code}");
+        // should dispatch on "add" (lowercase) and "Add"
+        assert!(code.contains("\"add\" | \"Add\""), "missing Add dispatch: {code}");
+        // should parse two int args
+        assert!(code.contains("parse::<i64>"), "missing int arg parse: {code}");
+        // Run should be excluded from CLI dispatch (lifecycle method)
+        assert!(!code.contains("\"run\" | \"Run\""), "Run should not appear in CLI dispatch: {code}");
+        // --help arm must exist
+        assert!(code.contains("\"--help\""), "missing --help arm: {code}");
     }
 }

@@ -247,7 +247,11 @@ pub fn __varg_llm_infer_stream(prompt: &str, model: &str) {
 fn __varg_llm_fetch_stream(provider: &LlmProvider, url: &str, body: &str) {
     use std::io::{BufRead, BufReader, Write};
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new());
     let mut builder = client.post(url);
     for (k, v) in &provider.headers() {
         builder = builder.header(k.as_str(), v.as_str());

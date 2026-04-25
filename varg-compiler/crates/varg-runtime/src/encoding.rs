@@ -30,7 +30,11 @@ pub fn __varg_base64_encode_file(path: &str) -> String {
 /// Download a URL as binary and return base64-encoded content
 /// Accepts a URL and a headers map (key-value pairs)
 pub fn __varg_http_download_base64(url: &str, headers: &HashMap<String, String>) -> String {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new());
     let mut req = client.get(url);
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
