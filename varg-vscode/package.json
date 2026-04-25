@@ -2,7 +2,7 @@
   "name": "varg-vscode",
   "displayName": "Varg Language Support",
   "description": "Official language support for the Varg programming language (.varg) — syntax highlighting, diagnostics, hover info, and autocomplete",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "publisher": "varg-labs",
   "repository": {
     "type": "git",

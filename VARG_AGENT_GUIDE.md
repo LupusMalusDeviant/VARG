@@ -347,11 +347,156 @@ var json_export = __varg_trace_export(tracer);
 ## 24. MCP Server Mode
 Expose your Varg agent tools via Model Context Protocol.
 ```csharp
-var server = __varg_mcp_server_new("my_tools", "1.0.0");
-__varg_mcp_server_register(server, "greet", "Says hello", (args) => {
+var server = mcp_server_new("my_tools", "1.0.0");
+mcp_server_register(server, "greet", "Says hello", (args) => {
     return $"Hello {args}";
 });
-__varg_mcp_server_run(server); // Blocks on stdio JSON-RPC
+mcp_server_run(server); // Blocks on stdio JSON-RPC
+```
+
+## 25. Human-in-the-Loop (HITL)
+Block agent execution until a human provides input or approval.
+```csharp
+var approved = await_approval("Deploy to production? (this costs $0.50)");
+if approved {
+    deploy();
+}
+var name = await_input("What is your name? ");
+var action = await_choice("Next step:", ["Retry", "Skip", "Abort"]);
+```
+
+## 26. Rate Limiting
+Protect APIs and resources from overuse with token-bucket rate limiting.
+```csharp
+var rl = ratelimiter_new(10, 60000); // 10 calls per 60 seconds
+public string CallLlm(string prompt, string user_id, LlmAccess llm) {
+    if !ratelimiter_acquire(rl, user_id) {
+        return "Rate limit exceeded. Try again later.";
+    }
+    return llm_chat("gpt-4o", [{"role": "user", "content": prompt}], llm);
+}
+// Or use the annotation:
+@[RateLimit(calls: 10, window_ms: 60000)]
+public string CallLlmAnnotated(string prompt, LlmAccess llm) {
+    return llm_chat("gpt-4o", [{"role": "user", "content": prompt}], llm);
+}
+```
+
+## 27. LLM Budget / Cost Tracking
+Enforce hard token and USD limits on LLM usage.
+```csharp
+var b = budget_new(100000, 1000); // 100k tokens, $10.00
+public string Query(string prompt, LlmAccess llm) {
+    if !budget_check(b) {
+        return "Budget exhausted: " + budget_report(b);
+    }
+    var response = llm_chat("gpt-4o", [{"role":"user","content":prompt}], llm);
+    budget_track(b, prompt, response);
+    return response;
+}
+// Or use the annotation:
+@[Budget(tokens: 100000, usd: 10)]
+public string QueryAnnotated(string prompt, LlmAccess llm) {
+    return llm_chat("gpt-4o", [{"role":"user","content":prompt}], llm);
+}
+```
+
+## 28. Agent Checkpoint & Resume
+Persist agent state to SQLite so interrupted agents can resume.
+```csharp
+var cp = checkpoint_open("agent.db", "worker_v1");
+// Try to resume
+if checkpoint_exists(cp) {
+    var saved = checkpoint_load(cp);
+    self.state = json_parse(saved);
+    print $"Resumed from checkpoint (age: {checkpoint_age(cp)}s)";
+}
+// ... do work ...
+checkpoint_save(cp, json_stringify(self.state)); // save progress
+// Or use annotation — checkpoint() builtin auto-saves state:
+@[Checkpointed("worker.db")]
+public void DoWork(string input) { /* state auto-persisted */ }
+```
+
+## 29. Typed Channels
+Pass messages between concurrent parts of an agent safely.
+```csharp
+var ch = channel_new(50); // buffered channel, capacity 50
+// Producer
+channel_send(ch, json_stringify(task));
+// Consumer
+var raw = channel_recv_timeout(ch, 5000); // wait up to 5s
+if raw != "" {
+    var task = json_parse(raw);
+    process(task);
+}
+channel_close(ch);
+```
+
+## 30. Property-Based Testing
+Test invariants over randomly generated inputs.
+```csharp
+@[Property(runs: 200)]
+public void TestRoundTrip() {
+    var s = prop_gen_string(50);
+    var encoded = base64_encode(s);
+    var decoded = base64_decode(encoded);
+    prop_assert(decoded == s, $"base64 roundtrip failed for: {s}");
+}
+@[Property(runs: 100)]
+public void TestSortLength() {
+    var xs = prop_gen_int_list(-1000, 1000, 20);
+    prop_assert(xs.sort().len() == xs.len(), "sort must not change length");
+}
+```
+
+## 31. Multimodal (Image / Audio / Vision)
+Load images and audio, pass to LLM for analysis.
+```csharp
+agent VisionAgent {
+    public string Describe(string path, FileAccess files, LlmAccess llm) {
+        var img = image_load(path, files);
+        var b64 = image_to_base64(img);
+        var fmt = image_format(img);
+        return llm_vision("Describe this image in detail.", b64, fmt, llm);
+    }
+    public void Run() {
+        unsafe {
+            var f = FileAccess {};
+            var l = LlmAccess {};
+            print self.Describe("photo.png", f, l);
+        }
+    }
+}
+```
+
+## 32. Workflow DAG
+Declare steps with dependencies — ready steps are executed in order.
+```csharp
+var wf = workflow_new("data_pipeline");
+workflow_add_step(wf, "download", []);
+workflow_add_step(wf, "parse",    ["download"]);
+workflow_add_step(wf, "validate", ["parse"]);
+workflow_add_step(wf, "store",    ["validate"]);
+
+while !workflow_is_complete(wf) {
+    var ready = workflow_ready_steps(wf);
+    foreach step in ready {
+        var result = execute_step(step);
+        workflow_set_output(wf, step, result);
+    }
+}
+```
+
+## 33. Package Registry
+Manage local Varg packages for modular agent composition.
+```csharp
+var reg = registry_open("varg-packages.json");
+registry_install(reg, "varg-rag", "2.1.0");
+if registry_is_installed(reg, "varg-rag") {
+    print $"varg-rag {registry_version(reg, "varg-rag")} installed";
+}
+var http_pkgs = registry_search(reg, "http");
 ```
 
 ---

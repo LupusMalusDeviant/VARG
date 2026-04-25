@@ -19,15 +19,15 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 
 | Metrik | Wert |
 |--------|------|
-| Version | **0.10.0** |
-| Testsuite | 889 Tests, 0 Fehler, 0 Warnungen |
+| Version | **0.12.0** |
+| Testsuite | 1159 Tests, 0 Fehler, 0 Warnungen |
 | Crates | 10 spezialisierte Compiler-Crates |
 | Token-Typen | 119 Lexer-Tokens |
 | AST-Varianten | 25 Statements, 29 Expressions |
-| Builtins | 150+ TypeChecker-Handler, 190+ CodeGen-Handler |
+| Builtins | 150+ TypeChecker-Handler, 200+ CodeGen-Handler |
 | Sicherheit | 5 OCAP-Capability-Typen |
-| Runtime-Module | 22 (Crypto, DB, LLM, Net, Vector, HTTP-Server, SQLite, WebSocket, MCP-Client, MCP-Server, Graph, Memory, Trace, Pipeline, Orchestration, Self-Improve, Encoding, PDF, Config, Readline, Proc, SSE-Client) |
-| Entwicklungswellen | 29 abgeschlossene Wellen |
+| Runtime-Module | 31 (Crypto, DB, LLM, Net, Vector, HTTP-Server, SQLite, WebSocket, MCP-Client, MCP-Server, Graph, Memory, Trace, Pipeline, Orchestration, Self-Improve, Encoding, PDF, Config, Readline, Proc, SSE-Client, HITL, RateLimit, Budget, Checkpoint, Channel, PropTest, Multimodal, Workflow, Registry) |
+| Entwicklungswellen | 34 abgeschlossene Wellen |
 
 ---
 
@@ -196,7 +196,7 @@ agent SecureAgent {
 Der einfachste Weg, Varg zu nutzen, ist das Herunterladen der vorkompilierten Programmdatei:
 
 1. Gehe zur [Releases](../../releases)-Seite.
-2. Lade die neueste `varg-v0.10.0-windows-x64.zip` herunter.
+2. Lade die neueste `varg-v0.12.0-windows-x64.zip` herunter.
 3. Entpacke `vargc.exe` und lege sie irgendwo in deinen System-`PATH` ab.
 4. Fertig! Los geht's.
 ---
@@ -293,7 +293,7 @@ Siehe das [`examples/`](examples/)-Verzeichnis:
 
 ## Testsuite
 
-889 Tests ueber alle Crates, alle bestanden, null Warnungen:
+1159 Tests ueber alle Crates, alle bestanden, null Warnungen:
 
 ```bash
 cd varg-compiler
@@ -304,13 +304,13 @@ cargo test
 |-------|------:|-----------|
 | varg-ast | 1 | AST-Konstruktion |
 | varg-lexer | 29 | Alle Token-Typen, Randfaelle |
-| varg-parser | 183 | Jede Statement/Expression-Variante, Ternary, Braceless if/while/catch, leere Struct-Literals |
-| varg-typechecker | 250 | Typinferenz, OCAP, DI, alle 150+ Builtins |
-| varg-codegen | 256 | Rust-Generierung, alle Runtime-Module, Index-Precedence, fs_*-Borrowing |
-| varg-runtime | 141 | Echtes HTTP/SQLite/WS/MCP + graph, vector, memory, trace, pipeline, orchestration, self-improve, config, readline, proc |
-| varg-lsp | 11 | Diagnosen, Hover, Completion |
-| vargc | 18 | CLI-Treiber, Formatter, REPL |
-| **Gesamt** | **889** | **0 Fehler, 0 Warnungen** |
+| varg-parser | 215 | Jede Statement/Expression-Variante; adversarielle Randfaelle und Parser-Limitierungstests |
+| varg-typechecker | 287 | Typinferenz, OCAP, DI, alle Builtins; adversarielle Arg-Anzahl- und Rueckgabe-Typ-Tests |
+| varg-codegen | 274 | Rust-Generierung, alle Runtime-Module; adversarielle Annotation- und AST-Randfaelle |
+| varg-runtime | 324 | Echtes HTTP/SQLite/WS/MCP + alle 31 Module; adversarielle Grenzwert- und Fehlerpfad-Tests |
+| varg-lsp | 18 | Diagnosen, Hover, Completion |
+| vargc | 11 | CLI-Treiber, Formatter, REPL |
+| **Gesamt** | **1159** | **0 Fehler, 0 Warnungen** |
 
 ---
 
@@ -333,7 +333,7 @@ Project X/
 ## Status
 
 Varg wird aktiv entwickelt. Der Compiler ist funktionsfaehig und erzeugt lauffaehige native Binaries.
-**Aktuelles Release: v0.10.0** -- 29 Entwicklungswellen abgeschlossen, 889 Tests bestanden, null Warnungen.
+**Aktuelles Release: v0.12.0** -- 34 Entwicklungswellen abgeschlossen, 1159 Tests bestanden, null Warnungen.
 
 Die Sprache eignet sich fuer den Bau von echten Agenten, CLI-Tools, API-Clients, Web-Servern,
 Knowledge-Graph-gestuetzten RAG-Systemen, Multi-Agent-Orchestration-Pipelines und REPL-getriebenen

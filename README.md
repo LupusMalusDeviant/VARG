@@ -19,15 +19,15 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 
 | Metric | Value |
 |--------|-------|
-| Version | **0.10.0** |
-| Test Suite | 889 tests, 0 failures, 0 warnings |
+| Version | **0.12.0** |
+| Test Suite | 1159 tests, 0 failures, 0 warnings |
 | Crates | 10 specialized compiler crates |
 | Token Types | 119 lexer tokens |
 | AST Variants | 25 statements, 29 expressions |
-| Builtins | 150+ typechecker handlers, 190+ codegen handlers |
+| Builtins | 150+ typechecker handlers, 200+ codegen handlers |
 | Security | 5 OCAP capability types |
-| Runtime Modules | 22 (crypto, db, llm, net, vector, http-server, sqlite, websocket, mcp-client, mcp-server, graph, memory, trace, pipeline, orchestration, self-improve, encoding, pdf, config, readline, proc, sse-client) |
-| Dev Waves | 29 completed development waves |
+| Runtime Modules | 31 (crypto, db, llm, net, vector, http-server, sqlite, websocket, mcp-client, mcp-server, graph, memory, trace, pipeline, orchestration, self-improve, encoding, pdf, config, readline, proc, sse-client, hitl, ratelimit, budget, checkpoint, channel, proptest, multimodal, workflow, registry) |
+| Dev Waves | 34 completed development waves |
 
 ---
 
@@ -77,6 +77,15 @@ vargc run weather.varg
 | MCP Server + Client | Yes | - | - | - |
 | Built-in Readline/REPL | Yes | - | - | - |
 | Platform config cascade | Yes | - | - | - |
+| LLM Budget / Cost Tracking | Yes | - | - | - |
+| Agent Checkpoint/Resume | Yes | - | - | - |
+| Rate Limiting | Yes | - | - | - |
+| Typed Channels | Yes | - | - | - |
+| Property-Based Testing | Yes | - | - | - |
+| Multimodal (Image/Audio/Vision) | Yes | - | - | - |
+| Workflow DAG | Yes | - | - | - |
+| Package Registry | Yes | - | - | - |
+| Human-in-the-Loop (HITL) | Yes | - | - | - |
 
 ---
 
@@ -126,13 +135,22 @@ Varg compiles to native Rust binaries -- no interpreter, no garbage collector.
 - **MCP Client** -- connect to MCP servers, list tools, call tools (JSON-RPC over stdio)
 - **MCP Server** -- expose agent methods as MCP tools for other AI systems
 - **Knowledge Graph** -- embedded graph engine with nodes, edges, traversal, queries
-- **Vector Store** -- embed text, store vectors, cosine similarity search
+- **Vector Store** -- embed text, store vectors, cosine similarity search, LSH index
 - **Agent Memory** -- 3-layer architecture: working (key-value), episodic (vector), semantic (graph)
 - **Observability** -- hierarchical span tracing with events, attributes, JSON export
 - **Reactive Pipelines** -- event bus (pub/sub) + sequential pipeline runner
 - **Agent Orchestration** -- fan-out/fan-in parallel execution, task queues
 - **Self-Improving Loop** -- feedback tracking, success/failure recall via similarity search
-- **LLM Provider Abstraction** -- OpenAI, Anthropic, Ollama with unified API
+- **LLM Provider Abstraction** -- OpenAI, Anthropic, Ollama with unified API (`llm_chat`, `llm_structured`, `llm_stream`, `llm_embed_batch`)
+- **LLM Budget Guards** -- `@[Budget(tokens: N, usd: F)]` — hard token + USD limits enforced at runtime
+- **Rate Limiting** -- `@[RateLimit(calls: N, window_ms: M)]` — per-key token-bucket rate limiter
+- **Agent Checkpoint** -- `@[Checkpointed("path.db")]` — pause/resume agent state via SQLite
+- **Typed Channels** -- `channel_new`, `channel_send`, `channel_recv` — MPSC channels with timeout
+- **Property-Based Testing** -- `@[Property(runs: N)]` — random input generation + assertion
+- **Multimodal** -- `image_load`, `audio_load`, `llm_vision` — image/audio analysis via LLM
+- **Workflow DAG** -- `workflow_new`, `workflow_add_step` — dependency-ordered step execution
+- **Package Registry** -- `registry_open`, `registry_install`, `registry_search` — local package management
+- **Human-in-the-Loop** -- `await_approval`, `await_input`, `await_choice` — blocking human checkpoints
 
 ### Standard Library (150+ builtins)
 - **Strings** -- `split`, `contains`, `starts_with`, `ends_with`, `replace`, `trim`, `to_upper`, `to_lower`, `substring`, `index_of`, `pad_left`, `pad_right`, `chars`, `reverse`, `repeat`
@@ -216,7 +234,7 @@ agent SecureAgent {
 The easiest way to use Varg is to download the pre-compiled binary:
 
 1. Go to the [Releases](../../releases) page.
-2. Download the latest `varg-v0.10.0-windows-x64.zip`.
+2. Download the latest `varg-v0.12.0-windows-x64.zip`.
 3. Extract `vargc.exe` and place it somewhere in your system `PATH`.
 4. You're ready to go!
 ---
@@ -325,14 +343,23 @@ Varg includes 22 runtime modules, all with real implementations (no stubs):
 | Encoding (base64) | base64 0.22 | Encode/decode strings, files, binary downloads |
 | PDF Generation | printpdf 0.7 | Native PDF creation with sections, text, word-wrap |
 | Crypto | Pure Rust | encrypt, decrypt |
-| LLM | reqwest | OpenAI, Anthropic, Ollama |
+| LLM | reqwest | OpenAI, Anthropic, Ollama — chat, structured, stream, embed |
 | Binary I/O | std::fs | fs_read_bytes, fs_write_bytes, fs_append_bytes, fs_size |
+| HITL | Pure Rust | Human-in-the-loop approval, text input, choice prompts |
+| Rate Limiter | Pure Rust | Token-bucket, per-key windows, `@[RateLimit]` annotation |
+| LLM Budget | Pure Rust | Token + USD budget guards, `@[Budget]` annotation |
+| Checkpoint | rusqlite | Pause/resume state persistence, `@[Checkpointed]` annotation |
+| Typed Channel | Pure Rust | MPSC send/recv with timeout and close semantics |
+| Property Testing | Pure Rust | Random input gen, `@[Property(runs: N)]` annotation |
+| Multimodal | Pure Rust | Image/audio load, base64 encode, `llm_vision` |
+| Workflow DAG | Pure Rust | DAG step ordering, dependency resolution, status tracking |
+| Package Registry | Pure Rust + JSON | Install/uninstall/search local packages |
 
 ---
 
 ## Test Suite
 
-889 tests across all crates, all passing, zero warnings:
+1159 tests across all crates, all passing, zero warnings:
 
 ```bash
 cd varg-compiler
@@ -343,13 +370,13 @@ cargo test
 |-------|------:|----------|
 | varg-ast | 1 | AST construction |
 | varg-lexer | 29 | All token types, edge cases |
-| varg-parser | 183 | Every statement/expression variant, ternary, braceless if/while/catch, empty struct literals |
-| varg-typechecker | 250 | Type inference, OCAP, DI, all 150+ builtins |
-| varg-codegen | 256 | Rust generation, all runtime module codegen, index precedence, fs_* borrowing |
-| varg-runtime | 141 | Real HTTP/SQLite/WS/MCP + graph, vector, memory, trace, pipeline, orchestration, self-improve, config, readline, proc |
-| varg-lsp | 11 | Diagnostics, hover, completion |
-| vargc | 18 | CLI driver, formatter, REPL |
-| **Total** | **889** | **0 failures, 0 warnings** |
+| varg-parser | 215 | Every statement/expression variant; adversarial edge cases and parser-limitation tests |
+| varg-typechecker | 287 | Type inference, OCAP, DI, all builtins; adversarial wrong-arg and return-type tests |
+| varg-codegen | 274 | Rust generation, all runtime module codegen; adversarial annotation and AST edge cases |
+| varg-runtime | 324 | Real HTTP/SQLite/WS/MCP + all 31 modules; adversarial boundary and error-path tests |
+| varg-lsp | 18 | Diagnostics, hover, completion |
+| vargc | 11 | CLI driver, formatter, REPL |
+| **Total** | **1159** | **0 failures, 0 warnings** |
 
 ---
 
@@ -371,7 +398,7 @@ Project X/
 ## Status
 
 Varg is in active development. The compiler is functional and produces working native binaries.
-**Current release: v0.10.0** — 29 development waves completed, 889 tests passing, zero warnings.
+**Current release: v0.12.0** — 34 development waves completed, 1159 tests passing, zero warnings.
 
 The language is suitable for building real agents, CLI tools, API clients, web servers,
 knowledge-graph-powered RAG systems, multi-agent orchestration pipelines, and REPL-driven

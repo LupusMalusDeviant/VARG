@@ -898,11 +898,145 @@ var key = env("API_KEY");     // reads environment variable
 ```csharp
 assert(x > 0, "x must be positive");
 assert_eq(result, expected, "values should match");
+assert_ne(a, b, "must differ");
+assert_true(flag);
+assert_false(flag);
+assert_contains(text, "substring");
+assert_throws(() => risky_call());
+```
+
+### Human-in-the-Loop (HITL)
+
+```csharp
+var approved = await_approval("Deploy to production?");  // bool — blocks until user responds
+var name = await_input("Enter your name: ");              // string
+var choice = await_choice("Pick one", ["Yes", "No", "Later"]); // int (index)
+```
+
+### Rate Limiting
+
+```csharp
+var rl = ratelimiter_new(10, 60000);          // 10 calls per 60s window
+var ok = ratelimiter_acquire(rl, "user_123"); // bool — consume 1 token for key
+var check = ratelimiter_try_acquire(rl, "user_123"); // bool — non-blocking check
+rate_limit_reset(rl, "user_123");             // reset key's bucket
+```
+
+### LLM Budget / Cost Tracking
+
+```csharp
+var b = budget_new(50000, 500);              // 50k tokens, $5.00 (cents)
+var ok = budget_track(b, prompt, response);  // bool — returns false if exceeded
+var chk = budget_check(b);                   // bool — false if already exhausted
+var tok = budget_remaining_tokens(b);        // int
+var cents = budget_remaining_usd_cents(b);   // int
+var rpt = budget_report(b);                  // "Tokens: X/Y (Z%) | USD: ..."
+var est = estimate_tokens("hello world");    // int — heuristic: chars/4
+```
+
+### Agent Checkpoint / Resume
+
+```csharp
+var cp = checkpoint_open("state.db", "agent_v1"); // CheckpointHandle
+checkpoint_save(cp, json_stringify(state));        // bool
+var json = checkpoint_load(cp);                    // string (empty if none)
+var exists = checkpoint_exists(cp);               // bool
+var age = checkpoint_age(cp);                     // int (seconds since save, -1 if none)
+checkpoint_clear(cp);                              // bool
+```
+
+### Typed Channels
+
+```csharp
+var ch = channel_new(100);               // ChannelHandle (capacity 100)
+channel_send(ch, "message");             // bool
+var msg = channel_recv(ch);              // string (blocks until message)
+var opt = channel_try_recv(ch);          // string (empty if nothing waiting)
+var timed = channel_recv_timeout(ch, 5000); // string (empty on timeout)
+var n = channel_len(ch);                 // int
+channel_close(ch);                       // void
+var closed = channel_is_closed(ch);      // bool
+```
+
+### Property-Based Testing
+
+```csharp
+var i = prop_gen_int(-100, 100);         // int (random in range)
+var f = prop_gen_float(0.0, 1.0);        // float
+var b = prop_gen_bool();                 // bool
+var s = prop_gen_string(5);              // string (random, max 5 chars)
+var xs = prop_gen_int_list(0, 100, 10);  // int[] (max 10 elements)
+var ss = prop_gen_string_list(3, 5);     // string[] (max 5 strings, max 3 chars each)
+var pass = prop_check(100, () => prop_gen_int(0, 10) >= 0); // bool
+prop_assert(x >= 0, "must be non-negative");
+```
+
+### Multimodal (Image / Audio / Vision)
+
+```csharp
+var img = image_load("photo.png", cap);        // ImageHandle (requires FileAccess)
+var b64 = image_to_base64(img);                // string
+var fmt = image_format(img);                   // "png" | "jpeg" | ...
+var sz = image_size_bytes(img);                // int
+
+var aud = audio_load("voice.mp3", cap);        // AudioHandle
+var ab64 = audio_to_base64(aud);               // string
+
+// Vision call — sends image to multimodal LLM
+var desc = llm_vision("What is in this image?", b64, "png", llm_cap); // string
+```
+
+### Workflow DAG
+
+```csharp
+var wf = workflow_new("pipeline");
+workflow_add_step(wf, "fetch", []);           // no dependencies
+workflow_add_step(wf, "parse", ["fetch"]);    // depends on fetch
+workflow_add_step(wf, "store", ["parse"]);    // depends on parse
+
+var ready = workflow_ready_steps(wf);         // string[] — steps with all deps done
+workflow_set_output(wf, "fetch", data);       // mark step done with output
+workflow_set_failed(wf, "parse", "err msg");  // mark step failed
+
+var done = workflow_is_complete(wf);          // bool
+var out = workflow_get_output(wf, "store");   // string
+var status = workflow_status(wf, "fetch");    // "Pending" | "Done" | "Failed"
+var n = workflow_step_count(wf);              // int
+```
+
+### Package Registry
+
+```csharp
+var reg = registry_open("packages.json");    // RegistryHandle
+registry_install(reg, "varg-http", "1.2.0"); // bool
+registry_uninstall(reg, "varg-http");        // bool
+var installed = registry_is_installed(reg, "varg-http"); // bool
+var ver = registry_version(reg, "varg-http");            // string
+var all = registry_list(reg);                            // string[]
+var found = registry_search(reg, "http");                // string[]
+```
+
+### Extended LLM
+
+```csharp
+// Structured output (JSON schema enforcement)
+var schema = "{\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}}}";
+var json_out = llm_structured("gpt-4o", messages, schema, llm_cap); // string (JSON)
+
+// Streaming (SSE chunks)
+var stream = llm_stream("gpt-4o", messages, llm_cap); // SseHandle
+var chunk = sse_read(stream);                          // string chunk
+
+// Batch embeddings
+var texts = ["hello", "world", "varg"];
+var embeddings = llm_embed_batch(texts, llm_cap);      // float[][] (one vec per text)
 ```
 
 ---
 
 ## Annotations
+
+### Test Framework
 
 ```csharp
 @[Test]
@@ -910,15 +1044,65 @@ public void TestAdd() {
     assert_eq(add(2, 3), 5, "2+3 should be 5");
 }
 
-@[McpTool("search", "Search the database")]
-public string Search(string query) {
-    // Auto-generates MCP tool schema
-    return results;
-}
+@[BeforeEach]
+public void Setup() { /* runs before every @[Test] */ }
 
+@[AfterEach]
+public void Teardown() { /* runs after every @[Test] */ }
+```
+
+### CLI + MCP Integration
+
+```csharp
 @[CliCommand("greet", "Greet a user")]
 public void Greet(string name) {
     print $"Hello, {name}!";
+}
+
+@[McpTool("search", "Search the database")]
+public string Search(string query) {
+    return results; // auto-generates MCP JSON schema
+}
+```
+
+### Rate Limiting
+
+```csharp
+@[RateLimit(calls: 10, window_ms: 60000)]
+public string CallApi(string prompt, LlmAccess llm) {
+    // Enforced: max 10 calls per minute per key
+    return llm_chat("gpt-4o", [{"role": "user", "content": prompt}], llm);
+}
+```
+
+### LLM Budget Guards
+
+```csharp
+@[Budget(tokens: 50000, usd: 5)]
+public string RunAgent(string task, LlmAccess llm) {
+    // Hard budget: 50k tokens or $5 — whichever hits first stops the agent
+    return llm_chat("gpt-4o", [{"role": "user", "content": task}], llm);
+}
+```
+
+### Agent Checkpoint / Resume
+
+```csharp
+@[Checkpointed("agent_state.db")]
+public void Process(string input) {
+    // State is auto-persisted on each call; resumes from last saved state
+    checkpoint_save(self.state_handle, json_stringify(self.state));
+}
+```
+
+### Property-Based Testing
+
+```csharp
+@[Property(runs: 100)]
+public void TestSortIsIdempotent() {
+    var xs = prop_gen_int_list(0, 1000, 10);
+    var sorted = xs.sort();
+    prop_assert(sorted.len() == xs.len(), "sort must not change length");
 }
 ```
 
