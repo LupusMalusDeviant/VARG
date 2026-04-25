@@ -9,22 +9,16 @@ const DEFAULT_CODE = `agent Hello {
         var name = "World";
         print($"Hello, {name}!");
 
-        // Iterator chain — map / filter / any
+        // Lists + iterator methods
         var nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         var evens   = nums.filter((x) => x % 2 == 0);
         var doubled = evens.map((x) => x * 2);
         print($"Evens doubled: {doubled}");
-        print($"Any > 15? {any(doubled, (x) => x > 15)}");
 
-        // Closures + variables
+        // Closures capturing outer variables
         var threshold = 5;
         var big = nums.filter((x) => x > threshold);
-        print($"Numbers above {threshold}: {big}");
-
-        // String operations
-        var greeting = "Hello, Varg!";
-        print($"Upper: {to_upper(greeting)}");
-        print($"Length: {len(greeting)}");
+        print($"Above {threshold}: {big}");
 
         // Conditionals
         var score = 72;
