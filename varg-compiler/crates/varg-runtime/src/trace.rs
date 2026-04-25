@@ -86,11 +86,13 @@ pub fn __varg_trace_end(tracer: &TracerHandle, span_id: i64) {
     let mut t = tracer.lock().unwrap();
     let sid = span_id as u64;
     if let Some(span) = t.spans.iter_mut().find(|s| s.span_id == sid) {
+        if span.end_time.is_some() {
+            return; // already ended — do NOT touch active_span
+        }
         span.end_time = Some(now_micros());
         if span.status == SpanStatus::Running {
             span.status = SpanStatus::Ok;
         }
-        // Restore parent as active span
         t.active_span = span.parent_id;
     }
 }
@@ -336,15 +338,23 @@ mod tests {
     }
 
     #[test]
-    fn test_trace_double_end_same_span_is_idempotent() {
-        // Ending the same span twice overwrites end_time but must not panic or corrupt other spans
+    fn test_trace_double_end_does_not_clobber_subsequent_active_span() {
+        // Bug scenario: end B, start C, end B again → active_span must stay C, not revert to A
         let tracer = __varg_trace_start("t");
-        let s = __varg_trace_span(&tracer, "op");
-        __varg_trace_end(&tracer, s);
-        __varg_trace_end(&tracer, s); // second end — span found again, end_time overwritten
+        let a = __varg_trace_span(&tracer, "A");
+        let b = __varg_trace_span(&tracer, "B");
+        __varg_trace_end(&tracer, b);          // active → A (correct)
+        let c = __varg_trace_span(&tracer, "C"); // active → C
+        __varg_trace_end(&tracer, b);          // second end of B — must be a no-op
+        {
+            let t = tracer.lock().unwrap();
+            assert_eq!(t.active_span, Some(c as u64),
+                "second trace_end(B) must not clobber C as the active span");
+        }
+        __varg_trace_end(&tracer, c);
+        __varg_trace_end(&tracer, a);
         let t = tracer.lock().unwrap();
-        assert_eq!(t.spans.len(), 1, "double-end must not create extra spans");
-        assert_eq!(t.spans[0].status, SpanStatus::Ok);
+        assert!(t.active_span.is_none());
     }
 
     #[test]

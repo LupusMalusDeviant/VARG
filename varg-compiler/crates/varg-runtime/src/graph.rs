@@ -224,6 +224,9 @@ pub fn __varg_graph_traverse(
     depth: i64,
     relation_filter: &str,
 ) -> Vec<HashMap<String, String>> {
+    if depth <= 0 {
+        return Vec::new();
+    }
     let g = graph.lock().unwrap();
     let mut visited = std::collections::HashSet::new();
     let mut results = Vec::new();
@@ -414,17 +417,15 @@ mod tests {
     }
 
     #[test]
-    fn test_graph_traverse_zero_depth_returns_start_node() {
-        // depth=0 means the loop never runs; frontier still contains start_id → returns start node
+    fn test_graph_traverse_zero_depth_returns_empty() {
+        // depth=0 means "don't traverse" → must return empty, not the start node
         let g = __varg_graph_open(":memory:");
         let a = __varg_graph_add_node(&g, "P", &HashMap::from([("name".to_string(), "Alice".to_string())]));
         let b = __varg_graph_add_node(&g, "P", &HashMap::from([("name".to_string(), "Bob".to_string())]));
         __varg_graph_add_edge(&g, a, "knows", b, &HashMap::new());
 
         let result = __varg_graph_traverse(&g, a, 0, "knows");
-        // frontier is never replaced, so it still = [a] → collect returns Alice
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].get("name").unwrap(), "Alice");
+        assert!(result.is_empty(), "depth=0 must return empty, not the start node");
     }
 
     #[test]
