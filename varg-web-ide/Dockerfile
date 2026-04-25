@@ -16,7 +16,9 @@ WORKDIR /app
 
 # Rust toolchain + rustfmt (vargc runs rustfmt on generated code)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates build-essential && \
+    apt-get install -y --no-install-recommends \
+        curl ca-certificates build-essential \
+        pkg-config libssl-dev && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && \
     /root/.cargo/bin/rustup component add rustfmt && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
