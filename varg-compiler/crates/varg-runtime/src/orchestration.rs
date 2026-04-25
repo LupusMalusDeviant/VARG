@@ -192,6 +192,85 @@ mod tests {
         assert_eq!(results[1].get("result").unwrap(), "WORLD");
     }
 
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_fan_out_empty_inputs_returns_empty() {
+        let handler = Arc::new(|_: &str| "x".to_string());
+        let results = __varg_fan_out(&[], handler);
+        assert!(results.is_empty(), "fan_out with empty input must return empty vec");
+    }
+
+    #[test]
+    fn test_fan_out_single_input() {
+        let handler = Arc::new(|input: &str| format!("got:{input}"));
+        let results = __varg_fan_out(&["only".to_string()], handler);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], "got:only");
+    }
+
+    #[test]
+    fn test_fan_in_empty_results() {
+        let reducer = Arc::new(|items: &[String]| items.join(","));
+        let merged = __varg_fan_in(&[], reducer);
+        assert_eq!(merged, "", "fan_in with empty results must produce empty string");
+    }
+
+    #[test]
+    fn test_orchestrator_run_all_with_no_tasks_is_safe() {
+        let orch = __varg_orchestrator_new("empty");
+        let handler = Arc::new(|_: &str| "x".to_string());
+        __varg_orchestrator_run_all(&orch, handler); // must not panic
+        assert_eq!(__varg_orchestrator_completed_count(&orch), 0);
+    }
+
+    #[test]
+    fn test_orchestrator_results_before_run_shows_pending() {
+        let orch = __varg_orchestrator_new("pre_run");
+        __varg_orchestrator_add_task(&orch, "t1", "data");
+        let results = __varg_orchestrator_results(&orch);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].get("status").unwrap().contains("Pending"),
+            "task status must be Pending before run_all");
+    }
+
+    #[test]
+    fn test_orchestrator_completed_count_is_zero_before_run() {
+        let orch = __varg_orchestrator_new("test");
+        __varg_orchestrator_add_task(&orch, "t1", "x");
+        __varg_orchestrator_add_task(&orch, "t2", "y");
+        assert_eq!(__varg_orchestrator_completed_count(&orch), 0);
+    }
+
+    #[test]
+    fn test_orchestrator_run_all_second_call_skips_completed_tasks() {
+        let orch = __varg_orchestrator_new("idempotent");
+        __varg_orchestrator_add_task(&orch, "t1", "hello");
+
+        let run_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let rc = run_count.clone();
+        let handler = Arc::new(move |input: &str| {
+            rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            input.to_uppercase()
+        });
+        __varg_orchestrator_run_all(&orch, handler.clone());
+        __varg_orchestrator_run_all(&orch, handler.clone()); // second call: task is Completed, not Pending
+
+        assert_eq!(run_count.load(std::sync::atomic::Ordering::SeqCst), 1,
+            "second run_all must not re-execute already-completed tasks");
+    }
+
+    #[test]
+    fn test_fan_out_result_order_matches_input_order() {
+        // Each thread gets its own input — results must be in input order
+        let handler = Arc::new(|input: &str| input.to_string());
+        let inputs: Vec<String> = (0..10).map(|i| i.to_string()).collect();
+        let results = __varg_fan_out(&inputs, handler);
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(r, &i.to_string(), "fan_out result[{i}] must match input[{i}]");
+        }
+    }
+
     #[test]
     fn test_fan_out_parallel_execution() {
         // Verify parallel execution by timing

@@ -189,6 +189,81 @@ mod tests {
         assert_eq!(val, "gone");
     }
 
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_memory_set_overwrites_existing_key() {
+        let mem = __varg_memory_open(":memory:");
+        __varg_memory_set(&mem, "k", "first");
+        __varg_memory_set(&mem, "k", "second");
+        assert_eq!(__varg_memory_get(&mem, "k", "x"), "second",
+            "second set must overwrite first value");
+    }
+
+    #[test]
+    fn test_memory_set_empty_string_value_is_distinct_from_missing() {
+        let mem = __varg_memory_open(":memory:");
+        __varg_memory_set(&mem, "empty_key", "");
+        // Key exists with value "" — must NOT return default
+        let val = __varg_memory_get(&mem, "empty_key", "default");
+        assert_eq!(val, "", "empty string value must be stored, not replaced by default");
+    }
+
+    #[test]
+    fn test_memory_get_missing_key_returns_default() {
+        let mem = __varg_memory_open(":memory:");
+        let val = __varg_memory_get(&mem, "never_set", "fallback");
+        assert_eq!(val, "fallback");
+    }
+
+    #[test]
+    fn test_memory_clear_working_does_not_affect_episodic() {
+        let mem = __varg_memory_open(":memory:");
+        __varg_memory_store(&mem, "hello world", &HashMap::new());
+        __varg_memory_set(&mem, "k", "v");
+
+        __varg_memory_clear_working(&mem);
+
+        assert_eq!(__varg_memory_get(&mem, "k", "gone"), "gone",
+            "working memory must be empty after clear");
+        assert_eq!(__varg_memory_episode_count(&mem), 1,
+            "episodic memory must be untouched by clear_working");
+    }
+
+    #[test]
+    fn test_memory_recall_from_empty_episodic_returns_empty() {
+        let mem = __varg_memory_open(":memory:");
+        let results = __varg_memory_recall(&mem, "any query", 5);
+        assert!(results.is_empty(), "recall from empty store must return empty vec");
+    }
+
+    #[test]
+    fn test_memory_recall_top_k_capped_by_stored_count() {
+        let mem = __varg_memory_open(":memory:");
+        __varg_memory_store(&mem, "entry one", &HashMap::new());
+        __varg_memory_store(&mem, "entry two", &HashMap::new());
+        // Ask for 10 but only 2 stored
+        let results = __varg_memory_recall(&mem, "entry", 10);
+        assert_eq!(results.len(), 2, "recall must return at most the number of stored entries");
+    }
+
+    #[test]
+    fn test_memory_query_facts_nonexistent_label_returns_empty() {
+        let mem = __varg_memory_open(":memory:");
+        let facts = __varg_memory_query_facts(&mem, "NeverAdded");
+        assert!(facts.is_empty(), "querying facts with unknown label must return empty");
+    }
+
+    #[test]
+    fn test_memory_episode_count_tracks_each_store() {
+        let mem = __varg_memory_open(":memory:");
+        assert_eq!(__varg_memory_episode_count(&mem), 0);
+        for i in 0..5 {
+            __varg_memory_store(&mem, &format!("episode {i}"), &HashMap::new());
+        }
+        assert_eq!(__varg_memory_episode_count(&mem), 5);
+    }
+
     #[test]
     fn test_memory_persistence_roundtrip() {
         let mem_name = format!("test_mem_persist_{}", std::process::id());

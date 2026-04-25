@@ -276,6 +276,85 @@ mod tests {
         assert!(json.contains("\"input\": \"test\""));
     }
 
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_trace_end_nonexistent_span_id_is_safe() {
+        let tracer = __varg_trace_start("t");
+        // Ending a span ID that was never created must not panic
+        __varg_trace_end(&tracer, 999_999);
+        assert_eq!(__varg_trace_span_count(&tracer), 0, "nonexistent span end must be a no-op");
+    }
+
+    #[test]
+    fn test_trace_error_nonexistent_span_id_is_safe() {
+        let tracer = __varg_trace_start("t");
+        __varg_trace_error(&tracer, 999_999, "oops");
+        assert_eq!(__varg_trace_span_count(&tracer), 0);
+    }
+
+    #[test]
+    fn test_trace_event_with_no_active_span_is_dropped() {
+        // active_span = None → event silently discarded, no panic
+        let tracer = __varg_trace_start("t");
+        __varg_trace_event(&tracer, "orphan_event", &HashMap::new());
+        assert_eq!(__varg_trace_span_count(&tracer), 0);
+    }
+
+    #[test]
+    fn test_trace_set_attr_with_no_active_span_is_dropped() {
+        let tracer = __varg_trace_start("t");
+        __varg_trace_set_attr(&tracer, "key", "value"); // no active span
+        assert_eq!(__varg_trace_span_count(&tracer), 0);
+    }
+
+    #[test]
+    fn test_trace_export_with_no_spans_is_valid() {
+        let tracer = __varg_trace_start("empty_agent");
+        let json = __varg_trace_export(&tracer);
+        assert!(json.contains("\"tracer\": \"empty_agent\""));
+        assert!(json.contains("\"spans\": []"), "export with no spans must contain empty spans array");
+    }
+
+    #[test]
+    fn test_trace_span_count_includes_running_spans() {
+        // span_count() is just spans.len() — counts Running spans too
+        let tracer = __varg_trace_start("t");
+        __varg_trace_span(&tracer, "never_ended");
+        assert_eq!(__varg_trace_span_count(&tracer), 1,
+            "span_count must include spans that are still Running");
+    }
+
+    #[test]
+    fn test_trace_error_span_sets_end_time() {
+        let tracer = __varg_trace_start("t");
+        let s = __varg_trace_span(&tracer, "op");
+        __varg_trace_error(&tracer, s, "boom");
+        let t = tracer.lock().unwrap();
+        assert!(t.spans[0].end_time.is_some(), "error span must have end_time set");
+        assert!(matches!(t.spans[0].status, SpanStatus::Error(_)));
+    }
+
+    #[test]
+    fn test_trace_double_end_same_span_is_idempotent() {
+        // Ending the same span twice overwrites end_time but must not panic or corrupt other spans
+        let tracer = __varg_trace_start("t");
+        let s = __varg_trace_span(&tracer, "op");
+        __varg_trace_end(&tracer, s);
+        __varg_trace_end(&tracer, s); // second end — span found again, end_time overwritten
+        let t = tracer.lock().unwrap();
+        assert_eq!(t.spans.len(), 1, "double-end must not create extra spans");
+        assert_eq!(t.spans[0].status, SpanStatus::Ok);
+    }
+
+    #[test]
+    fn test_trace_export_running_span_shows_running_status() {
+        let tracer = __varg_trace_start("t");
+        __varg_trace_span(&tracer, "in_flight");
+        let json = __varg_trace_export(&tracer);
+        assert!(json.contains("RUNNING"), "export of open span must contain RUNNING status");
+    }
+
     #[test]
     fn test_trace_span_count() {
         let tracer = __varg_trace_start("test");

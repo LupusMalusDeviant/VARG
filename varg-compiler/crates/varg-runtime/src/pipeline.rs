@@ -231,4 +231,88 @@ mod tests {
         let result = __varg_pipeline_run(&pipe, "passthrough");
         assert_eq!(result, "passthrough");
     }
+
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_pipeline_step_returning_empty_string_chains_correctly() {
+        // A step that returns "" passes "" to the next step
+        let pipe = __varg_pipeline_new("p");
+        __varg_pipeline_add_step(&pipe, "wipe", Arc::new(|_| "".to_string()));
+        __varg_pipeline_add_step(&pipe, "check", Arc::new(|input: &str| {
+            if input.is_empty() { "was_empty".to_string() } else { "not_empty".to_string() }
+        }));
+        assert_eq!(__varg_pipeline_run(&pipe, "hello"), "was_empty");
+    }
+
+    #[test]
+    fn test_pipeline_100_steps_chain_does_not_overflow() {
+        let pipe = __varg_pipeline_new("deep");
+        for _ in 0..100 {
+            __varg_pipeline_add_step(&pipe, "x", Arc::new(|input: &str| format!("{input}x")));
+        }
+        let result = __varg_pipeline_run(&pipe, "");
+        assert_eq!(result.len(), 100, "100-step chain must append exactly 100 chars");
+        assert!(__varg_pipeline_step_count(&pipe) == 100);
+    }
+
+    #[test]
+    fn test_event_same_handler_registered_twice_fires_twice() {
+        let bus = __varg_event_bus_new("b");
+        let h = Arc::new(|_: &HashMap<String, String>| "hi".to_string());
+        __varg_event_on(&bus, "ev", h.clone());
+        __varg_event_on(&bus, "ev", h.clone());
+        let results = __varg_event_emit(&bus, "ev", &HashMap::new());
+        assert_eq!(results.len(), 2, "same handler registered twice must fire twice");
+    }
+
+    #[test]
+    fn test_event_emit_empty_data_calls_handlers() {
+        let bus = __varg_event_bus_new("b");
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fired_clone = fired.clone();
+        __varg_event_on(&bus, "ping", Arc::new(move |_| {
+            fired_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            "ok".to_string()
+        }));
+        __varg_event_emit(&bus, "ping", &HashMap::new());
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst),
+            "handler must fire even with empty event data");
+    }
+
+    #[test]
+    fn test_event_handlers_for_different_types_are_independent() {
+        let bus = __varg_event_bus_new("b");
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let c = count.clone();
+        __varg_event_on(&bus, "a", Arc::new(move |_| {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst); "a".to_string()
+        }));
+        __varg_event_emit(&bus, "b", &HashMap::new()); // fires "b", not "a"
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0,
+            "emitting 'b' must not fire 'a' handler");
+        __varg_event_emit(&bus, "a", &HashMap::new());
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_event_count_not_affected_by_handler_registrations() {
+        let bus = __varg_event_bus_new("b");
+        for _ in 0..5 {
+            __varg_event_on(&bus, "tick", Arc::new(|_| "x".to_string()));
+        }
+        assert_eq!(__varg_event_count(&bus), 0,
+            "registering handlers must not increment event log count");
+        __varg_event_emit(&bus, "tick", &HashMap::new());
+        assert_eq!(__varg_event_count(&bus), 1,
+            "only emits increment the event log count");
+    }
+
+    #[test]
+    fn test_event_unhandled_type_still_logged() {
+        let bus = __varg_event_bus_new("b");
+        __varg_event_emit(&bus, "ghost_event", &HashMap::new());
+        assert_eq!(__varg_event_count(&bus), 1,
+            "events with no handlers must still be recorded in the log");
+    }
 }

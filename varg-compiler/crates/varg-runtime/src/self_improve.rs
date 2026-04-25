@@ -173,4 +173,81 @@ mod tests {
         let si = __varg_self_improver_new("test", 3);
         assert_eq!(__varg_self_improver_success_rate(&si), 0);
     }
+
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_success_rate_all_successes_is_100() {
+        let si = __varg_self_improver_new(
+            &format!("si_all_ok_{}", std::process::id()), 5);
+        __varg_self_improver_record_success(&si, "t1", "s1");
+        __varg_self_improver_record_success(&si, "t2", "s2");
+        __varg_self_improver_record_success(&si, "t3", "s3");
+        assert_eq!(__varg_self_improver_success_rate(&si), 100);
+    }
+
+    #[test]
+    fn test_success_rate_all_failures_is_0() {
+        let si = __varg_self_improver_new(
+            &format!("si_all_fail_{}", std::process::id()), 5);
+        __varg_self_improver_record_failure(&si, "t1", "err");
+        __varg_self_improver_record_failure(&si, "t2", "err");
+        assert_eq!(__varg_self_improver_success_rate(&si), 0);
+    }
+
+    #[test]
+    fn test_success_rate_rounds_down() {
+        // 1 success / 3 iterations = 33.33% → cast to i64 → 33
+        let si = __varg_self_improver_new(
+            &format!("si_rounding_{}", std::process::id()), 5);
+        __varg_self_improver_record_success(&si, "t", "ok");
+        __varg_self_improver_record_failure(&si, "t", "err");
+        __varg_self_improver_record_failure(&si, "t", "err");
+        assert_eq!(__varg_self_improver_success_rate(&si), 33,
+            "1/3 must floor to 33, not round to 34");
+    }
+
+    #[test]
+    fn test_iterations_equals_successes_plus_failures() {
+        let si = __varg_self_improver_new(
+            &format!("si_counter_{}", std::process::id()), 5);
+        __varg_self_improver_record_success(&si, "t1", "ok");
+        __varg_self_improver_record_failure(&si, "t2", "err");
+        __varg_self_improver_record_success(&si, "t3", "ok");
+        let s = si.lock().unwrap();
+        assert_eq!(s.iterations, s.successes + s.failures,
+            "iterations must always equal successes + failures");
+    }
+
+    #[test]
+    fn test_stats_contains_all_expected_keys() {
+        let si = __varg_self_improver_new(
+            &format!("si_stats_{}", std::process::id()), 5);
+        let stats = __varg_self_improver_stats(&si);
+        for key in &["name", "iterations", "successes", "failures", "success_rate", "max_retries"] {
+            assert!(stats.contains_key(*key), "stats must contain key '{key}'");
+        }
+    }
+
+    #[test]
+    fn test_recall_before_any_records_returns_empty_or_zero_results() {
+        let si = __varg_self_improver_new(
+            &format!("si_empty_{}", std::process::id()), 5);
+        let results = __varg_self_improver_recall(&si, "any query", 5);
+        // No episodes stored → recall must return 0 results
+        assert!(results.is_empty(), "recall from empty memory must return empty vec");
+    }
+
+    #[test]
+    fn test_negative_max_retries_stored_as_large_u64() {
+        // -1i64 as u64 = u64::MAX; the struct accepts it without panic
+        let si = __varg_self_improver_new(
+            &format!("si_neg_{}", std::process::id()), -1);
+        let s = si.lock().unwrap();
+        assert_eq!(s.max_retries, u64::MAX, "-1 max_retries must wrap to u64::MAX");
+        // stats must still work (no division by max_retries)
+        drop(s);
+        let stats = __varg_self_improver_stats(&si);
+        assert!(stats.contains_key("max_retries"));
+    }
 }

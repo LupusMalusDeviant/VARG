@@ -382,6 +382,112 @@ mod tests {
         assert_eq!(n[0].get("name").unwrap(), "Bob");
     }
 
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_graph_query_nonexistent_label_returns_empty() {
+        let g = __varg_graph_open(":memory:");
+        __varg_graph_add_node(&g, "Person", &HashMap::from([("name".to_string(), "Alice".to_string())]));
+        let results = __varg_graph_query(&g, "Robot");
+        assert!(results.is_empty(), "querying unknown label must return empty vec");
+    }
+
+    #[test]
+    fn test_graph_neighbors_isolated_node_returns_empty() {
+        let g = __varg_graph_open(":memory:");
+        let id = __varg_graph_add_node(&g, "Lone", &HashMap::new());
+        let n = __varg_graph_neighbors(&g, id);
+        assert!(n.is_empty(), "isolated node must have no neighbors");
+    }
+
+    #[test]
+    fn test_graph_neighbors_both_directions() {
+        // Alice→Bob: neighbors(Bob) should return Alice (reverse lookup)
+        let g = __varg_graph_open(":memory:");
+        let a = __varg_graph_add_node(&g, "P", &HashMap::from([("name".to_string(), "Alice".to_string())]));
+        let b = __varg_graph_add_node(&g, "P", &HashMap::from([("name".to_string(), "Bob".to_string())]));
+        __varg_graph_add_edge(&g, a, "knows", b, &HashMap::new());
+
+        let nb = __varg_graph_neighbors(&g, b);
+        assert_eq!(nb.len(), 1, "Bob must see Alice as neighbor via reverse edge");
+        assert_eq!(nb[0].get("name").unwrap(), "Alice");
+    }
+
+    #[test]
+    fn test_graph_traverse_zero_depth_returns_start_node() {
+        // depth=0 means the loop never runs; frontier still contains start_id → returns start node
+        let g = __varg_graph_open(":memory:");
+        let a = __varg_graph_add_node(&g, "P", &HashMap::from([("name".to_string(), "Alice".to_string())]));
+        let b = __varg_graph_add_node(&g, "P", &HashMap::from([("name".to_string(), "Bob".to_string())]));
+        __varg_graph_add_edge(&g, a, "knows", b, &HashMap::new());
+
+        let result = __varg_graph_traverse(&g, a, 0, "knows");
+        // frontier is never replaced, so it still = [a] → collect returns Alice
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].get("name").unwrap(), "Alice");
+    }
+
+    #[test]
+    fn test_graph_traverse_no_matching_relation_returns_empty() {
+        let g = __varg_graph_open(":memory:");
+        let a = __varg_graph_add_node(&g, "P", &HashMap::new());
+        let b = __varg_graph_add_node(&g, "P", &HashMap::new());
+        __varg_graph_add_edge(&g, a, "knows", b, &HashMap::new());
+
+        let result = __varg_graph_traverse(&g, a, 1, "hates");
+        assert!(result.is_empty(), "non-matching relation filter must yield no results");
+    }
+
+    #[test]
+    fn test_graph_traverse_cycle_terminates() {
+        // A→B, B→A (cycle). depth=10 must terminate, not loop forever.
+        let g = __varg_graph_open(":memory:");
+        let a = __varg_graph_add_node(&g, "P", &HashMap::new());
+        let b = __varg_graph_add_node(&g, "P", &HashMap::new());
+        __varg_graph_add_edge(&g, a, "to", b, &HashMap::new());
+        __varg_graph_add_edge(&g, b, "to", a, &HashMap::new());
+
+        // Should terminate; visited set blocks re-entering already-visited nodes
+        let result = __varg_graph_traverse(&g, a, 10, "to");
+        // After depth 3 the frontier is empty (A visited on iter 1, B on iter 2, A skipped on iter 3 → empty frontier)
+        assert!(result.is_empty(), "cycle must terminate with empty frontier after visited set kicks in");
+    }
+
+    #[test]
+    fn test_graph_add_edge_with_nonexistent_nodes_is_accepted() {
+        // No validation — edges can reference node IDs that do not exist
+        let g = __varg_graph_open(":memory:");
+        __varg_graph_add_edge(&g, 9999, "phantom", 8888, &HashMap::new());
+        let db = g.lock().unwrap();
+        assert_eq!(db.edges.len(), 1, "edge with nonexistent node IDs must still be stored");
+        // neighbors and traverse for these IDs just return empty (find returns None)
+        drop(db);
+        let n = __varg_graph_neighbors(&g, 9999);
+        assert!(n.is_empty(), "neighbors of ghost node must be empty (node record not found)");
+    }
+
+    #[test]
+    fn test_graph_query_includes_meta_fields() {
+        // query results must contain _id and _label injected by __varg_graph_query
+        let g = __varg_graph_open(":memory:");
+        __varg_graph_add_node(&g, "Thing", &HashMap::from([("x".to_string(), "1".to_string())]));
+        let results = __varg_graph_query(&g, "Thing");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains_key("_id"), "query result must contain _id");
+        assert_eq!(results[0].get("_label").unwrap(), "Thing");
+    }
+
+    #[test]
+    fn test_graph_multiple_nodes_same_label_all_returned() {
+        let g = __varg_graph_open(":memory:");
+        for i in 0..5 {
+            __varg_graph_add_node(&g, "Item", &HashMap::from([("i".to_string(), i.to_string())]));
+        }
+        __varg_graph_add_node(&g, "Other", &HashMap::new());
+        let results = __varg_graph_query(&g, "Item");
+        assert_eq!(results.len(), 5, "all nodes with matching label must be returned");
+    }
+
     #[test]
     fn test_graph_persistence_roundtrip() {
         let db_name = format!("test_graph_persist_{}", std::process::id());
