@@ -7,6 +7,7 @@ public class VargCompilerService
 {
     private readonly string _vargcPath;
     private readonly string _cacheDir;
+    private readonly string? _cratesDir;
 
     public VargCompilerService(IConfiguration config)
     {
@@ -15,6 +16,12 @@ public class VargCompilerService
             ? Path.Combine(Path.GetTempPath(), "varg-playground-cache")
             : config["Varg:BuildCache"]!;
         Directory.CreateDirectory(_cacheDir);
+
+        // Optional: directory containing varg-os-types/ and varg-runtime/ subdirs.
+        // vargc resolves path deps relative to its cwd, so we symlink this into
+        // every temp build dir so cargo can find them.
+        var cratesDir = config["Varg:CratesDir"];
+        _cratesDir = string.IsNullOrEmpty(cratesDir) ? null : cratesDir;
     }
 
     public Task<EmitResult> EmitRsAsync(string code) =>
@@ -68,10 +75,24 @@ public class VargCompilerService
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    private static TempDir WriteTempDir(string code)
+    private TempDir WriteTempDir(string code)
     {
         var dir = Directory.CreateTempSubdirectory("varg-play-");
         File.WriteAllText(Path.Combine(dir.FullName, "main.varg"), code);
+
+        // Symlink the varg crates so vargc can resolve path dependencies.
+        // vargc computes: current_dir + "crates/varg-os-types" etc.
+        if (_cratesDir is not null && Directory.Exists(_cratesDir))
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(
+                    Path.Combine(dir.FullName, "crates"),
+                    _cratesDir);
+            }
+            catch { /* symlinks may require elevated perms on Windows; ignore */ }
+        }
+
         return new TempDir(dir.FullName);
     }
 
