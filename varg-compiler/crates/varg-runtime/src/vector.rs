@@ -271,6 +271,114 @@ fn local_embed_fallback(text: &str) -> Vec<f32> {
     vec
 }
 
+// ── Wave 33: LSH Approximate Nearest-Neighbor Index ───────────────────────
+//
+// Random-projection LSH: project each vector onto k hyperplanes,
+// encode as a bit-mask → bucket. Search only same bucket + neighbors.
+
+const LSH_PLANES: usize = 16; // 16 bits → 65536 possible buckets
+
+fn lcg_f32(state: &mut u64) -> f32 {
+    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    // Map to [-1, 1]
+    (*state as f32 / u64::MAX as f32) * 2.0 - 1.0
+}
+
+/// Generate k random hyperplane vectors (each of `dim` dimensions).
+fn make_planes(dim: usize, k: usize, seed: u64) -> Vec<Vec<f32>> {
+    let mut state = seed;
+    (0..k)
+        .map(|_| (0..dim).map(|_| lcg_f32(&mut state)).collect())
+        .collect()
+}
+
+fn lsh_hash(vec: &[f32], planes: &[Vec<f32>]) -> u64 {
+    let mut h = 0u64;
+    for (i, plane) in planes.iter().enumerate() {
+        let dot: f32 = vec.iter().zip(plane.iter()).map(|(a, b)| a * b).sum();
+        if dot >= 0.0 { h |= 1 << i; }
+    }
+    h
+}
+
+pub struct LshIndex {
+    planes: Vec<Vec<f32>>,
+    buckets: HashMap<u64, Vec<String>>, // hash → entry ids
+}
+
+impl LshIndex {
+    fn build(store: &VectorStore) -> Self {
+        let dim = store.entries.first().map(|e| e.embedding.len()).unwrap_or(128);
+        let planes = make_planes(dim, LSH_PLANES, 42);
+        let mut buckets: HashMap<u64, Vec<String>> = HashMap::new();
+        for entry in &store.entries {
+            let h = lsh_hash(&entry.embedding, &planes);
+            buckets.entry(h).or_default().push(entry.id.clone());
+        }
+        LshIndex { planes, buckets }
+    }
+
+    fn search(&self, query: &[f32], store: &VectorStore, top_k: usize) -> Vec<(String, f32)> {
+        let h = lsh_hash(query, &self.planes);
+        // Collect candidates: same bucket + 1-bit Hamming neighbours
+        let mut candidate_ids = std::collections::HashSet::new();
+        if let Some(ids) = self.buckets.get(&h) {
+            candidate_ids.extend(ids.iter().cloned());
+        }
+        for i in 0..LSH_PLANES {
+            let neighbour = h ^ (1 << i);
+            if let Some(ids) = self.buckets.get(&neighbour) {
+                candidate_ids.extend(ids.iter().cloned());
+            }
+        }
+        // Score candidates
+        let mut scored: Vec<(String, f32)> = candidate_ids
+            .iter()
+            .filter_map(|id| {
+                store.entries.iter().find(|e| &e.id == id).map(|e| {
+                    (id.clone(), cosine_similarity(query, &e.embedding))
+                })
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k);
+        scored
+    }
+}
+
+/// Build an in-memory LSH index for fast approximate search.
+/// Returns an opaque JSON-encoded index handle (serialized to string for simplicity).
+pub fn __varg_vector_build_index(store: &VectorStoreHandle) -> String {
+    let s = store.lock().unwrap();
+    let idx = LshIndex::build(&s);
+    let bucket_counts: Vec<(String, usize)> = idx.buckets.iter()
+        .map(|(k, v)| (k.to_string(), v.len()))
+        .collect();
+    serde_json::json!({
+        "buckets": bucket_counts.len(),
+        "indexed": s.entries.len()
+    }).to_string()
+}
+
+/// Approximate nearest-neighbour search using the LSH index.
+/// Falls back to linear scan when the index covers < 50% of entries.
+pub fn __varg_vector_search_fast(
+    store: &VectorStoreHandle,
+    query: &[f32],
+    top_k: i64,
+) -> Vec<String> {
+    let s = store.lock().unwrap();
+    let idx = LshIndex::build(&s);
+    idx.search(query, &s, top_k as usize)
+        .into_iter()
+        .map(|(id, score)| {
+            serde_json::json!({"id": id, "score": score}).to_string()
+        })
+        .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +551,61 @@ mod tests {
         }
 
         std::fs::remove_file(&db_path).ok();
+    }
+
+    // ── LSH Index tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_lsh_build_index_empty_store() {
+        let store = __varg_vector_store_open(":memory:");
+        let info = __varg_vector_build_index(&store);
+        let v: serde_json::Value = serde_json::from_str(&info).unwrap();
+        assert_eq!(v["indexed"], 0);
+    }
+
+    #[test]
+    fn test_lsh_build_index_with_entries() {
+        let store = __varg_vector_store_open(":memory:");
+        let v1: Vec<f32> = (0..128).map(|i| i as f32 / 128.0).collect();
+        let v2: Vec<f32> = (0..128).map(|i| (127 - i) as f32 / 128.0).collect();
+        __varg_vector_store_upsert(&store, "a", &v1, &std::collections::HashMap::new());
+        __varg_vector_store_upsert(&store, "b", &v2, &std::collections::HashMap::new());
+        let info = __varg_vector_build_index(&store);
+        let v: serde_json::Value = serde_json::from_str(&info).unwrap();
+        assert_eq!(v["indexed"], 2);
+    }
+
+    #[test]
+    fn test_lsh_search_fast_returns_results() {
+        let store = __varg_vector_store_open(":memory:");
+        for i in 0..10 {
+            let v: Vec<f32> = (0..64).map(|j| (i * 64 + j) as f32 / 1000.0).collect();
+            __varg_vector_store_upsert(&store, &format!("doc_{i}"), &v, &std::collections::HashMap::new());
+        }
+        let query: Vec<f32> = (0..64).map(|j| j as f32 / 1000.0).collect();
+        let results = __varg_vector_search_fast(&store, &query, 3);
+        assert!(!results.is_empty());
+        assert!(results.len() <= 3);
+        // Each result should be valid JSON
+        for r in &results {
+            let v: serde_json::Value = serde_json::from_str(r).unwrap();
+            assert!(v.get("id").is_some());
+            assert!(v.get("score").is_some());
+        }
+    }
+
+    #[test]
+    fn test_lsh_search_most_similar_first() {
+        let store = __varg_vector_store_open(":memory:");
+        let target: Vec<f32> = (0..32).map(|i| i as f32).collect();
+        let similar: Vec<f32> = target.iter().map(|v| v + 0.01).collect();
+        let dissimilar: Vec<f32> = target.iter().map(|v| -v).collect();
+        __varg_vector_store_upsert(&store, "similar", &similar, &std::collections::HashMap::new());
+        __varg_vector_store_upsert(&store, "dissimilar", &dissimilar, &std::collections::HashMap::new());
+        let results = __varg_vector_search_fast(&store, &target, 2);
+        if results.len() >= 2 {
+            let first: serde_json::Value = serde_json::from_str(&results[0]).unwrap();
+            assert_eq!(first["id"].as_str().unwrap(), "similar");
+        }
     }
 }

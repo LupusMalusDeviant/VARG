@@ -172,6 +172,40 @@ pub async fn __varg_http_listen(server: VargHttpServer, addr: &str) -> Result<()
         .map_err(|e| format!("Server error: {}", e))
 }
 
+// ── Wave 32: SSE Server Support ───────────────────────────────────────────
+
+/// Build a single SSE event string: "event: <type>\ndata: <data>\n\n"
+pub fn __varg_sse_event(event_type: &str, data: &str) -> String {
+    if event_type.is_empty() {
+        format!("data: {}\n\n", data)
+    } else {
+        format!("event: {}\ndata: {}\n\n", event_type, data)
+    }
+}
+
+/// Register an SSE GET route. The handler returns Vec<String> of SSE events.
+/// The server writes proper SSE headers and streams the events.
+pub fn __varg_http_sse_route<F>(server: &mut VargHttpServer, path: &str, handler: F)
+where
+    F: Fn(VargHttpRequest) -> Vec<String> + Send + Sync + 'static + Clone,
+{
+    // Wrap the SSE handler: assemble events into an SSE response body
+    let wrapped = move |req: VargHttpRequest| -> VargHttpResponse {
+        let events = handler(req);
+        let body: String = events.join("");
+        let mut resp = VargHttpResponse::new(200, &body);
+        resp.headers.insert("Content-Type".to_string(), "text/event-stream".to_string());
+        resp.headers.insert("Cache-Control".to_string(), "no-cache".to_string());
+        resp.headers.insert("Connection".to_string(), "keep-alive".to_string());
+        resp
+    };
+    server.routes.push(VargRoute {
+        method: "GET".to_string(),
+        path: path.to_string(),
+        handler: std::sync::Arc::new(wrapped),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

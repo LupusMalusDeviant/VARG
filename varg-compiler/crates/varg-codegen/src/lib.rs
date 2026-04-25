@@ -407,6 +407,53 @@ impl RustGenerator {
                             let desc = ann.values.join(" ");
                             out.push_str(&format!("    pub fn {}_mcp_schema() -> String {{\n        r#\"{{ \"name\": \"{}\", \"description\": \"{}\" }}\"#.to_string()\n    }}\n",
                                 method.name, method.name, desc));
+                        } else if ann.name == "RateLimit" {
+                            // @[RateLimit(calls=10, window=1000)] — generates a rate-checked wrapper
+                            let max_calls = ann.values.iter().find(|v| v.starts_with("calls="))
+                                .and_then(|v| v.strip_prefix("calls="))
+                                .unwrap_or("10");
+                            let window_ms = ann.values.iter().find(|v| v.starts_with("window="))
+                                .and_then(|v| v.strip_prefix("window="))
+                                .unwrap_or("1000");
+                            out.push_str(&format!(
+                                "    pub fn {}_rate_key() -> String {{ format!(\"rl_{}_{{}}\", std::thread::current().id().as_u64()) }}\n",
+                                method.name, method.name
+                            ));
+                            out.push_str(&format!(
+                                "    pub fn {}_check_rate_limit() -> bool {{ varg_runtime::ratelimit::__varg_rate_limit_try(&Self::{}_rate_key(), {}, {}) }}\n",
+                                method.name, method.name, max_calls, window_ms
+                            ));
+                        } else if ann.name == "Budget" {
+                            // @[Budget(tokens=10000, usd_cents=100)] — generates budget tracker field init
+                            let max_tokens = ann.values.iter().find(|v| v.starts_with("tokens="))
+                                .and_then(|v| v.strip_prefix("tokens="))
+                                .unwrap_or("10000");
+                            let max_cents = ann.values.iter().find(|v| v.starts_with("usd_cents="))
+                                .and_then(|v| v.strip_prefix("usd_cents="))
+                                .unwrap_or("1000");
+                            out.push_str(&format!(
+                                "    pub fn {}_budget() -> varg_runtime::cost::BudgetHandle {{ varg_runtime::cost::__varg_budget_new({}, {}) }}\n",
+                                method.name, max_tokens, max_cents
+                            ));
+                        } else if ann.name == "Checkpointed" {
+                            // @[Checkpointed(path="./ckpt")] — generates checkpoint open helper
+                            let path = ann.values.iter().find(|v| v.starts_with("path="))
+                                .and_then(|v| v.strip_prefix("path="))
+                                .unwrap_or("./varg_checkpoint");
+                            let path = path.trim_matches('"');
+                            out.push_str(&format!(
+                                "    pub fn {}_checkpoint() -> varg_runtime::checkpoint::CheckpointHandle {{ varg_runtime::checkpoint::__varg_checkpoint_open(\"{}\", \"{}\") }}\n",
+                                method.name, path, method.name
+                            ));
+                        } else if ann.name == "Property" {
+                            // @[Property(runs=100)] — generates a property test runner helper
+                            let runs = ann.values.iter().find(|v| v.starts_with("runs="))
+                                .and_then(|v| v.strip_prefix("runs="))
+                                .unwrap_or("100");
+                            out.push_str(&format!(
+                                "    pub fn {}_prop_run() {{ varg_runtime::proptest::__varg_prop_assert(\"{}\", || {{ self.{}(); true }}, {}); }}\n",
+                                method.name, method.name, method.name, runs
+                            ));
                         }
                     }
 
@@ -1465,6 +1512,160 @@ impl RustGenerator {
                     format!("varg_runtime::readline::__varg_readline_load_history(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "readline_save_history" {
                     format!("varg_runtime::readline::__varg_readline_save_history(&{}, &{})", arg_strs[0], arg_strs[1])
+                // ===== Wave 30: Human-in-the-Loop =====
+                } else if method_name == "await_approval" {
+                    format!("varg_runtime::hitl::__varg_await_approval(&{})", arg_strs[0])
+                } else if method_name == "await_input" {
+                    format!("varg_runtime::hitl::__varg_await_input(&{})", arg_strs[0])
+                } else if method_name == "await_choice" {
+                    format!("varg_runtime::hitl::__varg_await_choice(&{}, {})", arg_strs[0], arg_strs[1])
+                // ===== Wave 30: Rate Limiting =====
+                } else if method_name == "ratelimiter_new" {
+                    format!("varg_runtime::ratelimit::__varg_ratelimiter_new({}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "ratelimiter_acquire" {
+                    format!("varg_runtime::ratelimit::__varg_ratelimiter_acquire(&{})", arg_strs[0])
+                } else if method_name == "ratelimiter_try_acquire" {
+                    format!("varg_runtime::ratelimit::__varg_ratelimiter_try_acquire(&{})", arg_strs[0])
+                } else if method_name == "rate_limit_acquire" {
+                    format!("varg_runtime::ratelimit::__varg_rate_limit_acquire(&{}, {} as u64, {} as u64)", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "rate_limit_try" {
+                    format!("varg_runtime::ratelimit::__varg_rate_limit_try(&{}, {} as u64, {} as u64)", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "rate_limit_reset" {
+                    format!("varg_runtime::ratelimit::__varg_rate_limit_reset(&{})", arg_strs[0])
+                // ===== Wave 31: Budget / Cost Tracking =====
+                } else if method_name == "budget_new" {
+                    format!("varg_runtime::cost::__varg_budget_new({}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "budget_track" {
+                    format!("varg_runtime::cost::__varg_budget_track(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "budget_check" {
+                    format!("varg_runtime::cost::__varg_budget_check(&{})", arg_strs[0])
+                } else if method_name == "budget_remaining_tokens" {
+                    format!("varg_runtime::cost::__varg_budget_remaining_tokens(&{})", arg_strs[0])
+                } else if method_name == "budget_remaining_usd_cents" {
+                    format!("varg_runtime::cost::__varg_budget_remaining_usd_cents(&{})", arg_strs[0])
+                } else if method_name == "budget_report" {
+                    format!("varg_runtime::cost::__varg_budget_report(&{})", arg_strs[0])
+                } else if method_name == "estimate_tokens" {
+                    format!("varg_runtime::cost::__varg_estimate_tokens(&{})", arg_strs[0])
+                // ===== Wave 32: Agent Checkpoint =====
+                } else if method_name == "checkpoint_open" {
+                    format!("varg_runtime::checkpoint::__varg_checkpoint_open(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "checkpoint_save" {
+                    format!("varg_runtime::checkpoint::__varg_checkpoint_save(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "checkpoint_load" {
+                    format!("varg_runtime::checkpoint::__varg_checkpoint_load(&{})", arg_strs[0])
+                } else if method_name == "checkpoint_clear" {
+                    format!("varg_runtime::checkpoint::__varg_checkpoint_clear(&{})", arg_strs[0])
+                } else if method_name == "checkpoint_exists" {
+                    format!("varg_runtime::checkpoint::__varg_checkpoint_exists(&{})", arg_strs[0])
+                } else if method_name == "checkpoint_age" {
+                    format!("varg_runtime::checkpoint::__varg_checkpoint_age(&{})", arg_strs[0])
+                // ===== Wave 33: Typed Channels =====
+                } else if method_name == "channel_new" {
+                    format!("varg_runtime::channel::__varg_channel_new({})", arg_strs[0])
+                } else if method_name == "channel_send" {
+                    format!("varg_runtime::channel::__varg_channel_send(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "channel_try_recv" {
+                    format!("varg_runtime::channel::__varg_channel_try_recv(&{})", arg_strs[0])
+                } else if method_name == "channel_recv" {
+                    format!("varg_runtime::channel::__varg_channel_recv(&{})", arg_strs[0])
+                } else if method_name == "channel_recv_timeout" {
+                    format!("varg_runtime::channel::__varg_channel_recv_timeout(&{}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "channel_len" {
+                    format!("varg_runtime::channel::__varg_channel_len(&{})", arg_strs[0])
+                } else if method_name == "channel_close" {
+                    format!("varg_runtime::channel::__varg_channel_close(&{})", arg_strs[0])
+                } else if method_name == "channel_is_closed" {
+                    format!("varg_runtime::channel::__varg_channel_is_closed(&{})", arg_strs[0])
+                // ===== Wave 33: Property-Based Testing =====
+                } else if method_name == "prop_gen_int" {
+                    format!("varg_runtime::proptest::__varg_prop_gen_int({}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "prop_gen_float" {
+                    "varg_runtime::proptest::__varg_prop_gen_float()".to_string()
+                } else if method_name == "prop_gen_bool" {
+                    "varg_runtime::proptest::__varg_prop_gen_bool()".to_string()
+                } else if method_name == "prop_gen_string" {
+                    format!("varg_runtime::proptest::__varg_prop_gen_string({})", arg_strs[0])
+                } else if method_name == "prop_gen_int_list" {
+                    format!("varg_runtime::proptest::__varg_prop_gen_int_list({})", arg_strs[0])
+                } else if method_name == "prop_gen_string_list" {
+                    format!("varg_runtime::proptest::__varg_prop_gen_string_list({}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "prop_check" {
+                    format!("varg_runtime::proptest::__varg_prop_check(|| {{ {} }}, {})", arg_strs[0], arg_strs[1])
+                } else if method_name == "prop_assert" {
+                    format!("varg_runtime::proptest::__varg_prop_assert(&{}, || {{ {} }}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                // ===== Wave 34: Multimodal =====
+                } else if method_name == "image_load" {
+                    format!("varg_runtime::multimodal::__varg_image_load(&{})", arg_strs[0])
+                } else if method_name == "image_from_base64" {
+                    format!("varg_runtime::multimodal::__varg_image_from_base64(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "image_to_base64" {
+                    format!("varg_runtime::multimodal::__varg_image_to_base64(&{})", arg_strs[0])
+                } else if method_name == "image_format" {
+                    format!("varg_runtime::multimodal::__varg_image_format(&{})", arg_strs[0])
+                } else if method_name == "image_size_bytes" {
+                    format!("varg_runtime::multimodal::__varg_image_size_bytes(&{})", arg_strs[0])
+                } else if method_name == "audio_load" {
+                    format!("varg_runtime::multimodal::__varg_audio_load(&{})", arg_strs[0])
+                } else if method_name == "audio_to_base64" {
+                    format!("varg_runtime::multimodal::__varg_audio_to_base64(&{})", arg_strs[0])
+                } else if method_name == "audio_format" {
+                    format!("varg_runtime::multimodal::__varg_audio_format(&{})", arg_strs[0])
+                } else if method_name == "audio_size_bytes" {
+                    format!("varg_runtime::multimodal::__varg_audio_size_bytes(&{})", arg_strs[0])
+                } else if method_name == "llm_vision" {
+                    format!("varg_runtime::multimodal::__varg_llm_vision(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                // ===== Wave 34: Workflow / DAG =====
+                } else if method_name == "workflow_new" {
+                    format!("varg_runtime::workflow::__varg_workflow_new(&{})", arg_strs[0])
+                } else if method_name == "workflow_add_step" {
+                    format!("varg_runtime::workflow::__varg_workflow_add_step(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "workflow_set_output" {
+                    format!("varg_runtime::workflow::__varg_workflow_set_output(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "workflow_set_failed" {
+                    format!("varg_runtime::workflow::__varg_workflow_set_failed(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "workflow_ready_steps" {
+                    format!("varg_runtime::workflow::__varg_workflow_ready_steps(&{})", arg_strs[0])
+                } else if method_name == "workflow_is_complete" {
+                    format!("varg_runtime::workflow::__varg_workflow_is_complete(&{})", arg_strs[0])
+                } else if method_name == "workflow_get_output" {
+                    format!("varg_runtime::workflow::__varg_workflow_get_output(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "workflow_step_count" {
+                    format!("varg_runtime::workflow::__varg_workflow_step_count(&{})", arg_strs[0])
+                } else if method_name == "workflow_status" {
+                    format!("varg_runtime::workflow::__varg_workflow_status(&{})", arg_strs[0])
+                // ===== Wave 34: Package Registry =====
+                } else if method_name == "registry_open" {
+                    format!("varg_runtime::registry::__varg_registry_open(&{})", arg_strs[0])
+                } else if method_name == "registry_install" {
+                    format!("varg_runtime::registry::__varg_registry_install(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "registry_uninstall" {
+                    format!("varg_runtime::registry::__varg_registry_uninstall(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "registry_is_installed" {
+                    format!("varg_runtime::registry::__varg_registry_is_installed(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "registry_version" {
+                    format!("varg_runtime::registry::__varg_registry_version(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "registry_list" {
+                    format!("varg_runtime::registry::__varg_registry_list(&{})", arg_strs[0])
+                } else if method_name == "registry_search" {
+                    format!("varg_runtime::registry::__varg_registry_search(&{})", arg_strs[0])
+                // ===== LLM Extended =====
+                } else if method_name == "llm_structured" {
+                    format!("varg_runtime::llm::__varg_llm_structured(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "llm_stream" {
+                    format!("varg_runtime::llm::__varg_llm_stream(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "llm_embed_batch" {
+                    format!("varg_runtime::llm::__varg_llm_embed_batch({})", arg_strs[0])
+                // ===== Vector Extended =====
+                } else if method_name == "vector_build_index" {
+                    format!("varg_runtime::vector::__varg_vector_build_index(&{})", arg_strs[0])
+                } else if method_name == "vector_search_fast" {
+                    format!("varg_runtime::vector::__varg_vector_search_fast(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                // ===== SSE Server =====
+                } else if method_name == "sse_event" {
+                    format!("varg_runtime::server::__varg_sse_event(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "http_sse_route" {
+                    format!("varg_runtime::server::__varg_http_sse_route(&mut {}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
                 // ===== Wave 15: fs_append + fs_read_lines =====
                 } else if method_name == "fs_append" {
                     format!("std::fs::OpenOptions::new().append(true).create(true).open(&{}).and_then(|mut f| std::io::Write::write_all(&mut f, {}.as_bytes())).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])

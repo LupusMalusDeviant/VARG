@@ -274,6 +274,84 @@ fn __varg_llm_fetch_stream(provider: &LlmProvider, url: &str, body: &str) {
     println!();
 }
 
+// ─── Wave 31: Structured Output ──────────────────────────────────────────
+
+/// Call the LLM and force JSON output matching `schema_json`.
+/// Retries up to `retries` times if the response is not valid JSON.
+pub fn __varg_llm_structured(prompt: &str, schema_json: &str, retries: i64) -> String {
+    let provider = LlmProvider::detect();
+    let system_msg = format!(
+        "Respond with ONLY a valid JSON object matching this exact schema. No markdown fences, no explanation:\n{}",
+        schema_json
+    );
+    let messages_json = serde_json::json!([
+        {"role": "system", "content": system_msg},
+        {"role": "user",   "content": prompt}
+    ])
+    .to_string();
+    let body = provider.build_body(&provider.default_model(), &messages_json, false);
+
+    for attempt in 0..retries.max(1) {
+        let raw = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body);
+        let content = provider.parse_response(&raw).unwrap_or(raw);
+        // Accept if it parses as a JSON object
+        if serde_json::from_str::<serde_json::Value>(&content).is_ok() {
+            return content;
+        }
+        // Try to extract a JSON object embedded in surrounding text
+        if let (Some(s), Some(e)) = (content.find('{'), content.rfind('}')) {
+            let candidate = &content[s..=e];
+            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                return candidate.to_string();
+            }
+        }
+        if attempt < retries - 1 {
+            std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+        }
+    }
+    "{}".to_string()
+}
+
+/// Collect all LLM stream chunks into a Vec<String>.
+/// Enables: `for chunk in llm_stream(prompt, model) { ... }`
+pub fn __varg_llm_stream(prompt: &str, model: &str) -> Vec<String> {
+    use std::io::{BufRead, BufReader};
+    let provider = LlmProvider::detect();
+    let model_str = if model.is_empty() { provider.default_model() } else { model.to_string() };
+    let messages_json = single_prompt_messages(prompt);
+    let body = provider.build_body(&model_str, &messages_json, true);
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(300))
+        .build();
+    let mut req = agent.post(&provider.chat_endpoint());
+    for (k, v) in provider.headers() {
+        req = req.set(&k, &v);
+    }
+
+    let mut chunks = Vec::new();
+    match req.send_string(&body) {
+        Ok(resp) => {
+            let reader = BufReader::new(resp.into_reader());
+            for line in reader.lines().filter_map(Result::ok) {
+                if let Some(c) = provider.parse_stream_chunk(&line) {
+                    if !c.is_empty() { chunks.push(c); }
+                }
+            }
+        }
+        Err(e) => eprintln!("[Varg LLM] llm_stream error: {e}"),
+    }
+    chunks
+}
+
+/// Batch embedding: embed multiple texts and return raw float vectors.
+pub fn __varg_llm_embed_batch(texts: Vec<String>) -> Vec<Vec<f32>> {
+    texts.iter().map(|t| crate::vector::__varg_embed(t)).collect()
+}
+
+// ─── Context helpers ──────────────────────────────────────────────────────
+
 /// Create a new conversation context
 pub fn __varg_create_context(id: &str) -> Context {
     Context::new(id)

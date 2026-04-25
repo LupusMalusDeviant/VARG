@@ -301,6 +301,41 @@ impl TypeChecker {
             // Wave 29: Readline / REPL
             "readline_new", "readline_read", "readline_add_history",
             "readline_load_history", "readline_save_history",
+            // Wave 30: Human-in-the-Loop
+            "await_approval", "await_input", "await_choice",
+            // Wave 30: Rate Limiting
+            "ratelimiter_new", "ratelimiter_acquire", "ratelimiter_try_acquire",
+            "rate_limit_acquire", "rate_limit_try", "rate_limit_reset",
+            // Wave 31: Budget / Cost Tracking
+            "budget_new", "budget_track", "budget_check",
+            "budget_remaining_tokens", "budget_remaining_usd_cents",
+            "budget_report", "estimate_tokens",
+            // Wave 32: Agent Checkpoint
+            "checkpoint_open", "checkpoint_save", "checkpoint_load",
+            "checkpoint_clear", "checkpoint_exists", "checkpoint_age",
+            // Wave 33: Typed Channels
+            "channel_new", "channel_send", "channel_try_recv", "channel_recv",
+            "channel_recv_timeout", "channel_len", "channel_close", "channel_is_closed",
+            // Wave 33: Property Testing
+            "prop_gen_int", "prop_gen_float", "prop_gen_bool", "prop_gen_string",
+            "prop_gen_int_list", "prop_gen_string_list", "prop_check", "prop_assert",
+            // Wave 34: Multimodal
+            "image_load", "image_from_base64", "image_to_base64", "image_format", "image_size_bytes",
+            "audio_load", "audio_to_base64", "audio_format", "audio_size_bytes",
+            "llm_vision",
+            // Wave 34: Workflow / DAG
+            "workflow_new", "workflow_add_step", "workflow_set_output", "workflow_set_failed",
+            "workflow_ready_steps", "workflow_is_complete", "workflow_get_output",
+            "workflow_step_count", "workflow_status",
+            // Wave 34: Package Registry
+            "registry_open", "registry_install", "registry_uninstall",
+            "registry_is_installed", "registry_version", "registry_list", "registry_search",
+            // LLM Extended (Wave 30-34)
+            "llm_structured", "llm_stream", "llm_embed_batch",
+            // Vector Extended (Wave 34)
+            "vector_build_index", "vector_search_fast",
+            // SSE Server (Wave 32)
+            "sse_event", "http_sse_route",
         ];
         candidates.extend(builtins.iter());
         let suggestions = suggest_similar(method_name, &candidates);
@@ -1474,6 +1509,229 @@ impl TypeChecker {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::FileAccess, "readline_save_history")?;
                     Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
+                // ===== Wave 30: Human-in-the-Loop =====
+                } else if method_name == "await_approval" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (prompt)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "await_input" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (prompt)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "await_choice" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (prompt, options)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                // ===== Wave 30: Rate Limiting =====
+                } else if method_name == "ratelimiter_new" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (max_calls, window_ms)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "ratelimiter_acquire" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "ratelimiter_try_acquire" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "rate_limit_acquire" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (key, max_calls, window_ms)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "rate_limit_try" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (key, max_calls, window_ms)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "rate_limit_reset" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                // ===== Wave 31: Budget / Cost Tracking =====
+                } else if method_name == "budget_new" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (max_tokens, max_usd_cents)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("BudgetHandle".to_string()))
+                } else if method_name == "budget_track" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (budget, prompt, response)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "budget_check" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (budget)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "budget_remaining_tokens" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (budget)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "budget_remaining_usd_cents" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (budget)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "budget_report" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (budget)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "estimate_tokens" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (text)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                // ===== Wave 32: Agent Checkpoint =====
+                } else if method_name == "checkpoint_open" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (path, agent_id)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "checkpoint_open")?;
+                    Ok(TypeNode::Custom("CheckpointHandle".to_string()))
+                } else if method_name == "checkpoint_save" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, state_json)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "checkpoint_load" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "checkpoint_clear" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "checkpoint_exists" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "checkpoint_age" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                // ===== Wave 33: Typed Channels =====
+                } else if method_name == "channel_new" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (capacity)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("ChannelHandle".to_string()))
+                } else if method_name == "channel_send" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, value)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "channel_try_recv" || method_name == "channel_recv" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "channel_recv_timeout" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, timeout_ms)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "channel_len" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "channel_close" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "channel_is_closed" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                // ===== Wave 33: Property-Based Testing =====
+                } else if method_name == "prop_gen_int" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (min, max)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "prop_gen_float" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Float)
+                } else if method_name == "prop_gen_bool" {
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "prop_gen_string" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (max_len)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "prop_gen_int_list" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (max_len)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::Int)))
+                } else if method_name == "prop_gen_string_list" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (max_len, max_str_len)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "prop_check" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (fn, runs)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::Int)))
+                } else if method_name == "prop_assert" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (label, fn, runs)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                // ===== Wave 34: Multimodal =====
+                } else if method_name == "image_load" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "image_load")?;
+                    Ok(TypeNode::Custom("VargImage".to_string()))
+                } else if method_name == "image_from_base64" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (b64, format)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("VargImage".to_string()))
+                } else if method_name == "image_to_base64" || method_name == "image_format" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (image)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "image_size_bytes" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (image)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "audio_load" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::FileAccess, "audio_load")?;
+                    Ok(TypeNode::Custom("VargAudio".to_string()))
+                } else if method_name == "audio_to_base64" || method_name == "audio_format" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (audio)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "audio_size_bytes" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (audio)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "llm_vision" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (image, prompt, model)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::LlmAccess, "llm_vision")?;
+                    Ok(TypeNode::String)
+                // ===== Wave 34: Workflow / DAG =====
+                } else if method_name == "workflow_new" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("WorkflowHandle".to_string()))
+                } else if method_name == "workflow_add_step" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (workflow, name, deps)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "workflow_set_output" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (workflow, step, output)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "workflow_set_failed" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (workflow, step, error)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "workflow_ready_steps" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (workflow)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "workflow_is_complete" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (workflow)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "workflow_get_output" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (workflow, step)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "workflow_step_count" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (workflow)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Int)
+                } else if method_name == "workflow_status" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (workflow)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== Wave 34: Package Registry =====
+                } else if method_name == "registry_open" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (cache_path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("RegistryHandle".to_string()))
+                } else if method_name == "registry_install" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (registry, name, version)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "registry_uninstall" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (registry, name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "registry_is_installed" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (registry, name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "registry_version" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (registry, name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "registry_list" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (registry)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "registry_search" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (query)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                // ===== LLM Extended (Wave 30-34) =====
+                } else if method_name == "llm_structured" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (prompt, schema_json, retries)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::LlmAccess, "llm_structured")?;
+                    Ok(TypeNode::String)
+                } else if method_name == "llm_stream" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (prompt, model)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::LlmAccess, "llm_stream")?;
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "llm_embed_batch" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (texts)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::LlmAccess, "llm_embed_batch")?;
+                    Ok(TypeNode::Array(Box::new(TypeNode::Array(Box::new(TypeNode::Float)))))
+                // ===== Vector Extended =====
+                } else if method_name == "vector_build_index" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (store)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "vector_search_fast" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (store, query, top_k)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                // ===== SSE Server (Wave 32) =====
+                } else if method_name == "sse_event" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (event_type, data)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "http_sse_route" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (server, path, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
                 // ===== Wave 13: Stdlib Expansion — time =====
                 } else if method_name == "sleep" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (ms)".to_string(), found: format!("{} arguments", args.len()) }); }
