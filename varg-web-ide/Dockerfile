@@ -34,9 +34,9 @@ COPY --from=vargc-builder /workspace/varg-compiler/target/release/vargc /usr/loc
 COPY --from=vargc-builder /workspace/varg-compiler/crates/varg-os-types /opt/varg/crates/varg-os-types
 COPY --from=vargc-builder /workspace/varg-compiler/crates/varg-runtime   /opt/varg/crates/varg-runtime
 
-ENV VARGC_PATH=vargc
-ENV VARG_BUILD_CACHE=/tmp/varg-cache
-ENV VARG_CRATES_DIR=/opt/varg/crates
+ENV Varg__VargcPath=vargc
+ENV Varg__BuildCache=/tmp/varg-cache
+ENV Varg__CratesDir=/opt/varg/crates
 ENV ASPNETCORE_URLS=http://+:8080
 ENV DOTNET_RUNNING_IN_CONTAINER=true
 
