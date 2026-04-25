@@ -1,0 +1,203 @@
+@page "/"
+@rendermode InteractiveServer
+@inject IJSRuntime JS
+@inject VargCompilerService Compiler
+
+<PageTitle>Varg Playground</PageTitle>
+
+<div id="shell">
+
+    <!-- ── Title bar ───────────────────────────────────────── -->
+    <div id="titlebar">
+        <span class="logo">🐺</span>
+        <span class="title">Varg Playground</span>
+        <span class="badge">v0.12</span>
+        <div class="spacer"></div>
+        <a href="https://github.com/LupusMalus/varg-compiler" target="_blank" rel="noopener">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+              0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+              -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66
+              .07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15
+              -.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0
+              1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82
+              1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01
+              1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+            </svg>
+            GitHub
+        </a>
+    </div>
+
+    <!-- ── Tab bar ──────────────────────────────────────────── -->
+    <div id="tabbar">
+        <div class="tab active">
+            <span class="tab-icon">🐺</span>
+            <span class="tab-name">main.varg</span>
+        </div>
+    </div>
+
+    <!-- ── Editor ───────────────────────────────────────────── -->
+    <div id="editor-wrap">
+        <div id="editor-container" @ref="_editorEl"></div>
+    </div>
+
+    <!-- ── Output panel ─────────────────────────────────────── -->
+    <div id="panel">
+        <div id="resize-handle" @ref="_resizeHandleEl"></div>
+        <div id="panel-header">
+            <span class="panel-tab @(_activeTab == "output"  ? "active" : "")"
+                  @onclick='() => _activeTab = "output"'>OUTPUT</span>
+            <span class="panel-tab @(_activeTab == "rust" ? "active" : "")"
+                  @onclick='() => _activeTab = "rust"'>RUST SOURCE</span>
+            <div class="spacer"></div>
+            <button id="btn-clear-panel" title="Clear" @onclick="ClearPanel">✕</button>
+        </div>
+        <pre id="output">@((MarkupString)_outputHtml)</pre>
+    </div>
+
+    <!-- ── Status bar ───────────────────────────────────────── -->
+    <div id="statusbar">
+        <div class="status-item">🐺 Varg</div>
+        <div class="status-item">@_statusText</div>
+        <div class="spacer"></div>
+        <button class="btn" @onclick="OnEmitRs" disabled="@_busy">▶ Emit Rust</button>
+        <button class="btn primary" @onclick="OnBuild" disabled="@_busy">⬇ Build &amp; Download</button>
+    </div>
+
+</div>
+
+<!-- ── Loading overlay ────────────────────────────────────── -->
+<div id="loading-overlay" class="@(_loading ? "visible" : "")">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">@_loadingText</div>
+    <div class="loading-sub">Compiling to native binary via cargo…</div>
+</div>
+
+@code {
+    ElementReference _editorEl;
+    ElementReference _resizeHandleEl;
+
+    string _activeTab   = "output";
+    string _outputHtml  = "<span class=\"line-info\">// Welcome to the Varg Playground!\n// Click ▶ Emit Rust to see generated Rust code, or ⬇ Build &amp; Download for a native binary.</span>";
+    string _statusText  = "Ready";
+    string _loadingText = "Building…";
+    bool   _busy        = false;
+    bool   _loading     = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("vargIde.init", _editorEl, _resizeHandleEl);
+        }
+    }
+
+    // ── Emit Rust ─────────────────────────────────────────────────────────────
+
+    async Task OnEmitRs()
+    {
+        SetBusy("Checking…");
+        var code = await JS.InvokeAsync<string>("vargIde.getCode");
+        var result = await Compiler.EmitRsAsync(code);
+
+        if (result.Success)
+        {
+            _activeTab  = "rust";
+            _outputHtml = BuildHtml(result.RustSource, "line-rs");
+            _statusText = "✔ Emit OK";
+        }
+        else
+        {
+            _activeTab  = "output";
+            _outputHtml = BuildErrorHtml(result.Output);
+            _statusText = "✖ Error";
+        }
+
+        ClearBusy();
+    }
+
+    // ── Build & Download ──────────────────────────────────────────────────────
+
+    async Task OnBuild()
+    {
+        SetBusy("Building…");
+        _loadingText = "Building…";
+        _loading = true;
+        StateHasChanged();
+
+        var code = await JS.InvokeAsync<string>("vargIde.getCode");
+        var result = await Compiler.BuildAsync(code);
+
+        _loading = false;
+
+        if (result.Success)
+        {
+            _activeTab  = "output";
+            _outputHtml = BuildHtml(result.Output, "line-success");
+            _statusText = "✔ Build succeeded";
+            var filename = OperatingSystem.IsWindows() ? "main.exe" : "main";
+            await JS.InvokeVoidAsync("vargIde.downloadBytes",
+                Convert.ToBase64String(result.Binary!), filename);
+        }
+        else
+        {
+            _activeTab  = "output";
+            _outputHtml = BuildErrorHtml(result.Output);
+            _statusText = "✖ Build failed";
+        }
+
+        ClearBusy();
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    void ClearPanel()
+    {
+        _outputHtml = "";
+        _statusText = "Ready";
+    }
+
+    void SetBusy(string status)
+    {
+        _busy       = true;
+        _statusText = status;
+        StateHasChanged();
+    }
+
+    void ClearBusy()
+    {
+        _busy = false;
+        StateHasChanged();
+    }
+
+    static string BuildHtml(string text, string defaultClass)
+    {
+        var sb = new StringBuilder();
+        foreach (var line in text.ReplaceLineEndings("\n").Split('\n'))
+        {
+            var enc = System.Net.WebUtility.HtmlEncode(line);
+            sb.Append($"<span class=\"{defaultClass}\">{enc}</span>\n");
+        }
+        return sb.ToString();
+    }
+
+    static string BuildErrorHtml(string text)
+    {
+        var sb = new StringBuilder();
+        foreach (var line in text.ReplaceLineEndings("\n").Split('\n'))
+        {
+            var enc = System.Net.WebUtility.HtmlEncode(line);
+            string cls;
+            if (line.StartsWith("error") || line.Contains("] error[") || line.Contains("^--"))
+                cls = "line-error";
+            else if (line.StartsWith("warning") || line.Contains("] warning["))
+                cls = "line-warn";
+            else if (line.StartsWith("note:") || line.StartsWith("  -->") || line.StartsWith("   |"))
+                cls = "line-info";
+            else
+                cls = "line-error";
+            sb.Append($"<span class=\"{cls}\">{enc}</span>\n");
+        }
+        return sb.ToString();
+    }
+}
