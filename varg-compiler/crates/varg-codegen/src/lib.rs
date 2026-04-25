@@ -7443,4 +7443,314 @@ mod tests {
         // --help arm must exist
         assert!(code.contains("\"--help\""), "missing --help arm: {code}");
     }
+
+    // ===== Adversarial / Edge-Case Codegen Tests =====
+
+    fn make_program(items: Vec<Item>) -> Program {
+        Program { no_std: false, items, docs: std::collections::HashMap::new() }
+    }
+
+    fn make_agent(name: &str, annotations: Vec<Annotation>, fields: Vec<FieldDecl>, methods: Vec<MethodDecl>) -> Program {
+        make_program(vec![Item::Agent(AgentDef {
+            name: name.to_string(),
+            is_system: false,
+            is_public: true,
+            target_annotation: None,
+            annotations,
+            fields,
+            methods,
+            implements: vec![],
+        })])
+    }
+
+    fn empty_method(name: &str) -> MethodDecl {
+        MethodDecl {
+            name: name.to_string(),
+            is_public: true,
+            is_async: false,
+            return_ty: None,
+            args: vec![],
+            body: Some(Block { statements: vec![] }),
+            annotations: vec![],
+            type_params: vec![],
+            constraints: vec![],
+        }
+    }
+
+    fn simple_method(name: &str, stmts: Vec<Statement>) -> MethodDecl {
+        MethodDecl {
+            name: name.to_string(),
+            is_public: true,
+            is_async: false,
+            return_ty: None,
+            args: vec![],
+            body: Some(Block { statements: stmts }),
+            annotations: vec![],
+            type_params: vec![],
+            constraints: vec![],
+        }
+    }
+
+    #[test]
+    fn test_codegen_agent_with_no_methods_produces_valid_rust() {
+        let program = make_agent("Empty", vec![], vec![], vec![]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("pub struct Empty"), "struct must exist: {code}");
+        assert!(code.contains("impl Empty {"), "impl block must exist: {code}");
+    }
+
+    #[test]
+    fn test_codegen_method_with_empty_body() {
+        let program = make_agent("Ag", vec![], vec![], vec![empty_method("NoOp")]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("pub fn NoOp"), "method must exist: {code}");
+    }
+
+    #[test]
+    fn test_codegen_string_with_escape_sequences() {
+        let stmt = Statement::Let {
+            name: "s".to_string(), ty: None,
+            value: Expression::String("hello\nworld\t\"quoted\"".to_string()),
+        };
+        let program = make_agent("Esc", vec![], vec![], vec![simple_method("Run", vec![stmt])]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("let mut s"), "let binding: {code}");
+    }
+
+    #[test]
+    fn test_codegen_empty_array_literal() {
+        let stmt = Statement::Let {
+            name: "v".to_string(), ty: None,
+            value: Expression::ArrayLiteral(vec![]),
+        };
+        let program = make_agent("Arr", vec![], vec![], vec![simple_method("Run", vec![stmt])]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("vec![]"), "empty array must emit vec![]: {code}");
+    }
+
+    #[test]
+    fn test_codegen_boolean_literals() {
+        let stmts = vec![
+            Statement::Let { name: "t".to_string(), ty: None, value: Expression::Bool(true) },
+            Statement::Let { name: "f".to_string(), ty: None, value: Expression::Bool(false) },
+        ];
+        let program = make_agent("Bools", vec![], vec![], vec![simple_method("Run", stmts)]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("true"), "true literal: {code}");
+        assert!(code.contains("false"), "false literal: {code}");
+    }
+
+    #[test]
+    fn test_codegen_integer_zero_and_negative() {
+        let stmts = vec![
+            Statement::Let { name: "z".to_string(), ty: None, value: Expression::Int(0) },
+            Statement::Let { name: "n".to_string(), ty: None, value: Expression::Int(-99) },
+            Statement::Let { name: "big".to_string(), ty: None, value: Expression::Int(i64::MAX) },
+        ];
+        let program = make_agent("Ints", vec![], vec![], vec![simple_method("Run", stmts)]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("-99"), "negative int: {code}");
+        assert!(code.contains(&i64::MAX.to_string()), "i64::MAX: {code}");
+    }
+
+    #[test]
+    fn test_codegen_nested_method_calls_three_deep() {
+        let inner = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("x".to_string())),
+            method_name: "len".to_string(),
+            args: vec![Expression::Identifier("x".to_string())],
+        };
+        let mid = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("s".to_string())),
+            method_name: "to_string".to_string(),
+            args: vec![inner],
+        };
+        let outer = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("result".to_string())),
+            method_name: "trim".to_string(),
+            args: vec![mid],
+        };
+        let stmt = Statement::Let { name: "r".to_string(), ty: None, value: outer };
+        let program = make_agent("Nested", vec![], vec![], vec![simple_method("Run", vec![stmt])]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("let mut r"), "nested call codegen: {code}");
+    }
+
+    #[test]
+    fn test_codegen_method_with_tuple_return_type() {
+        let method = MethodDecl {
+            name: "GetPair".to_string(),
+            is_public: true,
+            is_async: false,
+            return_ty: Some(TypeNode::Tuple(vec![TypeNode::String, TypeNode::Int])),
+            args: vec![],
+            body: Some(Block { statements: vec![] }),
+            annotations: vec![],
+            type_params: vec![],
+            constraints: vec![],
+        };
+        let program = make_agent("T", vec![], vec![], vec![method]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("GetPair"), "method exists: {code}");
+    }
+
+    #[test]
+    fn test_codegen_agent_implements_contract_generates_trait_impl() {
+        let log_method = MethodDecl {
+            name: "log".to_string(),
+            is_public: true,
+            is_async: false,
+            return_ty: None,
+            args: vec![FieldDecl { name: "msg".to_string(), ty: TypeNode::String, default_value: None }],
+            body: Some(Block { statements: vec![] }),
+            annotations: vec![],
+            type_params: vec![],
+            constraints: vec![],
+        };
+        let program = make_program(vec![Item::Agent(AgentDef {
+            name: "Impl".to_string(),
+            is_system: false,
+            is_public: true,
+            target_annotation: None,
+            annotations: vec![],
+            fields: vec![],
+            implements: vec!["ILogger".to_string()],
+            methods: vec![empty_method("Run"), log_method],
+        })]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("impl ILogger for Impl"), "trait impl: {code}");
+    }
+
+    #[test]
+    fn test_codegen_while_loop_generates_rust_loop() {
+        let stmt = Statement::While {
+            condition: Expression::Bool(false),
+            body: Block { statements: vec![] },
+        };
+        let program = make_agent("Loopers", vec![], vec![], vec![simple_method("Run", vec![stmt])]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("while") || code.contains("loop"), "while loop: {code}");
+    }
+
+    #[test]
+    fn test_codegen_if_else_both_branches_present() {
+        let stmt = Statement::If {
+            condition: Expression::Bool(true),
+            then_block: Block { statements: vec![] },
+            else_block: Some(Block { statements: vec![] }),
+        };
+        let program = make_agent("Branchy", vec![], vec![], vec![simple_method("Run", vec![stmt])]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("if"), "if: {code}");
+        assert!(code.contains("else"), "else: {code}");
+    }
+
+    #[test]
+    fn test_codegen_channel_builtins_generate_correct_calls() {
+        let stmts = vec![
+            Statement::Let { name: "ch".to_string(), ty: None,
+                value: Expression::MethodCall {
+                    caller: Box::new(Expression::Identifier("self".to_string())),
+                    method_name: "channel_new".to_string(),
+                    args: vec![Expression::Int(10)],
+                }
+            },
+            Statement::Let { name: "ok".to_string(), ty: None,
+                value: Expression::MethodCall {
+                    caller: Box::new(Expression::Identifier("self".to_string())),
+                    method_name: "channel_send".to_string(),
+                    args: vec![Expression::Identifier("ch".to_string()), Expression::String("hello".to_string())],
+                }
+            },
+        ];
+        let program = make_agent("Channels", vec![], vec![], vec![simple_method("Run", stmts)]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("__varg_channel_new"), "channel_new: {code}");
+        assert!(code.contains("__varg_channel_send"), "channel_send: {code}");
+    }
+
+    #[test]
+    fn test_codegen_workflow_builtins_generate_correct_calls() {
+        let stmt = Statement::Let { name: "w".to_string(), ty: None,
+            value: Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "workflow_new".to_string(),
+                args: vec![Expression::String("pipeline".to_string())],
+            }
+        };
+        let program = make_agent("Wf", vec![], vec![], vec![simple_method("Run", vec![stmt])]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("__varg_workflow_new"), "workflow_new: {code}");
+    }
+
+    #[test]
+    fn test_codegen_registry_builtin_generates_correct_call() {
+        let stmt = Statement::Let { name: "r".to_string(), ty: None,
+            value: Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "registry_search".to_string(),
+                args: vec![Expression::String("http".to_string())],
+            }
+        };
+        let program = make_agent("Reg", vec![], vec![], vec![simple_method("Run", vec![stmt])]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("__varg_registry_search"), "registry_search: {code}");
+    }
+
+    #[test]
+    fn test_codegen_rate_limit_annotation_generates_helper_methods() {
+        let method = MethodDecl {
+            name: "DoWork".to_string(),
+            is_public: true, is_async: false,
+            return_ty: None, args: vec![],
+            body: Some(Block { statements: vec![] }),
+            annotations: vec![Annotation {
+                name: "RateLimit".to_string(),
+                values: vec!["calls=5".to_string(), "window=1000".to_string()],
+            }],
+            type_params: vec![], constraints: vec![],
+        };
+        let program = make_agent("Limited", vec![], vec![], vec![method]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("DoWork_check_rate_limit"), "rate limit helper must exist: {code}");
+        assert!(code.contains("__varg_rate_limit_try"), "rate limit call: {code}");
+    }
+
+    #[test]
+    fn test_codegen_budget_annotation_generates_budget_method() {
+        let method = MethodDecl {
+            name: "CallLLM".to_string(),
+            is_public: true, is_async: false,
+            return_ty: None, args: vec![],
+            body: Some(Block { statements: vec![] }),
+            annotations: vec![Annotation {
+                name: "Budget".to_string(),
+                values: vec!["tokens=10000".to_string(), "usd_cents=500".to_string()],
+            }],
+            type_params: vec![], constraints: vec![],
+        };
+        let program = make_agent("Budgeted", vec![], vec![], vec![method]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("CallLLM_budget"), "budget helper must exist: {code}");
+        assert!(code.contains("__varg_budget_new"), "budget new call: {code}");
+    }
+
+    #[test]
+    fn test_codegen_checkpointed_annotation_generates_checkpoint_method() {
+        let method = MethodDecl {
+            name: "Process".to_string(),
+            is_public: true, is_async: false,
+            return_ty: None, args: vec![],
+            body: Some(Block { statements: vec![] }),
+            annotations: vec![Annotation {
+                name: "Checkpointed".to_string(),
+                values: vec!["path=\"./ckpt\"".to_string()],
+            }],
+            type_params: vec![], constraints: vec![],
+        };
+        let program = make_agent("Resumable", vec![], vec![], vec![method]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("Process_checkpoint"), "checkpoint helper: {code}");
+        assert!(code.contains("__varg_checkpoint_open"), "checkpoint open: {code}");
+    }
 }

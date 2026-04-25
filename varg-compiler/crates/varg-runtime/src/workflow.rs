@@ -209,4 +209,124 @@ mod tests {
         let report = __varg_workflow_status(&w);
         assert!(report.contains("my_pipeline"));
     }
+
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_workflow_empty_is_complete() {
+        // A workflow with zero steps has nothing pending → is_complete must be true
+        let w = __varg_workflow_new("empty");
+        assert!(__varg_workflow_is_complete(&w), "empty workflow must be immediately complete");
+    }
+
+    #[test]
+    fn test_workflow_empty_ready_steps() {
+        let w = __varg_workflow_new("empty");
+        assert!(__varg_workflow_ready_steps(&w).is_empty());
+    }
+
+    #[test]
+    fn test_workflow_circular_dependency_never_becomes_ready() {
+        // A→B, B→A: neither step ever has all deps Done → ready_steps is empty
+        let w = __varg_workflow_new("circ");
+        __varg_workflow_add_step(&w, "A", vec!["B".into()]);
+        __varg_workflow_add_step(&w, "B", vec!["A".into()]);
+        let ready = __varg_workflow_ready_steps(&w);
+        assert!(ready.is_empty(), "circular deps must produce no ready steps, got: {ready:?}");
+    }
+
+    #[test]
+    fn test_workflow_set_output_nonexistent_step_is_safe() {
+        // Calling set_output on a step that was never added must be a no-op, not panic
+        let w = __varg_workflow_new("noop");
+        __varg_workflow_set_output(&w, "ghost_step", "output"); // must not panic
+        assert_eq!(__varg_workflow_step_count(&w), 0);
+    }
+
+    #[test]
+    fn test_workflow_set_failed_nonexistent_step_is_safe() {
+        let w = __varg_workflow_new("noop");
+        __varg_workflow_set_failed(&w, "ghost_step", "error"); // must not panic
+    }
+
+    #[test]
+    fn test_workflow_set_output_twice_overwrites() {
+        let w = __varg_workflow_new("ow");
+        __varg_workflow_add_step(&w, "s", vec![]);
+        __varg_workflow_set_output(&w, "s", "first");
+        __varg_workflow_set_output(&w, "s", "second");
+        assert_eq!(__varg_workflow_get_output(&w, "s"), "second", "second set_output must overwrite");
+    }
+
+    #[test]
+    fn test_workflow_failed_step_makes_dependent_skipped_not_ready() {
+        let w = __varg_workflow_new("skip");
+        __varg_workflow_add_step(&w, "a", vec![]);
+        __varg_workflow_add_step(&w, "b", vec!["a".into()]);
+        __varg_workflow_add_step(&w, "c", vec!["b".into()]);
+        __varg_workflow_set_failed(&w, "a", "oops");
+        let ready = __varg_workflow_ready_steps(&w);
+        assert!(!ready.contains(&"b".to_string()), "b must be skipped when a failed");
+        // c depends on b which is now Skipped (not Done), so c also must not become ready
+        assert!(!ready.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_workflow_get_output_nonexistent_returns_empty() {
+        let w = __varg_workflow_new("out");
+        assert_eq!(__varg_workflow_get_output(&w, "nonexistent"), "");
+    }
+
+    #[test]
+    fn test_workflow_add_duplicate_step_name_is_idempotent() {
+        let w = __varg_workflow_new("dup");
+        __varg_workflow_add_step(&w, "s", vec![]);
+        __varg_workflow_add_step(&w, "s", vec![]); // same name again
+        // Should not create a duplicate entry; order list deduplicates
+        assert_eq!(__varg_workflow_step_count(&w), 1);
+    }
+
+    #[test]
+    fn test_workflow_long_linear_chain() {
+        // 50-step chain: each depends on previous
+        let w = __varg_workflow_new("chain");
+        let names: Vec<String> = (0..50).map(|i| format!("step_{i}")).collect();
+        __varg_workflow_add_step(&w, &names[0], vec![]);
+        for i in 1..50 {
+            __varg_workflow_add_step(&w, &names[i], vec![names[i-1].clone()]);
+        }
+        // Only step_0 is ready initially
+        let ready = __varg_workflow_ready_steps(&w);
+        assert_eq!(ready, vec!["step_0".to_string()]);
+        // Complete each step in order
+        for name in &names {
+            __varg_workflow_set_output(&w, name, "ok");
+        }
+        assert!(__varg_workflow_is_complete(&w));
+    }
+
+    #[test]
+    fn test_workflow_dep_on_unknown_step_treated_as_satisfied() {
+        // Dep references a name that was never add_step'd.
+        // ready_steps uses map_or(true, ...) for unknown deps → treats them as Done
+        let w = __varg_workflow_new("unknown_dep");
+        __varg_workflow_add_step(&w, "b", vec!["nonexistent_a".into()]);
+        let ready = __varg_workflow_ready_steps(&w);
+        // "nonexistent_a" has no step entry → map_or(true) → treated as Done → b is ready
+        assert!(ready.contains(&"b".to_string()), "dep on unknown step must not block");
+    }
+
+    #[test]
+    fn test_workflow_status_report_counts() {
+        let w = __varg_workflow_new("counts");
+        __varg_workflow_add_step(&w, "ok", vec![]);
+        __varg_workflow_add_step(&w, "fail", vec![]);
+        __varg_workflow_add_step(&w, "dep_of_fail", vec!["fail".into()]);
+        __varg_workflow_add_step(&w, "pending", vec![]);
+        __varg_workflow_set_output(&w, "ok", "done");
+        __varg_workflow_set_failed(&w, "fail", "err");
+        let report = __varg_workflow_status(&w);
+        assert!(report.contains("failed") || report.contains("1 failed") || report.contains("failed |"),
+            "status report must mention failures: {report}");
+    }
 }

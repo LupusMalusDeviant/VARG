@@ -187,4 +187,128 @@ mod tests {
     fn test_estimate_tokens_builtin() {
         assert!(__varg_estimate_tokens("Hello world") >= 1);
     }
+
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_budget_zero_limits_immediate_exhaustion() {
+        // max_tokens=0 → any track() with tokens>=1 must fail
+        let mut b = BudgetTracker::new(0, 0.0);
+        let result = b.track("hi", "hi");
+        assert!(result.is_err(), "zero-budget must reject every track call");
+    }
+
+    #[test]
+    fn test_budget_empty_prompt_and_response_uses_minimum_one_token() {
+        // estimate_tokens has .max(1) so even "" costs 1 token
+        let tokens = BudgetTracker::estimate_tokens("");
+        assert_eq!(tokens, 1, "empty string must estimate to 1 token (max(1) guard)");
+    }
+
+    #[test]
+    fn test_budget_track_empty_strings_succeeds_with_sufficient_budget() {
+        let mut b = BudgetTracker::new(100, 100.0);
+        assert!(b.track("", "").is_ok(), "tracking empty strings must succeed with large budget");
+        assert!(b.used_tokens >= 1, "tracking empty strings must still consume tokens");
+    }
+
+    #[test]
+    fn test_budget_remaining_tokens_saturating_no_underflow() {
+        // used_tokens must never exceed max_tokens due to the check in track()
+        let mut b = BudgetTracker::new(5, 100.0);
+        for _ in 0..10 {
+            let _ = b.track("x", "x"); // some will fail
+        }
+        // remaining must not underflow (saturating_sub)
+        assert!(b.remaining_tokens() <= 5);
+    }
+
+    #[test]
+    fn test_budget_check_fails_at_exact_exhaustion() {
+        let mut b = BudgetTracker::new(2, 100.0);
+        // Force used_tokens == max_tokens manually
+        b.used_tokens = 2;
+        assert!(b.check().is_err(), "check must fail when used == max");
+    }
+
+    #[test]
+    fn test_budget_remaining_never_negative() {
+        let mut b = BudgetTracker::new(10, 1.0);
+        b.used_tokens = 10;
+        assert_eq!(b.remaining_tokens(), 0);
+        b.used_tokens = 15; // hypothetically over (shouldn't happen via track(), but test the guard)
+        let remaining = b.remaining_tokens();
+        assert_eq!(remaining, 0, "saturating_sub must clamp to 0, got {remaining}");
+    }
+
+    #[test]
+    fn test_budget_remaining_usd_never_negative() {
+        let mut b = BudgetTracker::new(100_000, 0.0001);
+        b.used_usd = 1.0; // way over the limit
+        let rem = b.remaining_usd();
+        assert!(rem >= 0.0, "remaining_usd must never go negative, got {rem}");
+    }
+
+    #[test]
+    fn test_budget_usd_limit_enforced() {
+        // Set up: tiny USD budget with Ollama (free) → only token limit is active
+        // Test with openai provider via env var workaround: just check the math directly
+        let mut b = BudgetTracker {
+            max_tokens: 1_000_000,
+            max_usd: 0.0001, // $0.0001
+            used_tokens: 0,
+            used_usd: 0.0,
+            provider: "openai".to_string(),
+        };
+        // OpenAI rate: $0.005/1k tokens, so 20 tokens cost $0.0001
+        // A small prompt should stay under; a large one should bust the limit
+        let large_prompt = "word ".repeat(10000); // ~50000 chars → ~12500 tokens → ~$0.0625
+        let result = b.track(&large_prompt, "ok");
+        assert!(result.is_err(), "large prompt must exceed tiny USD budget");
+    }
+
+    #[test]
+    fn test_budget_report_zero_budget_no_nan_or_panic() {
+        let b = BudgetTracker::new(0, 0.0);
+        let report = b.report();
+        // With max_tokens=0, percentage calc would be 0/0 — must not produce NaN
+        assert!(!report.contains("NaN"), "report with zero budget must not contain NaN: {report}");
+        assert!(!report.contains("inf"), "report with zero budget must not contain inf: {report}");
+    }
+
+    #[test]
+    fn test_budget_handle_exhausted_track_returns_false() {
+        // estimate_tokens("") = 1, so track("","") costs 2 tokens (prompt + response)
+        // max_tokens=2: first call succeeds (0+2=2 <= 2), second call fails (2+2=4 > 2)
+        let h = __varg_budget_new(2, 10000);
+        assert!(__varg_budget_track(&h, "", ""), "first track must succeed (uses exactly 2 tokens)");
+        assert!(!__varg_budget_track(&h, "", ""), "second track must fail (budget exhausted)");
+    }
+
+    #[test]
+    fn test_budget_check_after_exhaustion_returns_false() {
+        // Use 2 tokens of a 2-token budget
+        let h = __varg_budget_new(2, 10000);
+        __varg_budget_track(&h, "", ""); // consume 2 tokens → exhausted (used=2, max=2)
+        assert!(!__varg_budget_check(&h), "check must return false when used >= max");
+    }
+
+    #[test]
+    fn test_estimate_tokens_long_text() {
+        let text = "a".repeat(10_000); // 10k chars → ~2500 tokens
+        let t = BudgetTracker::estimate_tokens(&text);
+        assert!(t >= 2000 && t <= 3000, "10k chars should estimate ~2500 tokens, got {t}");
+    }
+
+    #[test]
+    fn test_estimate_tokens_unicode_uses_char_count_not_bytes() {
+        // "é" is 2 bytes but 1 char — estimate should use chars(), not len()
+        let text = "éàü"; // 3 chars → estimate_tokens = max(3/4, 1) = 1
+        let t = BudgetTracker::estimate_tokens(text);
+        assert_eq!(t, 1);
+        // Multi-byte chars should not inflate the count
+        let kanji = "漢字テスト"; // 5 chars
+        let t2 = BudgetTracker::estimate_tokens(kanji);
+        assert_eq!(t2, 1, "5 unicode chars / 4 = 1 (max 1)");
+    }
 }

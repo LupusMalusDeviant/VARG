@@ -172,4 +172,102 @@ mod tests {
         __varg_checkpoint_save(&h, "{}");
         assert!(__varg_checkpoint_age(&h) >= 0);
     }
+
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_checkpoint_load_after_clear_returns_empty() {
+        // After clear(), load() must return empty string (unwrap_or_default)
+        let h = mem("clr1");
+        __varg_checkpoint_save(&h, "{\"x\":1}");
+        __varg_checkpoint_clear(&h);
+        let loaded = __varg_checkpoint_load(&h);
+        assert!(loaded.is_empty(), "load after clear must return empty string, got: {loaded}");
+    }
+
+    #[test]
+    fn test_checkpoint_exists_false_after_clear() {
+        let h = mem("clr2");
+        __varg_checkpoint_save(&h, "{}");
+        __varg_checkpoint_clear(&h);
+        assert!(!__varg_checkpoint_exists(&h), "exists must be false after clear");
+    }
+
+    #[test]
+    fn test_checkpoint_age_minus_one_after_clear() {
+        let h = mem("clr3");
+        __varg_checkpoint_save(&h, "{}");
+        __varg_checkpoint_clear(&h);
+        assert_eq!(__varg_checkpoint_age(&h), -1, "age must be -1 when no checkpoint exists");
+    }
+
+    #[test]
+    fn test_checkpoint_triple_overwrite_keeps_last() {
+        let h = mem("ow3");
+        for i in 1..=3 {
+            __varg_checkpoint_save(&h, &format!("{{\"v\":{i}}}"));
+        }
+        assert_eq!(__varg_checkpoint_load(&h), "{\"v\":3}");
+    }
+
+    #[test]
+    fn test_checkpoint_large_state_json() {
+        let h = mem("large");
+        // 100KB JSON blob
+        let big = format!("{{\"data\":\"{}\"}}", "x".repeat(100_000));
+        assert!(__varg_checkpoint_save(&h, &big), "saving 100KB state must succeed");
+        let loaded = __varg_checkpoint_load(&h);
+        assert_eq!(loaded.len(), big.len(), "loaded state must match saved state exactly");
+    }
+
+    #[test]
+    fn test_checkpoint_empty_json_string_survives_roundtrip() {
+        let h = mem("empty_json");
+        assert!(__varg_checkpoint_save(&h, "{}"));
+        assert_eq!(__varg_checkpoint_load(&h), "{}");
+    }
+
+    #[test]
+    fn test_checkpoint_special_chars_in_json_survive_roundtrip() {
+        let h = mem("special");
+        let json = r#"{"msg":"hello\nworld\t\"quoted\""}"#;
+        __varg_checkpoint_save(&h, json);
+        assert_eq!(__varg_checkpoint_load(&h), json);
+    }
+
+    #[test]
+    fn test_checkpoint_two_agents_are_isolated() {
+        // Two handles with different agent IDs must not share state
+        let h1 = mem("agent_alpha");
+        let h2 = mem("agent_beta");
+        // The second mem() creates a NEW in-memory connection — they are physically separate DBs.
+        // Each agent's save is truly isolated.
+        __varg_checkpoint_save(&h1, "{\"owner\":\"alpha\"}");
+        // h2 has its own connection, never saved anything
+        assert!(!__varg_checkpoint_exists(&h2), "agent_beta must not see agent_alpha's checkpoint");
+    }
+
+    #[test]
+    fn test_checkpoint_fallback_to_memory_on_bad_path() {
+        // Invalid path should fall back to in-memory (not panic)
+        let h = __varg_checkpoint_open("/no/such/directory/does/not/exist/ck.db", "fallback_test");
+        // Must be usable — fallback to :memory: succeeded
+        assert!(__varg_checkpoint_save(&h, "{\"fallback\":true}"), "in-memory fallback must be functional");
+        assert_eq!(__varg_checkpoint_load(&h), "{\"fallback\":true}");
+    }
+
+    #[test]
+    fn test_checkpoint_clear_nonexistent_is_safe() {
+        let h = mem("never_saved");
+        assert!(__varg_checkpoint_clear(&h), "clearing a never-saved checkpoint must succeed");
+        assert!(!__varg_checkpoint_exists(&h));
+    }
+
+    #[test]
+    fn test_checkpoint_unicode_state_survives_roundtrip() {
+        let h = mem("unicode");
+        let json = "{\"msg\":\"こんにちは\",\"emoji\":\"🚀\"}";
+        __varg_checkpoint_save(&h, json);
+        assert_eq!(__varg_checkpoint_load(&h), json);
+    }
 }

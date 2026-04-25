@@ -147,4 +147,150 @@ mod tests {
     fn test_prop_assert_fails() {
         __varg_prop_assert("always_false", || false, 1);
     }
+
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_gen_int_min_equals_max_returns_min() {
+        // When min==max there is no valid range — must return min without panic
+        for _ in 0..50 {
+            assert_eq!(__varg_prop_gen_int(7, 7), 7);
+        }
+    }
+
+    #[test]
+    fn test_gen_int_min_greater_than_max_returns_min() {
+        // Inverted range: min > max — must return min, not panic or go out of range
+        for _ in 0..50 {
+            assert_eq!(__varg_prop_gen_int(100, 50), 100);
+        }
+    }
+
+    #[test]
+    fn test_gen_int_negative_range() {
+        // Range entirely in negatives must still produce values in range
+        for _ in 0..200 {
+            let v = __varg_prop_gen_int(-100, -10);
+            assert!((-100..-10).contains(&v), "{v} not in [-100,-10)");
+        }
+    }
+
+    #[test]
+    fn test_gen_int_extreme_range() {
+        // Very large range including i64 boundaries must not panic
+        for _ in 0..50 {
+            let v = __varg_prop_gen_int(0, i64::MAX);
+            assert!(v >= 0);
+        }
+    }
+
+    #[test]
+    fn test_gen_string_zero_max_len_produces_non_empty() {
+        // max_len=0 → max(1) guard → should still produce a 1-char string
+        for _ in 0..50 {
+            let s = __varg_prop_gen_string(0);
+            assert!(!s.is_empty(), "max_len=0 must still produce at least 1 char");
+            assert!(s.len() <= 1, "max_len=0 coerced to 1 must not exceed length 1");
+        }
+    }
+
+    #[test]
+    fn test_gen_string_negative_max_len_treated_as_zero() {
+        // max(-50).max(1) = 1 → 1-char string
+        for _ in 0..50 {
+            let s = __varg_prop_gen_string(-50);
+            assert!(!s.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_gen_int_list_zero_max_len_may_produce_empty() {
+        // max_len=0 → length is 0 or 0, so empty list
+        for _ in 0..20 {
+            let v = __varg_prop_gen_int_list(0);
+            assert!(v.is_empty(), "max_len=0 must produce empty list, got len={}", v.len());
+        }
+    }
+
+    #[test]
+    fn test_gen_int_list_negative_max_len_produces_empty() {
+        for _ in 0..20 {
+            let v = __varg_prop_gen_int_list(-10);
+            assert!(v.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_prop_check_zero_runs_clamps_to_one() {
+        // runs=0 is clamped to 1 via runs.max(1)
+        let r = __varg_prop_check(|| true, 0);
+        assert_eq!(r["runs"], 1, "zero runs must be clamped to 1");
+    }
+
+    #[test]
+    fn test_prop_check_negative_runs_clamps_to_one() {
+        let r = __varg_prop_check(|| true, -100);
+        assert_eq!(r["runs"], 1);
+    }
+
+    #[test]
+    fn test_prop_assert_zero_runs_clamps_to_one_and_passes() {
+        // Should not panic with zero runs (clamped to 1, always-true fn)
+        __varg_prop_assert("zero_runs", || true, 0);
+    }
+
+    #[test]
+    fn test_prop_check_partial_failures_counted() {
+        let call_count = std::sync::Arc::new(std::sync::Mutex::new(0i64));
+        let cc = call_count.clone();
+        let r = __varg_prop_check(move || {
+            let mut n = cc.lock().unwrap();
+            *n += 1;
+            *n % 2 == 0 // fails on odd calls
+        }, 10);
+        assert_eq!(r["runs"], 10);
+        assert_eq!(r["failures"], 5, "exactly half should fail");
+        assert_eq!(r["ok"], 0, "any failure means ok=0");
+    }
+
+    #[test]
+    fn test_gen_bool_produces_both_values() {
+        let mut saw_true = false;
+        let mut saw_false = false;
+        for _ in 0..200 {
+            let b = __varg_prop_gen_bool();
+            if b { saw_true = true; } else { saw_false = true; }
+            if saw_true && saw_false { break; }
+        }
+        assert!(saw_true, "gen_bool must produce true at least once in 200 calls");
+        assert!(saw_false, "gen_bool must produce false at least once in 200 calls");
+    }
+
+    #[test]
+    fn test_gen_float_never_exactly_one() {
+        // LCG produces values in [0, u64::MAX), so / u64::MAX is always < 1.0
+        for _ in 0..500 {
+            let f = __varg_prop_gen_float();
+            assert!(f < 1.0, "gen_float must be < 1.0, got {f}");
+            assert!(f >= 0.0, "gen_float must be >= 0.0, got {f}");
+        }
+    }
+
+    #[test]
+    fn test_gen_string_list_zero_max_produces_only_empty_lists() {
+        for _ in 0..30 {
+            let v = __varg_prop_gen_string_list(0, 10);
+            assert!(v.is_empty(), "max_len=0 must produce empty list");
+        }
+    }
+
+    #[test]
+    fn test_gen_string_only_uses_ascii_alphabet() {
+        for _ in 0..200 {
+            let s = __varg_prop_gen_string(50);
+            for c in s.chars() {
+                assert!(c.is_ascii(), "gen_string must only produce ASCII chars, got '{c}'");
+            }
+        }
+    }
 }

@@ -8123,4 +8123,308 @@ mod tests {
         let err = checker.infer_expression_type(&expr).unwrap_err();
         assert!(matches!(err, TypeError::MissingCapability { .. }));
     }
+
+    // ===== Adversarial / Error Path Tests — Waves 30-34 =====
+
+    fn call(method: &str, args: Vec<Expression>) -> Expression {
+        Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: method.to_string(),
+            args,
+        }
+    }
+
+    fn ident(name: &str) -> Expression { Expression::Identifier(name.to_string()) }
+    fn str_lit(s: &str) -> Expression { Expression::String(s.to_string()) }
+    fn int_lit(n: i64) -> Expression { Expression::Int(n) }
+
+    // ── Wrong argument counts ────────────────────────────────────────────────
+
+    #[test]
+    fn test_tc_await_approval_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("await_approval", vec![])).unwrap_err();
+        assert!(matches!(err, TypeError::TypeMismatch { .. }), "0-arg await_approval must error");
+    }
+
+    #[test]
+    fn test_tc_await_choice_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        // needs 2 args, give 1
+        let err = c.infer_expression_type(&call("await_choice", vec![str_lit("pick one")])).unwrap_err();
+        assert!(matches!(err, TypeError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_tc_budget_new_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("budget_new", vec![int_lit(100)])).unwrap_err();
+        assert!(matches!(err, TypeError::TypeMismatch { .. }), "budget_new needs 2 args");
+    }
+
+    #[test]
+    fn test_tc_checkpoint_open_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        // needs FileAccess capability — but also wrong arg count
+        let err = c.infer_expression_type(&call("checkpoint_open", vec![])).unwrap_err();
+        // Could be MissingCapability or TypeMismatch depending on check order
+        assert!(matches!(err, TypeError::MissingCapability { .. } | TypeError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_tc_channel_new_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("channel_new", vec![])).unwrap_err();
+        assert!(matches!(err, TypeError::TypeMismatch { .. }), "channel_new needs 1 arg");
+    }
+
+    #[test]
+    fn test_tc_channel_send_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("channel_send", vec![ident("ch")])).unwrap_err();
+        assert!(matches!(err, TypeError::TypeMismatch { .. }), "channel_send needs 2 args");
+    }
+
+    #[test]
+    fn test_tc_prop_gen_int_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("prop_gen_int", vec![int_lit(0)])).unwrap_err();
+        assert!(matches!(err, TypeError::TypeMismatch { .. }), "prop_gen_int needs 2 args");
+    }
+
+    #[test]
+    fn test_tc_workflow_add_step_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("workflow_add_step", vec![ident("w"), str_lit("step")])).unwrap_err();
+        assert!(matches!(err, TypeError::TypeMismatch { .. }), "workflow_add_step needs 3 args");
+    }
+
+    #[test]
+    fn test_tc_registry_install_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("registry_install", vec![ident("r"), str_lit("pkg")])).unwrap_err();
+        assert!(matches!(err, TypeError::TypeMismatch { .. }), "registry_install needs 3 args");
+    }
+
+    #[test]
+    fn test_tc_llm_structured_wrong_arg_count() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("llm_structured", vec![str_lit("prompt")])).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. } | TypeError::TypeMismatch { .. }));
+    }
+
+    // ── OCAP gating ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tc_llm_structured_requires_llm_access() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("llm_structured", vec![
+            str_lit("prompt"), str_lit("{\"type\":\"string\"}"), int_lit(3)
+        ])).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }), "llm_structured must require LlmAccess");
+    }
+
+    #[test]
+    fn test_tc_llm_stream_requires_llm_access() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("llm_stream", vec![
+            str_lit("prompt"), str_lit("gpt-4")
+        ])).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_tc_llm_embed_batch_requires_llm_access() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("llm_embed_batch", vec![ident("texts")])).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_tc_llm_vision_requires_llm_access() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("llm_vision", vec![
+            ident("img"), str_lit("what is this?"), str_lit("gpt-4-vision")
+        ])).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_tc_image_load_requires_file_access() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("image_load", vec![str_lit("photo.jpg")])).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_tc_audio_load_requires_file_access() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("audio_load", vec![str_lit("clip.mp3")])).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_tc_checkpoint_open_requires_file_access() {
+        let mut c = TypeChecker::new();
+        let err = c.infer_expression_type(&call("checkpoint_open", vec![
+            str_lit("./ckpt.db"), str_lit("agent1")
+        ])).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    // ── Return type verification ─────────────────────────────────────────────
+
+    #[test]
+    fn test_tc_await_approval_returns_bool() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("await_approval", vec![str_lit("Continue?")])).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_tc_await_input_returns_string() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("await_input", vec![str_lit("Enter value: ")])).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    #[test]
+    fn test_tc_await_choice_returns_int() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("await_choice", vec![
+            str_lit("Pick:"), ident("options")
+        ])).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_tc_channel_new_returns_channel_handle() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("channel_new", vec![int_lit(10)])).unwrap();
+        assert_eq!(ty, TypeNode::Custom("ChannelHandle".to_string()));
+    }
+
+    #[test]
+    fn test_tc_channel_len_returns_int() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("channel_len", vec![ident("ch")])).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_tc_channel_is_closed_returns_bool() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("channel_is_closed", vec![ident("ch")])).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_tc_budget_new_returns_budget_handle() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("budget_new", vec![int_lit(10000), int_lit(500)])).unwrap();
+        assert_eq!(ty, TypeNode::Custom("BudgetHandle".to_string()));
+    }
+
+    #[test]
+    fn test_tc_budget_track_returns_bool() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("budget_track", vec![
+            ident("b"), str_lit("prompt"), str_lit("response")
+        ])).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_tc_budget_remaining_tokens_returns_int() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("budget_remaining_tokens", vec![ident("b")])).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_tc_workflow_new_returns_workflow_handle() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("workflow_new", vec![str_lit("pipe")])).unwrap();
+        assert_eq!(ty, TypeNode::Custom("WorkflowHandle".to_string()));
+    }
+
+    #[test]
+    fn test_tc_workflow_is_complete_returns_bool() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("workflow_is_complete", vec![ident("w")])).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_tc_workflow_ready_steps_returns_array_of_string() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("workflow_ready_steps", vec![ident("w")])).unwrap();
+        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_tc_registry_search_returns_array_of_string() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("registry_search", vec![str_lit("http")])).unwrap();
+        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::String)));
+    }
+
+    #[test]
+    fn test_tc_prop_gen_float_returns_float() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("prop_gen_float", vec![])).unwrap();
+        assert_eq!(ty, TypeNode::Float);
+    }
+
+    #[test]
+    fn test_tc_prop_gen_bool_returns_bool() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("prop_gen_bool", vec![])).unwrap();
+        assert_eq!(ty, TypeNode::Bool);
+    }
+
+    #[test]
+    fn test_tc_prop_gen_int_list_returns_array_of_int() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("prop_gen_int_list", vec![int_lit(10)])).unwrap();
+        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::Int)));
+    }
+
+    #[test]
+    fn test_tc_estimate_tokens_returns_int() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("estimate_tokens", vec![str_lit("hello")])).unwrap();
+        assert_eq!(ty, TypeNode::Int);
+    }
+
+    #[test]
+    fn test_tc_sse_event_returns_string() {
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("sse_event", vec![
+            str_lit("message"), str_lit("hello")
+        ])).unwrap();
+        assert_eq!(ty, TypeNode::String);
+    }
+
+    // ── Unknown builtin → dynamic fallback (typechecker does not reject unknown calls) ────
+
+    #[test]
+    fn test_tc_unknown_builtin_returns_dynamic_not_panic() {
+        // The typechecker resolves unknown free function calls to Dynamic rather than erroring.
+        // This preserves interop flexibility; actual resolution happens at codegen/link time.
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("nonexistent_builtin_xyz", vec![])).unwrap();
+        assert!(matches!(ty, TypeNode::Custom(_)), "unknown builtin must resolve to Dynamic/Custom, not panic");
+    }
+
+    #[test]
+    fn test_tc_known_builtin_channel_new_resolves() {
+        // "channel_new" is a registered builtin and must resolve to a non-error type
+        let mut c = TypeChecker::new();
+        let ty = c.infer_expression_type(&call("channel_new", vec![
+            int_lit(100),
+        ])).unwrap();
+        // channel_new returns a ChannelHandle (Custom type)
+        assert!(matches!(ty, TypeNode::Custom(_)), "channel_new must resolve to a custom handle type");
+    }
 }

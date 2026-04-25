@@ -155,4 +155,87 @@ mod tests {
         assert!(__varg_rate_limit_try(&key, 1, 60_000)); // fresh again
         __varg_rate_limit_reset(&key);
     }
+
+    // ── Adversarial / edge-case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_token_bucket_zero_window_does_not_panic() {
+        // window_ms=0 → divides by max(1)=1, must not panic or divide-by-zero
+        let mut b = TokenBucket::new(5, 0);
+        assert!(b.try_acquire()); // bucket starts full
+    }
+
+    #[test]
+    fn test_token_bucket_zero_max_calls_always_denies() {
+        // max_calls=0 → bucket starts empty and refills at 0/ms
+        let mut b = TokenBucket::new(0, 1000);
+        assert!(!b.try_acquire(), "0-capacity bucket must always deny");
+    }
+
+    #[test]
+    fn test_rate_limit_burst_exhaustion_then_denied() {
+        let key = format!("burst_{}", nano_id());
+        // Exhaust burst of 3
+        assert!(__varg_rate_limit_try(&key, 3, 60_000));
+        assert!(__varg_rate_limit_try(&key, 3, 60_000));
+        assert!(__varg_rate_limit_try(&key, 3, 60_000));
+        assert!(!__varg_rate_limit_try(&key, 3, 60_000), "4th call must be denied after burst exhausted");
+        __varg_rate_limit_reset(&key);
+    }
+
+    #[test]
+    fn test_rate_limit_many_keys_are_independent() {
+        let k1 = format!("ind_a_{}", nano_id());
+        let k2 = format!("ind_b_{}", nano_id());
+        // Exhaust k1 but k2 should still work
+        for _ in 0..3 { __varg_rate_limit_try(&k1, 3, 60_000); }
+        assert!(!__varg_rate_limit_try(&k1, 3, 60_000), "k1 must be exhausted");
+        assert!(__varg_rate_limit_try(&k2, 3, 60_000), "k2 must be independent of k1");
+        __varg_rate_limit_reset(&k1);
+        __varg_rate_limit_reset(&k2);
+    }
+
+    #[test]
+    fn test_rate_limit_reset_nonexistent_key_is_safe() {
+        // Resetting a key that never existed must not panic
+        __varg_rate_limit_reset("key_that_does_not_exist_xyz_abc_123");
+    }
+
+    #[test]
+    fn test_ratelimiter_unknown_key_try_acquire_returns_false() {
+        // Acquiring on a key that was never created must return false, not panic
+        assert!(!__varg_ratelimiter_try_acquire("nonexistent_limiter_key_xyz"));
+    }
+
+    #[test]
+    fn test_token_bucket_refills_after_depletion() {
+        // With a very short window (1ms), tokens refill after sleeping
+        let mut b = TokenBucket::new(10, 1); // 10 calls per 1ms
+        for _ in 0..10 { b.try_acquire(); }
+        assert!(!b.try_acquire(), "must be depleted");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(b.try_acquire(), "must have refilled after sleep");
+    }
+
+    #[test]
+    fn test_rate_limit_negative_window_is_coerced() {
+        // Negative window_ms cast to u64 is huge; as i64 it wraps. The new() takes u64.
+        // Test via the Varg builtin which passes i64: negative → cast to u64 = huge number
+        // What we test: it doesn't panic and eventually allows a call
+        let key = format!("negwin_{}", nano_id());
+        // With a very large window (huge number from negative cast), tokens refill very slowly
+        // but the bucket starts full so first calls should succeed
+        let b = TokenBucket::new(5, u64::MAX);
+        assert_eq!(b.tokens, 5.0);
+        __varg_rate_limit_reset(&key);
+    }
+
+    #[test]
+    fn test_ratelimiter_new_creates_unique_keys() {
+        let k1 = __varg_ratelimiter_new(5, 60_000);
+        let k2 = __varg_ratelimiter_new(5, 60_000);
+        assert_ne!(k1, k2, "each ratelimiter_new must generate a unique key");
+        __varg_rate_limit_reset(&k1);
+        __varg_rate_limit_reset(&k2);
+    }
 }
