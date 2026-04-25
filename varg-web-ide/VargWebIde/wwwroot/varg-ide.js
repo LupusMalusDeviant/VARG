@@ -26,13 +26,16 @@ const DEFAULT_CODE = `agent Hello {
         print($"Upper: {to_upper(greeting)}");
         print($"Length: {len(greeting)}");
 
-        // Pattern matching (as statement)
+        // Conditionals
         var score = 72;
-        match score {
-            90..100 => print("Grade: A"),
-            70..89  => print("Grade: B"),
-            50..69  => print("Grade: C"),
-            _       => print("Grade: F"),
+        if score >= 90 {
+            print("Grade: A");
+        } else if score >= 70 {
+            print("Grade: B");
+        } else if score >= 50 {
+            print("Grade: C");
+        } else {
+            print("Grade: F");
         }
     }
 }
