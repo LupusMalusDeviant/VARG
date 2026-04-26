@@ -1753,10 +1753,35 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let first = self.parse_single_pattern()?;
+        // Or-pattern: `1 | 2 | 3 =>` — uses BitOr token (`|`), not Pipe (`|>`)
+        if self.peek() == Some(&Token::BitOr) {
+            let mut alternatives = vec![first];
+            while self.peek() == Some(&Token::BitOr) {
+                self.advance(); // consume `|`
+                alternatives.push(self.parse_single_pattern()?);
+            }
+            Ok(Pattern::Or(alternatives))
+        } else {
+            Ok(first)
+        }
+    }
+
+    fn parse_single_pattern(&mut self) -> Result<Pattern, ParseError> {
         match self.peek() {
             Some(Token::Underscore) => {
                 self.advance();
                 Ok(Pattern::Wildcard)
+            },
+            Some(Token::Minus) => {
+                // Negative integer literal pattern: -42
+                self.advance();
+                if let Some(Token::IntLiteral(val)) = self.advance() {
+                    Ok(Pattern::Literal(Expression::Int(-val)))
+                } else {
+                    let span = self.current_span();
+                    Err(ParseError::UnexpectedToken { expected: "integer literal after -".to_string(), found: None, span })
+                }
             },
             Some(Token::IntLiteral(_)) => {
                 if let Some(Token::IntLiteral(val)) = self.advance() {
@@ -5572,6 +5597,55 @@ mod tests {
             if let Statement::Match { arms, .. } = &body.statements[0] {
                 assert!(arms[0].guard.is_none());
                 assert!(arms[1].guard.is_none());
+            } else { panic!("Expected Match"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_or_pattern_in_match() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    match x {
+                        1 | 2 | 3 => { print "small"; }
+                        _ => { print "other"; }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Match { arms, .. } = &body.statements[0] {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(&arms[0].pattern, Pattern::Or(alts) if alts.len() == 3));
+                assert!(matches!(&arms[1].pattern, Pattern::Wildcard));
+            } else { panic!("Expected Match"); }
+        } else { panic!("Expected Agent"); }
+    }
+
+    #[test]
+    fn test_parse_negative_literal_pattern_in_match() {
+        let source = r#"
+            agent Test {
+                public void Run() {
+                    match x {
+                        -1 => { print "neg one"; }
+                        0 => { print "zero"; }
+                        _ => { print "other"; }
+                    }
+                }
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().unwrap();
+        if let Item::Agent(a) = &program.items[0] {
+            let body = a.methods[0].body.as_ref().unwrap();
+            if let Statement::Match { arms, .. } = &body.statements[0] {
+                assert_eq!(arms.len(), 3);
+                assert!(matches!(&arms[0].pattern, Pattern::Literal(Expression::Int(-1))));
+                assert!(matches!(&arms[1].pattern, Pattern::Literal(Expression::Int(0))));
             } else { panic!("Expected Match"); }
         } else { panic!("Expected Agent"); }
     }

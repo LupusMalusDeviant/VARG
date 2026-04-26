@@ -1247,11 +1247,24 @@ impl RustGenerator {
                     format!("{}({})", name, bindings.join(", "))
                 }
             },
+            Pattern::Or(alternatives) => {
+                alternatives.iter()
+                    .map(|p| self.gen_pattern(p))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            },
         }
     }
 
     fn match_has_string_literal_arm(arms: &[MatchArm]) -> bool {
-        arms.iter().any(|arm| matches!(&arm.pattern, Pattern::Literal(Expression::String(_))))
+        fn has_string(pattern: &Pattern) -> bool {
+            match pattern {
+                Pattern::Literal(Expression::String(_)) => true,
+                Pattern::Or(alts) => alts.iter().any(has_string),
+                _ => false,
+            }
+        }
+        arms.iter().any(|arm| has_string(&arm.pattern))
     }
 
     fn gen_expression(&mut self, expr: &Expression) -> String {

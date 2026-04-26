@@ -899,17 +899,26 @@ impl TypeChecker {
                     // Plan 30: Exhaustiveness check for enum types
                     if let TypeNode::Custom(ref enum_name) = subject_ty {
                         if let Some(variants) = self.enum_defs.get(enum_name).cloned() {
-                            let has_wildcard = arms.iter().any(|arm|
-                                matches!(arm.pattern, Pattern::Wildcard)
-                            );
+                            fn pattern_has_wildcard(p: &Pattern) -> bool {
+                                match p {
+                                    Pattern::Wildcard => true,
+                                    Pattern::Or(alts) => alts.iter().any(pattern_has_wildcard),
+                                    _ => false,
+                                }
+                            }
+                            fn collect_variant_names(p: &Pattern, out: &mut std::collections::HashSet<String>) {
+                                match p {
+                                    Pattern::Variant(name, _) => { out.insert(name.clone()); }
+                                    Pattern::Or(alts) => { for a in alts { collect_variant_names(a, out); } }
+                                    _ => {}
+                                }
+                            }
+                            let has_wildcard = arms.iter().any(|arm| pattern_has_wildcard(&arm.pattern));
                             if !has_wildcard {
-                                let matched_variants: std::collections::HashSet<String> = arms.iter()
-                                    .filter_map(|arm| {
-                                        if let Pattern::Variant(variant_name, _) = &arm.pattern {
-                                            Some(variant_name.clone())
-                                        } else { None }
-                                    })
-                                    .collect();
+                                let mut matched_variants = std::collections::HashSet::new();
+                                for arm in arms.iter() {
+                                    collect_variant_names(&arm.pattern, &mut matched_variants);
+                                }
                                 let missing: Vec<String> = variants.iter()
                                     .filter(|v| !matched_variants.contains(&v.name))
                                     .map(|v| v.name.clone())
@@ -927,9 +936,16 @@ impl TypeChecker {
                     // Check each arm's body
                     for arm in arms {
                         let saved_env = self.env.clone();
-                        // For Variant patterns with bindings, try to narrow types from enum definition
-                        if let Pattern::Variant(variant_name, bindings) = &arm.pattern {
-                            // Try to look up field types from enum definition
+                        // For Variant patterns with bindings, narrow types from enum definition.
+                        // For Or-patterns, use the first Variant alternative (if any) for binding.
+                        fn first_variant(p: &Pattern) -> Option<(&str, &Vec<String>)> {
+                            match p {
+                                Pattern::Variant(name, bindings) => Some((name.as_str(), bindings)),
+                                Pattern::Or(alts) => alts.iter().find_map(|a| first_variant(a)),
+                                _ => None,
+                            }
+                        }
+                        if let Some((variant_name, bindings)) = first_variant(&arm.pattern) {
                             let field_types = self.resolve_variant_field_types(&subject_ty, variant_name);
                             for (i, binding) in bindings.iter().enumerate() {
                                 let ty = field_types.get(i).cloned()
@@ -1022,7 +1038,11 @@ impl TypeChecker {
             Statement::Match { arms, .. } => {
                 if arms.is_empty() { return false; }
                 // All arms must return AND there must be a wildcard or exhaustive coverage
-                let has_wildcard = arms.iter().any(|arm| matches!(arm.pattern, Pattern::Wildcard));
+                fn pat_has_wildcard(p: &Pattern) -> bool {
+                    matches!(p, Pattern::Wildcard) ||
+                    matches!(p, Pattern::Or(alts) if alts.iter().any(|a| pat_has_wildcard(a)))
+                }
+                let has_wildcard = arms.iter().any(|arm| pat_has_wildcard(&arm.pattern));
                 has_wildcard && arms.iter().all(|arm| Self::block_always_returns(&arm.body))
             },
             _ => false,
@@ -8852,5 +8872,53 @@ mod tests {
                 if type_name == "BadAgent" && bound == "IProcessor"),
             "bad call must produce TraitBoundViolation, got: {:?}", err
         );
+    }
+
+    #[test]
+    fn test_or_pattern_exhaustiveness_with_wildcard_inside() {
+        // Or-pattern containing Wildcard should count as covered
+        let mut checker = TypeChecker::new();
+        let prog = Program {
+            no_std: false,
+            docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(), is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![], implements: vec![], fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "run".to_string(), is_public: true, is_async: false,
+                    annotations: vec![], type_params: vec![], constraints: vec![],
+                    args: vec![], return_ty: Some(TypeNode::Void),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "x".to_string(), ty: Some(TypeNode::Int),
+                            value: Expression::Int(1),
+                        },
+                        Statement::Match {
+                            subject: Expression::Identifier("x".to_string()),
+                            arms: vec![
+                                MatchArm {
+                                    pattern: Pattern::Or(vec![
+                                        Pattern::Literal(Expression::Int(1)),
+                                        Pattern::Literal(Expression::Int(2)),
+                                    ]),
+                                    guard: None,
+                                    body: Block { statements: vec![] },
+                                },
+                                MatchArm {
+                                    pattern: Pattern::Or(vec![
+                                        Pattern::Literal(Expression::Int(3)),
+                                        Pattern::Wildcard,
+                                    ]),
+                                    guard: None,
+                                    body: Block { statements: vec![] },
+                                },
+                            ],
+                        },
+                    ]}),
+                }],
+            })],
+        };
+        // Should pass — Or-pattern containing Wildcard covers remaining cases
+        assert!(checker.check_program(&prog).is_ok());
     }
 }

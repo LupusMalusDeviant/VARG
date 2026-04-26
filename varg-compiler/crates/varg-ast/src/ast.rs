@@ -365,6 +365,7 @@ pub enum Pattern {
     Literal(Expression),           // 200, "hello", true
     Variant(String, Vec<String>),  // Ok(value), Err(e)
     Wildcard,                      // _
+    Or(Vec<Pattern>),              // 1 | 2 | 3
 }
 
 // ---- Destructuring (Plan 06) ----

@@ -466,6 +466,12 @@ impl VargFormatter {
                 }
             }
             Pattern::Wildcard => "_".to_string(),
+            Pattern::Or(alternatives) => {
+                alternatives.iter()
+                    .map(|p| self.format_pattern(p))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }
         }
     }
 
