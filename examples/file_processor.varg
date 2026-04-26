@@ -1,0 +1,47 @@
+/// File processing with OCAP security.
+/// Demonstrates: FileAccess capability, Result handling, string methods.
+///
+/// Usage: vargc run file_processor.varg
+
+agent FileProcessor {
+    int files_processed;
+
+    public void on_start() {
+        files_processed = 0;
+    }
+
+    /// Count words in a file — requires FileAccess capability.
+    public int CountWords(string path, FileAccess cap) {
+        var content = fs_read(path)?;
+        var words = content.split(" ");
+        return words.len();
+    }
+
+    /// Process all .txt files in a directory.
+    public void ProcessDirectory(string dir, FileAccess cap) {
+        var files = fs_read_dir(dir) or [];
+
+        for file in files {
+            if file.ends_with(".txt") {
+                try {
+                    var count = self.CountWords(file, cap);
+                    log_info($"{file}: {count} words");
+                    files_processed += 1;
+                } catch err {
+                    log_warn($"Skipping {file}: {err}");
+                }
+            }
+        }
+    }
+
+    public void Run() {
+        log_info("File Processor starting...");
+
+        unsafe {
+            var cap = FileAccess {};
+            self.ProcessDirectory(".", cap);
+        }
+
+        log_info($"Done. Processed {files_processed} files.");
+    }
+}

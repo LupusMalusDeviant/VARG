@@ -1,0 +1,39 @@
+// Wave 20: Knowledge Graph Example
+// Demonstrates graph_open, add_node, add_edge, query, traverse, neighbors
+
+fn main() {
+    var g = graph_open("team_graph")
+
+    // Add nodes
+    var alice = graph_add_node(g, "Person", {"name": "Alice", "role": "Engineer"})
+    var bob = graph_add_node(g, "Person", {"name": "Bob", "role": "Designer"})
+    var charlie = graph_add_node(g, "Person", {"name": "Charlie", "role": "PM"})
+    var varg = graph_add_node(g, "Project", {"name": "Varg", "status": "active"})
+
+    // Add edges
+    graph_add_edge(g, alice, "works_on", varg, {})
+    graph_add_edge(g, bob, "works_on", varg, {})
+    graph_add_edge(g, alice, "knows", bob, {})
+    graph_add_edge(g, bob, "knows", charlie, {})
+
+    // Query by label
+    var people = graph_query(g, "Person")
+    print $"People: {len(people)}"
+
+    var projects = graph_query(g, "Project")
+    print $"Projects: {len(projects)}"
+
+    // Traverse: Alice -> knows -> Bob (depth 1)
+    var one_hop = graph_traverse(g, alice, 1, "knows")
+    print $"Alice knows (1 hop): {len(one_hop)}"
+
+    // Traverse: Alice -> knows -> Bob -> knows -> Charlie (depth 2)
+    var two_hop = graph_traverse(g, alice, 2, "knows")
+    print $"Alice knows (2 hops): {len(two_hop)}"
+
+    // Neighbors of Bob (both directions)
+    var bob_neighbors = graph_neighbors(g, bob)
+    print $"Bob neighbors: {len(bob_neighbors)}"
+
+    print "Knowledge graph demo complete!"
+}

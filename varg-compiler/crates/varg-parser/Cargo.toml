@@ -1,0 +1,8 @@
+[package]
+name = "varg-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+varg-ast = { path = "../varg-ast" }
+varg-lexer = { path = "../varg-lexer" }

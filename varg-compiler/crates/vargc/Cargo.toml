@@ -1,0 +1,15 @@
+[package]
+name = "vargc"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+varg-ast = { path = "../varg-ast" }
+varg-lexer = { path = "../varg-lexer" }
+varg-parser = { path = "../varg-parser" }
+varg-typechecker = { path = "../varg-typechecker" }
+varg-codegen = { path = "../varg-codegen" }
+codespan-reporting.workspace = true
+serde_json.workspace = true
+ureq = { version = "2.9", features = ["tls"] }
+dirs = "5.0"

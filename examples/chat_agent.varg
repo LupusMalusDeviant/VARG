@@ -1,0 +1,105 @@
+/// Multi-agent chat system with message passing.
+/// Demonstrates: spawn, send, request, on_message, agent lifecycle,
+///               async patterns, logging, time builtins.
+///
+/// Usage: vargc run chat_agent.varg
+
+/// A worker that processes tasks and responds to queries.
+agent TaskWorker {
+    int tasks_completed;
+    string last_task;
+
+    public void on_start() {
+        tasks_completed = 0;
+        last_task = "none";
+        log_debug("TaskWorker started");
+    }
+
+    public void on_message(string method, string[] args) {
+        match method {
+            "process" => {
+                last_task = args[0];
+                tasks_completed += 1;
+                var start = time_millis();
+
+                // Simulate work
+                sleep(100);
+
+                var elapsed = time_diff(time_millis(), start);
+                log_info($"Processed '{last_task}' in {elapsed}ms");
+            }
+            "status" => {
+                // Reply handled by request() mechanism
+            }
+            _ => {
+                log_warn($"Unknown method: {method}");
+            }
+        }
+    }
+
+    public void on_stop() {
+        log_info($"TaskWorker shutting down. Completed {tasks_completed} tasks.");
+    }
+}
+
+/// A logger that collects and formats log entries.
+agent LogCollector {
+    string[] entries;
+
+    public void on_start() {
+        entries = [];
+    }
+
+    public void on_message(string method, string[] args) {
+        match method {
+            "log" => {
+                var ts = time_format(time_millis(), "%H:%M:%S");
+                var entry = $"[{ts}] {args[0]}";
+                entries.push(entry);
+            }
+            "dump" => {
+                print "=== Log Entries ===";
+                for entry in entries {
+                    print $"  {entry}";
+                }
+                print $"=== {entries.len()} entries ===";
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The coordinator that orchestrates workers and logging.
+agent Coordinator {
+    public void Run() {
+        print "Multi-Agent System Starting...";
+        print "";
+
+        // Spawn child agents
+        var worker = spawn TaskWorker();
+        var logger = spawn LogCollector();
+
+        // Send tasks to worker
+        var tasks = ["parse-data", "validate-schema", "generate-report"];
+
+        for task in tasks {
+            worker.send("process", task);
+            logger.send("log", $"Dispatched: {task}");
+        }
+
+        // Wait for processing
+        sleep(500);
+
+        // Query worker status
+        logger.send("log", "All tasks dispatched");
+
+        // Dump collected logs
+        logger.send("dump");
+
+        // Give agents time to process
+        sleep(200);
+
+        print "";
+        print "System shutdown complete.";
+    }
+}

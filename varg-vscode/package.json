@@ -1,0 +1,61 @@
+{
+  "name": "varg-vscode",
+  "displayName": "Varg Language Support",
+  "description": "Official language support for the Varg programming language (.varg) — syntax highlighting, diagnostics, hover info, and autocomplete",
+  "version": "2.1.0",
+  "publisher": "varg-labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/varg-labs/varg-vscode"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:varg"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "varg",
+        "aliases": ["Varg", "varg"],
+        "extensions": [".varg"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "varg",
+        "scopeName": "source.varg",
+        "path": "./syntaxes/varg.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Varg",
+      "properties": {
+        "varg.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the varg-lsp binary. If empty, looks for 'varg-lsp' in PATH."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0",
+    "@vscode/vsce": "^2.0.0"
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  }
+}

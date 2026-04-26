@@ -1,0 +1,52 @@
+/// HTTP API client with retry logic and JSON parsing.
+/// Demonstrates: NetworkAccess, retry/fallback, JSON builtins, pipe operator.
+///
+/// Usage: vargc run api_client.varg
+
+agent ApiClient {
+    string base_url;
+
+    public void on_start() {
+        base_url = env("API_URL") or "https://jsonplaceholder.typicode.com";
+    }
+
+    /// Fetch a user by ID with automatic retry.
+    public string FetchUser(int id, NetworkAccess net) {
+        var url = $"{base_url}/users/{id}";
+
+        var body = retry(3) {
+            fetch(url, "GET")?
+        } fallback {
+            "{\"name\": \"offline\", \"email\": \"n/a\"}"
+        };
+
+        return body;
+    }
+
+    /// Parse and display user info.
+    public void DisplayUser(string json) {
+        var user = json_parse(json);
+        var name = json_get(user, "name");
+        var email = json_get(user, "email");
+        print $"  Name:  {name}";
+        print $"  Email: {email}";
+    }
+
+    public void Run() {
+        log_info("Fetching users...");
+        print "";
+
+        unsafe {
+            var net = NetworkAccess {};
+
+            for id in 1..=3 {
+                print $"--- User {id} ---";
+                var json = self.FetchUser(id, net);
+                self.DisplayUser(json);
+                print "";
+            }
+        }
+
+        log_info("Done.");
+    }
+}
