@@ -329,7 +329,7 @@ fn main() {
             let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
             let formatted = format!("{}{}", allow_header, rust_source);
             fs::write(&output_path, &formatted).unwrap();
-            let _ = Command::new("rustfmt").arg(&output_path).status();
+            let _ = Command::new("rustfmt").args(["--edition", "2021"]).arg(&output_path).status();
             println!("-> Wrote {}", output_path);
         }
         // Wave 13: Watch mode — recompile on .varg file changes
@@ -1237,6 +1237,7 @@ serde_json = "1.0"
 
     // Plan 44: Run rustfmt on generated code for clean output
     let _ = Command::new("rustfmt")
+        .args(["--edition", "2021"])
         .arg(main_rs_path.to_str().unwrap())
         .status();
 
@@ -1473,6 +1474,7 @@ serde_json = "1.0"
     fs::write(&main_rs_path, &formatted_source).unwrap();
 
     let _ = Command::new("rustfmt")
+        .args(["--edition", "2021"])
         .arg(main_rs_path.to_str().unwrap())
         .status();
 

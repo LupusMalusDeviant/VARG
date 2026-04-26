@@ -226,6 +226,19 @@ impl Parser {
         Ok(Expression::InterpolatedString(parts))
     }
 
+    fn try_parse_identifier(&mut self) -> Option<String> {
+        match self.peek() {
+            Some(Token::Identifier(_)) | Some(Token::Stream) => {
+                match self.advance() {
+                    Some(Token::Identifier(name)) => Some(name),
+                    Some(Token::Stream) => Some("stream".to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn parse_identifier(&mut self) -> Result<String, ParseError> {
         let span = self.current_span();
         match self.advance() {
@@ -554,18 +567,55 @@ impl Parser {
             // Wave 13: impl blocks for structs
             Some(Token::Impl) => {
                 self.advance();
-                let type_name = self.parse_identifier()?;
-                // Optional type parameters: impl<T> TypeName { ... }
+                // Support two forms:
+                //   impl<A, B> Pair<A, B> { ... }  — generic params before type name
+                //   impl TypeName<T> { ... }        — generic params after type name (old form)
                 let mut type_params = Vec::new();
                 if self.peek() == Some(&Token::LessThan) {
+                    // impl<A, B> form — parse type params first
                     self.advance();
-                    if self.peek() != Some(&Token::GreaterThan) {
-                        loop {
-                            type_params.push(self.parse_identifier()?);
-                            if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                    while self.peek() != Some(&Token::GreaterThan) && self.peek().is_some() {
+                        let tp = self.parse_identifier()?;
+                        // Skip optional trait bounds: A: Display + Clone
+                        if self.peek() == Some(&Token::Colon) {
+                            self.advance();
+                            self.parse_identifier()?;
+                            while self.peek() == Some(&Token::Plus) {
+                                self.advance();
+                                self.parse_identifier()?;
+                            }
                         }
+                        type_params.push(tp);
+                        if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
                     }
                     self.consume(Token::GreaterThan)?;
+                }
+                let type_name = self.parse_identifier()?;
+                // Optional generic type args after type name: impl TypeName<T> or impl<A> Pair<A>
+                if self.peek() == Some(&Token::LessThan) {
+                    self.advance();
+                    // If type_params is empty (impl TypeName<T> form), extract type params here
+                    let extract = type_params.is_empty();
+                    let mut depth = 1i32;
+                    while depth > 0 && self.peek().is_some() {
+                        match self.peek() {
+                            Some(Token::LessThan) => { depth += 1; self.advance(); }
+                            Some(Token::GreaterThan) => { depth -= 1; if depth > 0 { self.advance(); } else { self.advance(); } }
+                            Some(Token::Comma) => { self.advance(); }
+                            _ => {
+                                if extract && depth == 1 {
+                                    if let Some(ident) = self.try_parse_identifier() {
+                                        type_params.push(ident);
+                                    } else {
+                                        self.advance();
+                                    }
+                                } else {
+                                    self.advance();
+                                }
+                            }
+                        }
+                        if depth == 0 { break; }
+                    }
                 }
                 // Parse methods inside { }
                 self.consume(Token::LBrace)?;
@@ -627,12 +677,22 @@ impl Parser {
             Some(Token::Fn) => {
                 self.advance();
                 let name = self.parse_identifier()?;
-                // Optional generic type parameters: fn foo<T, U>(...)
+                // Optional generic type parameters: fn foo<T, U>(...) or fn foo<T: Display>(...)
                 let mut type_params = Vec::new();
                 if self.peek() == Some(&Token::LessThan) {
                     self.advance(); // consume <
                     while self.peek() != Some(&Token::GreaterThan) && self.peek().is_some() {
-                        type_params.push(self.parse_identifier()?);
+                        let tp = self.parse_identifier()?;
+                        // Skip optional trait bounds: T: Display + Clone
+                        if self.peek() == Some(&Token::Colon) {
+                            self.advance();
+                            self.parse_identifier()?; // bound name
+                            while self.peek() == Some(&Token::Plus) {
+                                self.advance();
+                                self.parse_identifier()?;
+                            }
+                        }
+                        type_params.push(tp);
                         if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
                     }
                     self.consume(Token::GreaterThan)?;
@@ -2428,17 +2488,19 @@ impl Parser {
                             args,
                         };
                     } else {
-                        // a |> f(b, c) → f(a, b, c) — pipe as first arg to function
+                        // a |> f or a |> f(b, c) → f(a, b, c)
                         let func_name = self.parse_identifier()?;
-                        self.consume(Token::LParen)?;
                         let mut extra_args = Vec::new();
-                        if self.peek() != Some(&Token::RParen) {
-                            loop {
-                                extra_args.push(self.parse_expression()?);
-                                if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                        if self.peek() == Some(&Token::LParen) {
+                            self.advance(); // consume (
+                            if self.peek() != Some(&Token::RParen) {
+                                loop {
+                                    extra_args.push(self.parse_expression()?);
+                                    if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                                }
                             }
+                            self.consume(Token::RParen)?;
                         }
-                        self.consume(Token::RParen)?;
                         // First try as method call on the piped value: a.f(b, c)
                         // This allows both standalone fn calls and method calls to work
                         left = Expression::MethodCall {
@@ -7014,8 +7076,7 @@ mod tests {
         // (result accepted as expression in statement position)
         let _ = result; // Document actual behavior
 
-        // Pipe in assignment position requires parentheses or different syntax
-        // Parser limitation: `var result = data |> process` fails — LParen expected after |>
+        // Pipe with bare function name in assignment position is now supported
         let assign_source = r#"
             agent Test {
                 public void Run() {
@@ -7025,7 +7086,7 @@ mod tests {
         "#;
         let mut parser2 = Parser::new(assign_source);
         let result2 = parser2.parse_program();
-        assert!(result2.is_err(), "pipe in assignment position not currently supported: got {:?}", result2.ok());
+        assert!(result2.is_ok(), "pipe with bare function names in assignment must parse: {:?}", result2.err());
     }
 
     #[test]

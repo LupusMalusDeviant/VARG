@@ -128,6 +128,8 @@ pub struct RustGenerator {
     known_function_defaults: HashMap<String, Vec<Option<Expression>>>,
     /// Named-arg support: fn_name → ordered param declarations (name + type + default)
     known_function_params: HashMap<String, Vec<FieldDecl>>,
+    /// Method names defined in user impl blocks — these take priority over builtin dispatch
+    user_impl_methods: HashSet<String>,
 }
 
 impl RustGenerator {
@@ -150,6 +152,7 @@ impl RustGenerator {
             map_vars: HashSet::new(),
             known_function_defaults: HashMap::new(),
             known_function_params: HashMap::new(),
+            user_impl_methods: HashSet::new(),
         }
     }
 
@@ -198,6 +201,12 @@ impl RustGenerator {
                     self.variant_to_enum.insert(v.name.clone(), e.name.clone());
                 }
                 self.known_enums.insert(e.name.clone(), e.variants.clone());
+            }
+            // Collect user impl method names so they take priority over builtin dispatch
+            if let Item::Impl { methods, .. } = item {
+                for m in methods {
+                    self.user_impl_methods.insert(m.name.clone());
+                }
             }
         }
 
@@ -577,7 +586,9 @@ impl RustGenerator {
             // Wave 13: impl blocks for structs
             Item::Impl { type_name, type_params, methods } => {
                 let tp = if type_params.is_empty() { "".to_string() } else { format!("<{}>", type_params.join(", ")) };
-                let mut out = format!("impl{} {} {{\n", tp, type_name);
+                // impl<A, B> Pair<A, B> { ... } — repeat type params on the struct name
+                let type_with_params = if type_params.is_empty() { type_name.clone() } else { format!("{}{}", type_name, tp) };
+                let mut out = format!("impl{} {} {{\n", tp, type_with_params);
                 for method in methods {
                     out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, false)));
                     if let Some(body) = &method.body {
@@ -1435,11 +1446,15 @@ impl RustGenerator {
                 // Resolve known standalone functions FIRST so their names cannot be shadowed
                 // by built-in method handlers (e.g. a user fn named `add` must not become
                 // HashSet::insert, and `diff` must not become self.diff()).
-                if matches!(**caller, Expression::Identifier(ref n) if n == "self")
-                    && self.known_functions.contains(method_name.as_str())
-                {
-                    // Plan 40: Fill missing args from registered defaults
+                if self.known_functions.contains(method_name.as_str()) {
+                    // Known standalone function — either bare call (self.fn) or pipe (val |> fn)
+                    let is_self_caller = matches!(**caller, Expression::Identifier(ref n) if n == "self");
+                    let pipe_arg = if !is_self_caller { Some(self.gen_cloned_arg(caller)) } else { None };
                     let mut final_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    if let Some(pipe_val) = pipe_arg {
+                        final_args.insert(0, pipe_val);
+                    }
+                    // Plan 40: Fill missing args from registered defaults
                     if let Some(defaults) = self.known_function_defaults.get(method_name.as_str()).cloned() {
                         for (i, default) in defaults.iter().enumerate() {
                             if i >= final_args.len() {
@@ -1450,6 +1465,12 @@ impl RustGenerator {
                         }
                     }
                     return format!("{}({})", method_name, final_args.join(", "));
+                }
+                // User impl methods take priority over builtin dispatch to avoid shadowing.
+                // e.g. `impl Point { fn sum() }` must not dispatch to Vec::iter().sum().
+                if self.user_impl_methods.contains(method_name.as_str()) {
+                    let cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    return format!("{}.{}({})", self.gen_expression(caller), method_name, cloned_args.join(", "));
                 }
                 if method_name == "encrypt" {
                     format!("__varg_encrypt(&{}, &{})", arg_strs[0], arg_strs[1])
@@ -6516,7 +6537,7 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.generate(&program);
-        assert!(code.contains("impl<T> Box {"), "Should contain generic impl block: {}", code);
+        assert!(code.contains("impl<T> Box<T> {"), "Should contain generic impl block: {}", code);
     }
 
     // ===== Wave 13: Stdlib Expansion Codegen Tests =====

@@ -2725,6 +2725,11 @@ impl TypeChecker {
             },
             (TypeNode::Custom(c), _) if c == "Dynamic" => true,
             (_, TypeNode::Custom(c)) if c == "Dynamic" => true,
+            // Generic<X> vs Custom("X") — same base type, generic args not tracked at typecheck level
+            (TypeNode::Generic(g_name, _), TypeNode::Custom(c_name)) if g_name == c_name => true,
+            (TypeNode::Custom(c_name), TypeNode::Generic(g_name, _)) if c_name == g_name => true,
+            // TypeVar vs any type (generic substitution)
+            (_, TypeNode::TypeVar(_)) => true,
             // F41-6: Contract compatibility — agent that implements a contract matches the contract type
             (TypeNode::Custom(contract_name), TypeNode::Custom(agent_name)) => {
                 // Check if contract_name is a known contract and agent_name implements it
