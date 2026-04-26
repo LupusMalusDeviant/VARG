@@ -185,6 +185,8 @@ pub fn __varg_sse_event(event_type: &str, data: &str) -> String {
 
 /// Register an SSE GET route. The handler returns Vec<String> of SSE events.
 /// The server writes proper SSE headers and streams the events.
+/// NOTE: This is the legacy batch-mode stub kept for backward compatibility.
+/// For real streaming use `__varg_sse_open` / `__varg_sse_send` instead.
 pub fn __varg_http_sse_route<F>(server: &mut VargHttpServer, path: &str, handler: F)
 where
     F: Fn(VargHttpRequest) -> Vec<String> + Send + Sync + 'static + Clone,
@@ -204,6 +206,152 @@ where
         path: path.to_string(),
         handler: std::sync::Arc::new(wrapped),
     });
+}
+
+// ── Real streaming SSE via broadcast channels ─────────────────────────────
+
+use tokio::sync::broadcast;
+use axum::response::sse::{Sse, Event, KeepAlive};
+use futures::stream;
+use std::convert::Infallible;
+
+/// An SSE sender handle — push events to all connected clients on a route.
+pub struct SseSenderHandle {
+    /// Broadcast sender: clone it to produce additional producers if needed.
+    pub tx: Arc<broadcast::Sender<String>>,
+}
+
+/// Pending SSE route stored in the server until `__varg_http_listen` wires it.
+pub struct VargSseRoute {
+    pub path: String,
+    pub tx: Arc<broadcast::Sender<String>>,
+}
+
+/// HTTP server augmented with SSE routes.
+/// We keep SSE routes separate because their axum handler is async and
+/// cannot be boxed the same way as the sync `VargRoute` handlers.
+pub struct VargHttpServerHandle {
+    pub inner: VargHttpServer,
+    pub sse_routes: Vec<VargSseRoute>,
+}
+
+impl VargHttpServerHandle {
+    pub fn new() -> Self {
+        Self {
+            inner: VargHttpServer::new(0),
+            sse_routes: Vec::new(),
+        }
+    }
+}
+
+/// Open an SSE channel and register the GET route on the server.
+/// Returns a `SseSenderHandle` whose `tx` you use with `__varg_sse_send`.
+pub fn __varg_sse_open(server: &mut VargHttpServerHandle, path: &str) -> SseSenderHandle {
+    let (tx, _rx) = broadcast::channel::<String>(1024);
+    let tx = Arc::new(tx);
+    server.sse_routes.push(VargSseRoute {
+        path: path.to_string(),
+        tx: Arc::clone(&tx),
+    });
+    SseSenderHandle { tx }
+}
+
+/// Push a data string to all connected SSE clients on this channel.
+/// Returns `true` if at least one receiver is active, `false` if none.
+///
+/// Named `__varg_sse_push` to avoid collision with the SSE-client writer
+/// `__varg_sse_send` in the websocket module.
+pub fn __varg_sse_push(sender: &SseSenderHandle, data: &str) -> bool {
+    sender.tx.send(data.to_string()).is_ok()
+}
+
+/// Close the SSE broadcast channel (drops the sender, causing all streams to end).
+///
+/// Named `__varg_sse_shutdown` to avoid collision with the SSE-client writer
+/// `__varg_sse_close` in the websocket module.
+pub fn __varg_sse_shutdown(sender: SseSenderHandle) {
+    drop(sender);
+}
+
+/// axum state wrapper so the broadcast sender can be passed into an async handler.
+#[derive(Clone)]
+struct SseBroadcastState {
+    tx: Arc<broadcast::Sender<String>>,
+}
+
+/// axum handler for an SSE broadcast route.
+async fn sse_broadcast_handler(
+    axum::extract::State(state): axum::extract::State<SseBroadcastState>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.tx.subscribe();
+    let event_stream = stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(data) => {
+                    return Some((Ok(Event::default().data(data)), rx));
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // Skip lagged messages and keep going.
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return None;
+                }
+            }
+        }
+    });
+    Sse::new(event_stream).keep_alive(KeepAlive::default())
+}
+
+/// Start the HTTP server with full SSE support.
+/// Wire both regular routes and SSE broadcast routes.
+pub async fn __varg_http_listen_sse(server: VargHttpServerHandle, addr: &str) -> Result<(), String> {
+    let mut router: Router = Router::new();
+
+    // ── Regular sync routes ─────────────────────────────────────────────────
+    for route in server.inner.routes {
+        let handler = route.handler.clone();
+        let make_handler = move || {
+            let h = handler.clone();
+            move |req: Request| {
+                let h = h.clone();
+                async move {
+                    let varg_req = axum_request_to_varg(req).await;
+                    let varg_resp = h(varg_req);
+                    varg_response_to_axum(varg_resp)
+                }
+            }
+        };
+
+        let path = route.path.as_str();
+        router = match route.method.as_str() {
+            "GET"    => router.route(path, get(make_handler())),
+            "POST"   => router.route(path, post(make_handler())),
+            "PUT"    => router.route(path, put(make_handler())),
+            "DELETE" => router.route(path, delete(make_handler())),
+            "PATCH"  => router.route(path, patch(make_handler())),
+            _        => router.route(path, get(make_handler())),
+        };
+    }
+
+    // ── SSE broadcast routes ────────────────────────────────────────────────
+    // Each SSE route gets its own sub-router with state (the broadcast sender),
+    // then merged into the main router.
+    for sse_route in server.sse_routes {
+        let state = SseBroadcastState { tx: Arc::clone(&sse_route.tx) };
+        let sse_sub = Router::new()
+            .route(&sse_route.path, get(sse_broadcast_handler))
+            .with_state(state);
+        router = router.merge(sse_sub);
+    }
+
+    let listener = tokio::net::TcpListener::bind(addr).await
+        .map_err(|e| format!("Failed to bind '{}': {}", addr, e))?;
+
+    println!("Varg HTTP server (SSE) listening on {}", addr);
+
+    axum::serve(listener, router).await
+        .map_err(|e| format!("Server error: {}", e))
 }
 
 #[cfg(test)]
@@ -255,6 +403,36 @@ mod tests {
 
         let response = (server.routes[0].handler)(req);
         assert_eq!(response.body, "test body");
+    }
+
+    // ── SSE channel tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_sse_sender_handle_creation() {
+        // Verify a SseSenderHandle can be constructed via __varg_sse_open.
+        let mut srv = VargHttpServerHandle::new();
+        let handle = __varg_sse_open(&mut srv, "/events");
+        // The handle must hold a live broadcast sender.
+        assert_eq!(Arc::strong_count(&handle.tx), 2); // handle.tx + sse_routes entry
+        assert_eq!(srv.sse_routes.len(), 1);
+        assert_eq!(srv.sse_routes[0].path, "/events");
+    }
+
+    #[tokio::test]
+    async fn test_sse_send_and_receive() {
+        // Create a broadcast channel directly (mirrors what __varg_sse_open does)
+        // and verify the sender/receiver round-trip.
+        let mut srv = VargHttpServerHandle::new();
+        let sender = __varg_sse_open(&mut srv, "/stream");
+
+        // Subscribe BEFORE sending so we don't miss the message.
+        let mut rx = sender.tx.subscribe();
+
+        let sent = __varg_sse_push(&sender, "hello from varg");
+        assert!(sent, "push should succeed while at least one receiver exists");
+
+        let received = rx.recv().await.expect("receiver should get the message");
+        assert_eq!(received, "hello from varg");
     }
 
     #[tokio::test]

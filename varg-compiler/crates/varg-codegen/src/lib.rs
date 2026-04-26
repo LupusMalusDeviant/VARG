@@ -119,6 +119,8 @@ pub struct RustGenerator {
     contract_typed_fields: HashSet<String>,
     /// Wave 19: Track map-typed variables for correct index codegen
     map_vars: HashSet<String>,
+    /// Plan 40: Default parameter values per function — fn_name → ordered list of Option<Expression>
+    known_function_defaults: HashMap<String, Vec<Option<Expression>>>,
 }
 
 impl RustGenerator {
@@ -138,6 +140,7 @@ impl RustGenerator {
             in_result_function: false,
             contract_typed_fields: HashSet::new(),
             map_vars: HashSet::new(),
+            known_function_defaults: HashMap::new(),
         }
     }
 
@@ -164,9 +167,15 @@ impl RustGenerator {
                     self.use_async = true;
                 }
             }
-            // Plan 33: Collect standalone function names
+            // Plan 33: Collect standalone function names + Plan 40: defaults
             if let Item::Function(f) = item {
                 self.known_functions.insert(f.name.clone());
+                let defaults: Vec<Option<Expression>> = f.params.iter()
+                    .map(|p| p.default_value.clone())
+                    .collect();
+                if defaults.iter().any(|d| d.is_some()) {
+                    self.known_function_defaults.insert(f.name.clone(), defaults);
+                }
             }
             // Collect contract method names for trait impl filtering
             if let Item::Contract(c) = item {
@@ -1315,8 +1324,18 @@ impl RustGenerator {
                 if matches!(**caller, Expression::Identifier(ref n) if n == "self")
                     && self.known_functions.contains(method_name.as_str())
                 {
-                    let cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
-                    return format!("{}({})", method_name, cloned_args.join(", "));
+                    // Plan 40: Fill missing args from registered defaults
+                    let mut final_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    if let Some(defaults) = self.known_function_defaults.get(method_name.as_str()).cloned() {
+                        for (i, default) in defaults.iter().enumerate() {
+                            if i >= final_args.len() {
+                                if let Some(def_expr) = default {
+                                    final_args.push(self.gen_expression(&def_expr));
+                                }
+                            }
+                        }
+                    }
+                    return format!("{}({})", method_name, final_args.join(", "));
                 }
                 if method_name == "encrypt" {
                     format!("__varg_encrypt(&{}, &{})", arg_strs[0], arg_strs[1])
@@ -1932,6 +1951,29 @@ impl RustGenerator {
                     format!("varg_runtime::vector::__varg_vector_store_delete(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "vector_store_count" {
                     format!("varg_runtime::vector::__varg_vector_store_count(&{})", arg_strs[0])
+                } else if method_name == "vector_search_text" {
+                    format!("varg_runtime::vector::__varg_vector_search_text(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                // ===== RAG Pipeline =====
+                } else if method_name == "rag_index" {
+                    format!("varg_runtime::rag::__varg_rag_index(&{}, &{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3])
+                } else if method_name == "rag_retrieve" {
+                    format!("varg_runtime::rag::__varg_rag_retrieve(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "rag_build_prompt" {
+                    format!("varg_runtime::rag::__varg_rag_build_prompt(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                // ===== LLM Extended =====
+                } else if method_name == "llm_chat_cached" {
+                    format!("varg_runtime::llm::__varg_llm_chat_cached(&mut {}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "llm_structured_schema" {
+                    format!("varg_runtime::llm::__varg_llm_structured_schema(&{}, &{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3])
+                } else if method_name == "llm_chat_opts" {
+                    format!("varg_runtime::llm::__varg_llm_chat_opts(&mut {}, &{}, &{}, {}, {})", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3], arg_strs[4])
+                // ===== SSE Server (channel-based) =====
+                } else if method_name == "sse_open" {
+                    format!("varg_runtime::server::__varg_sse_open(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "sse_push" {
+                    format!("varg_runtime::server::__varg_sse_push(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "sse_shutdown" {
+                    format!("varg_runtime::server::__varg_sse_shutdown(&{})", arg_strs[0])
                 // ===== Wave 21: Agent Memory =====
                 } else if method_name == "memory_open" {
                     format!("varg_runtime::memory::__varg_memory_open(&{})", arg_strs[0])

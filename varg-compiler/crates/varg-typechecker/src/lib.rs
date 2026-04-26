@@ -280,6 +280,10 @@ impl TypeChecker {
             "set_of",
             "graph_open", "graph_add_node", "graph_add_edge", "graph_query", "graph_traverse", "graph_neighbors",
             "embed", "vector_store_open", "vector_store_upsert", "vector_store_search", "vector_store_delete", "vector_store_count",
+            "vector_search_text",
+            "rag_index", "rag_retrieve", "rag_build_prompt",
+            "llm_chat_cached", "llm_structured_schema", "llm_chat_opts",
+            "sse_open", "sse_push", "sse_shutdown",
             "memory_open", "memory_set", "memory_get", "memory_store", "memory_recall", "memory_add_fact", "memory_query_facts", "memory_episode_count", "memory_clear_working",
             "trace_start", "trace_span", "trace_end", "trace_error", "trace_event", "trace_set_attr", "trace_span_count", "trace_export",
             "mcp_server_new", "mcp_server_register", "mcp_server_tool_count", "mcp_server_handle_request", "mcp_server_run",
@@ -1866,6 +1870,39 @@ impl TypeChecker {
                 } else if method_name == "vector_store_count" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (store)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Int)
+                } else if method_name == "vector_search_text" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (store, query_text, top_k)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                // ===== RAG Pipeline =====
+                } else if method_name == "rag_index" {
+                    if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (store, id, text, metadata)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "rag_retrieve" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (store, query, top_k)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "rag_build_prompt" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (store, query, top_k)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== LLM Extended =====
+                } else if method_name == "llm_chat_cached" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (ctx, prompt, model)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "llm_structured_schema" {
+                    if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (provider, model, schema_json, prompt)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "llm_chat_opts" {
+                    if args.len() != 5 { return Err(TypeError::TypeMismatch { expected: "5 arguments (ctx, prompt, model, temperature, max_tokens)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                // ===== SSE Server (channel-based) =====
+                } else if method_name == "sse_open" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (server, path)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Custom("SseSenderHandle".to_string()))
+                } else if method_name == "sse_push" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (sender, data)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "sse_shutdown" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (sender)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
                 // ===== Wave 21: Agent Memory =====
                 } else if method_name == "memory_open" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }

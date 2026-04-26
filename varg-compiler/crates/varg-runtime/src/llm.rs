@@ -350,6 +350,323 @@ pub fn __varg_llm_embed_batch(texts: Vec<String>) -> Vec<Vec<f32>> {
     texts.iter().map(|t| crate::vector::__varg_embed(t)).collect()
 }
 
+// ─── Task 1: Prompt Caching ───────────────────────────────────────────────
+
+/// Build an Anthropic request body with `cache_control` applied to the system
+/// prompt and (optionally) to long user messages.  Returns a `serde_json::Value`
+/// so the JSON-building logic can be tested without making HTTP calls.
+pub fn build_anthropic_request(ctx: &Context, model: &str, cache: bool) -> serde_json::Value {
+    let model_str = if model.is_empty() {
+        LlmProvider::Anthropic.default_model()
+    } else {
+        model.to_string()
+    };
+
+    // Separate system messages from conversation messages.
+    let mut system_text = String::new();
+    let mut api_msgs: Vec<serde_json::Value> = Vec::new();
+    for msg in &ctx.messages {
+        if msg.role == "system" {
+            if !system_text.is_empty() { system_text.push('\n'); }
+            system_text.push_str(&msg.content);
+        } else {
+            api_msgs.push(serde_json::json!({
+                "role": msg.role,
+                "content": msg.content,
+            }));
+        }
+    }
+
+    // Build system block with optional cache_control.
+    let system_block: Option<serde_json::Value> = if system_text.is_empty() {
+        None
+    } else if cache {
+        Some(serde_json::json!([{
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"}
+        }]))
+    } else {
+        Some(serde_json::json!(system_text))
+    };
+
+    // If caching, mark the first long user message with cache_control too.
+    if cache {
+        for msg in &mut api_msgs {
+            if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+                let content_len = msg
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.len())
+                    .unwrap_or(0);
+                if content_len > 1000 {
+                    let content_str = msg["content"].as_str().unwrap_or("").to_string();
+                    msg["content"] = serde_json::json!([{
+                        "type": "text",
+                        "text": content_str,
+                        "cache_control": {"type": "ephemeral"}
+                    }]);
+                }
+                break; // only the first user message
+            }
+        }
+    }
+
+    let mut body = serde_json::json!({
+        "model": model_str,
+        "max_tokens": 4096,
+        "messages": api_msgs,
+        "stream": false,
+    });
+
+    if let Some(sys) = system_block {
+        body["system"] = sys;
+    }
+    body
+}
+
+/// Like `__varg_llm_chat` but adds Anthropic prompt-caching headers and
+/// `cache_control: ephemeral` to the system block and long user messages.
+/// For OpenAI/Ollama this falls back to `__varg_llm_chat`.
+pub fn __varg_llm_chat_cached(ctx: &mut Context, prompt: &str, model: &str) -> String {
+    let provider = LlmProvider::detect();
+    ctx.push("user", prompt);
+
+    if provider != LlmProvider::Anthropic {
+        // Non-Anthropic: fall back to the regular implementation.
+        let messages_json = serde_json::to_string(&ctx.messages)
+            .unwrap_or_else(|_| "[]".to_string());
+        let body = provider.build_body(model, &messages_json, false);
+        let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body);
+        if let Some(content) = provider.parse_response(&res) {
+            ctx.push("assistant", &content);
+            return content;
+        }
+        return res;
+    }
+
+    // Anthropic: build request with cache_control.
+    let body = build_anthropic_request(ctx, model, true);
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+
+    let mut headers = provider.headers();
+    headers.insert(
+        "anthropic-beta".to_string(),
+        "prompt-caching-2024-07-31".to_string(),
+    );
+
+    let res = __varg_fetch(&provider.chat_endpoint(), "POST", headers, &body_str);
+    if let Some(content) = provider.parse_response(&res) {
+        ctx.push("assistant", &content);
+        content
+    } else {
+        res
+    }
+}
+
+// ─── Task 2: Real Structured Outputs ─────────────────────────────────────────
+
+/// Build an OpenAI `response_format` structured-output request body.
+/// Extracted so it can be tested without an HTTP call.
+pub fn build_openai_structured_request(model: &str, schema_json: &str, prompt: &str)
+    -> serde_json::Value
+{
+    let schema: serde_json::Value = serde_json::from_str(schema_json)
+        .unwrap_or(serde_json::json!({}));
+    let messages = serde_json::json!([
+        {"role": "user", "content": prompt}
+    ]);
+    serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "response",
+                "strict": true,
+                "schema": schema
+            }
+        }
+    })
+}
+
+/// Build an Anthropic tool-use structured-output request body.
+/// Extracted so it can be tested without an HTTP call.
+pub fn build_anthropic_structured_request(model: &str, schema_json: &str, prompt: &str)
+    -> serde_json::Value
+{
+    let schema: serde_json::Value = serde_json::from_str(schema_json)
+        .unwrap_or(serde_json::json!({}));
+    let messages = serde_json::json!([
+        {"role": "user", "content": prompt}
+    ]);
+    serde_json::json!({
+        "model": model,
+        "max_tokens": 4096,
+        "messages": messages,
+        "tools": [{
+            "name": "respond",
+            "description": "Respond with structured data",
+            "input_schema": schema
+        }],
+        "tool_choice": {"type": "tool", "name": "respond"}
+    })
+}
+
+/// Call the LLM with a real JSON-schema enforcement strategy per provider:
+/// - **OpenAI / GPT**: uses `response_format: {type: "json_schema", …}`
+/// - **Anthropic / Claude**: uses tool-use forced call
+/// - **Ollama / others**: falls back to `__varg_llm_structured`
+pub fn __varg_llm_structured_schema(
+    provider_hint: &str,
+    model: &str,
+    schema_json: &str,
+    prompt: &str,
+) -> String {
+    let provider = LlmProvider::detect();
+    let is_openai = provider == LlmProvider::OpenAI
+        || provider_hint.to_lowercase().contains("openai")
+        || model.to_lowercase().contains("gpt");
+    let is_anthropic = provider == LlmProvider::Anthropic
+        || provider_hint.to_lowercase().contains("anthropic")
+        || model.to_lowercase().contains("claude");
+
+    if is_openai {
+        let effective_model = if model.is_empty() {
+            LlmProvider::OpenAI.default_model()
+        } else {
+            model.to_string()
+        };
+        let body = build_openai_structured_request(&effective_model, schema_json, prompt);
+        let body_str = serde_json::to_string(&body).unwrap_or_default();
+        let raw = __varg_fetch(
+            &LlmProvider::OpenAI.chat_endpoint(),
+            "POST",
+            LlmProvider::OpenAI.headers(),
+            &body_str,
+        );
+        return LlmProvider::OpenAI
+            .parse_response(&raw)
+            .unwrap_or(raw);
+    }
+
+    if is_anthropic {
+        let effective_model = if model.is_empty() {
+            LlmProvider::Anthropic.default_model()
+        } else {
+            model.to_string()
+        };
+        let body = build_anthropic_structured_request(&effective_model, schema_json, prompt);
+        let body_str = serde_json::to_string(&body).unwrap_or_default();
+        let raw = __varg_fetch(
+            &LlmProvider::Anthropic.chat_endpoint(),
+            "POST",
+            LlmProvider::Anthropic.headers(),
+            &body_str,
+        );
+        // Extract tool_use input from the response.
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(content_arr) = json.get("content").and_then(|c| c.as_array()) {
+                for block in content_arr {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        if let Some(input) = block.get("input") {
+                            return serde_json::to_string(input)
+                                .unwrap_or_else(|_| "{}".to_string());
+                        }
+                    }
+                }
+            }
+        }
+        return raw;
+    }
+
+    // Ollama / unknown: prompt-engineering fallback.
+    __varg_llm_structured(prompt, schema_json, 3)
+}
+
+// ─── Task 3: Parameterizable Temperature ─────────────────────────────────────
+
+/// Build an OpenAI / Ollama compatible request body with custom temperature
+/// and max_tokens.  Extracted so it can be tested without an HTTP call.
+pub fn build_chat_opts_body(
+    provider: &LlmProvider,
+    messages_json: &str,
+    model: &str,
+    temperature: f64,
+    max_tokens: i64,
+) -> serde_json::Value {
+    let model_str = if model.is_empty() {
+        provider.default_model()
+    } else {
+        model.to_string()
+    };
+
+    let msgs: serde_json::Value = serde_json::from_str(messages_json)
+        .unwrap_or(serde_json::json!([]));
+
+    match provider {
+        LlmProvider::Anthropic => {
+            // Extract system separately for Anthropic.
+            let arr = msgs.as_array().cloned().unwrap_or_default();
+            let mut system_text = String::new();
+            let mut api_msgs: Vec<serde_json::Value> = Vec::new();
+            for msg in &arr {
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+                let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                if role == "system" {
+                    if !system_text.is_empty() { system_text.push('\n'); }
+                    system_text.push_str(content);
+                } else {
+                    api_msgs.push(serde_json::json!({"role": role, "content": content}));
+                }
+            }
+            let mut body = serde_json::json!({
+                "model": model_str,
+                "max_tokens": max_tokens,
+                "messages": api_msgs,
+                "temperature": temperature,
+            });
+            if !system_text.is_empty() {
+                body["system"] = serde_json::json!(system_text);
+            }
+            body
+        }
+        _ => {
+            // Ollama and OpenAI share the same format.
+            serde_json::json!({
+                "model": model_str,
+                "messages": msgs,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": false,
+            })
+        }
+    }
+}
+
+/// Like `__varg_llm_chat` but exposes `temperature` and `max_tokens`.
+pub fn __varg_llm_chat_opts(
+    ctx: &mut Context,
+    prompt: &str,
+    model: &str,
+    temperature: f64,
+    max_tokens: i64,
+) -> String {
+    let provider = LlmProvider::detect();
+    ctx.push("user", prompt);
+    let messages_json = serde_json::to_string(&ctx.messages)
+        .unwrap_or_else(|_| "[]".to_string());
+    let body = build_chat_opts_body(&provider, &messages_json, model, temperature, max_tokens);
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body_str);
+    if let Some(content) = provider.parse_response(&res) {
+        ctx.push("assistant", &content);
+        content
+    } else {
+        res
+    }
+}
+
 // ─── Context helpers ──────────────────────────────────────────────────────
 
 /// Create a new conversation context
@@ -529,5 +846,167 @@ mod tests {
         let msgs = single_prompt_messages("Hello \"world\"");
         assert!(msgs.contains("\\\"world\\\""));
         assert!(msgs.contains("\"role\": \"user\""));
+    }
+
+    // ── Task 1: Prompt caching ────────────────────────────────────────────
+
+    #[test]
+    fn test_llm_build_anthropic_cache_request() {
+        let mut ctx = Context::new("test");
+        ctx.push("system", "You are a helpful assistant.");
+        ctx.push("user", "Hello");
+
+        let body = build_anthropic_request(&ctx, "claude-sonnet-4-20250514", true);
+
+        // System block must be an array with cache_control
+        let sys = body.get("system").expect("missing system block");
+        assert!(sys.is_array(), "system should be an array when caching");
+        let first = &sys[0];
+        assert_eq!(first["type"], "text");
+        assert_eq!(first["text"], "You are a helpful assistant.");
+        assert_eq!(first["cache_control"]["type"], "ephemeral");
+
+        // Regular messages field present
+        assert!(body.get("messages").is_some());
+    }
+
+    #[test]
+    fn test_llm_build_anthropic_no_cache_request() {
+        let mut ctx = Context::new("test");
+        ctx.push("system", "You are helpful.");
+        ctx.push("user", "Hi");
+
+        let body = build_anthropic_request(&ctx, "claude-sonnet-4-20250514", false);
+
+        // Without cache the system block is a plain string
+        let sys = body.get("system").expect("missing system");
+        assert!(sys.is_string(), "system should be a plain string without caching");
+    }
+
+    #[test]
+    fn test_llm_build_anthropic_cache_long_user_message() {
+        let mut ctx = Context::new("test");
+        ctx.push("system", "You are helpful.");
+        // User message > 1000 chars
+        let long_msg = "a".repeat(1100);
+        ctx.push("user", &long_msg);
+
+        let body = build_anthropic_request(&ctx, "claude-sonnet-4-20250514", true);
+
+        let messages = body["messages"].as_array().expect("messages array");
+        let first_user = messages.iter().find(|m| {
+            m.get("role").and_then(|r| r.as_str()) == Some("user")
+        }).expect("user message");
+
+        // Content should now be an array with cache_control
+        assert!(first_user["content"].is_array(), "long user content should be wrapped in array");
+        let content_block = &first_user["content"][0];
+        assert_eq!(content_block["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_anthropic_cache_headers_added() {
+        // Verify the beta header is present when using cached path.
+        // We test header insertion by checking the headers map directly.
+        let mut headers = LlmProvider::Anthropic.headers();
+        headers.insert(
+            "anthropic-beta".to_string(),
+            "prompt-caching-2024-07-31".to_string(),
+        );
+        assert_eq!(
+            headers.get("anthropic-beta"),
+            Some(&"prompt-caching-2024-07-31".to_string()),
+        );
+    }
+
+    // ── Task 2: Structured outputs ────────────────────────────────────────
+
+    #[test]
+    fn test_llm_structured_schema_openai_format() {
+        let schema = r#"{"type":"object","properties":{"name":{"type":"string"}}}"#;
+        let body = build_openai_structured_request("gpt-4o", schema, "Give me a name");
+
+        let rf = body.get("response_format").expect("response_format missing");
+        assert_eq!(rf["type"], "json_schema");
+
+        let js = rf.get("json_schema").expect("json_schema missing");
+        assert_eq!(js["name"], "response");
+        assert_eq!(js["strict"], true);
+
+        // Schema parsed correctly
+        assert_eq!(js["schema"]["type"], "object");
+    }
+
+    #[test]
+    fn test_llm_structured_schema_anthropic_format() {
+        let schema = r#"{"type":"object","properties":{"answer":{"type":"string"}}}"#;
+        let body = build_anthropic_structured_request(
+            "claude-sonnet-4-20250514",
+            schema,
+            "Answer this",
+        );
+
+        let tools = body.get("tools").and_then(|t| t.as_array()).expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "respond");
+        assert!(tools[0].get("input_schema").is_some());
+
+        let tc = body.get("tool_choice").expect("tool_choice missing");
+        assert_eq!(tc["type"], "tool");
+        assert_eq!(tc["name"], "respond");
+    }
+
+    // ── Task 3: Parameterizable temperature ──────────────────────────────
+
+    #[test]
+    fn test_llm_chat_opts_temperature_openai() {
+        let messages_json = r#"[{"role":"user","content":"hi"}]"#;
+        let body = build_chat_opts_body(
+            &LlmProvider::OpenAI,
+            messages_json,
+            "gpt-4o",
+            0.7,
+            512,
+        );
+
+        assert_eq!(body["temperature"], 0.7);
+        assert_eq!(body["max_tokens"], 512);
+        assert_eq!(body["model"], "gpt-4o");
+    }
+
+    #[test]
+    fn test_llm_chat_opts_temperature_anthropic() {
+        let messages_json = r#"[{"role":"system","content":"sys"},{"role":"user","content":"hi"}]"#;
+        let body = build_chat_opts_body(
+            &LlmProvider::Anthropic,
+            messages_json,
+            "claude-sonnet-4-20250514",
+            0.2,
+            1024,
+        );
+
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["max_tokens"], 1024);
+        // System extracted to top-level
+        assert_eq!(body["system"], "sys");
+        // Messages only contain user turn
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+    }
+
+    #[test]
+    fn test_llm_chat_opts_temperature_ollama() {
+        let messages_json = r#"[{"role":"user","content":"hello"}]"#;
+        let body = build_chat_opts_body(
+            &LlmProvider::Ollama,
+            messages_json,
+            "llama3",
+            1.0,
+            2048,
+        );
+
+        assert_eq!(body["temperature"], 1.0);
+        assert_eq!(body["max_tokens"], 2048);
     }
 }

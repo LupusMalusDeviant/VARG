@@ -197,22 +197,26 @@ pub fn __varg_vector_store_count(store: &VectorStoreHandle) -> i64 {
 }
 
 /// Create an embedding from text.
-/// Uses Gemini embedding-001 API if GEMINI_API_KEY is set, otherwise falls back to local hash.
+/// Uses Gemini embedding-001 API if GEMINI_API_KEY is set AND the `llm` feature is enabled,
+/// otherwise falls back to a deterministic local hash.
 pub fn __varg_embed(text: &str) -> Vec<f32> {
-    // Try Gemini embedding-001 API first
-    if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
-        if !api_key.is_empty() {
-            if let Some(embedding) = gemini_embed(text, &api_key) {
-                return embedding;
+    #[cfg(feature = "llm")]
+    {
+        if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
+            if !api_key.is_empty() {
+                if let Some(embedding) = gemini_embed(text, &api_key) {
+                    return embedding;
+                }
+                eprintln!("[EMBED] Gemini API call failed, falling back to local hash");
             }
-            eprintln!("[EMBED] Gemini API call failed, falling back to local hash");
         }
     }
     // Fallback: deterministic bag-of-characters hash (64-dim)
     local_embed_fallback(text)
 }
 
-/// Call Gemini embedding-001 API for real semantic embeddings
+/// Call Gemini embedding-001 API for real semantic embeddings (requires `llm` feature)
+#[cfg(feature = "llm")]
 fn gemini_embed(text: &str, api_key: &str) -> Option<Vec<f32>> {
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={}",
@@ -269,6 +273,18 @@ fn local_embed_fallback(text: &str) -> Vec<f32> {
         }
     }
     vec
+}
+
+/// Search by text: embeds the query then performs cosine similarity search.
+/// Returns a Vec of metadata strings for the top-k most similar entries.
+/// Each metadata string is a JSON-encoded map of metadata fields including "_id" and "_score".
+pub fn __varg_vector_search_text(store: &VectorStoreHandle, query_text: &str, top_k: i64) -> Vec<String> {
+    let embedding = __varg_embed(query_text);
+    let results = __varg_vector_store_search(store, &embedding, top_k);
+    results
+        .into_iter()
+        .map(|map| serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string()))
+        .collect()
 }
 
 // ── Wave 33: LSH Approximate Nearest-Neighbor Index ───────────────────────
@@ -551,6 +567,50 @@ mod tests {
         }
 
         std::fs::remove_file(&db_path).ok();
+    }
+
+    // ── vector_store_search top-k tests ──────────────────────────────────
+
+    #[test]
+    fn test_vector_store_search_returns_top_k() {
+        let store = __varg_vector_store_open(":memory:");
+        // doc_a is most similar to query [1, 0, 0]
+        let meta_a = HashMap::from([("label".to_string(), "alpha".to_string())]);
+        let meta_b = HashMap::from([("label".to_string(), "beta".to_string())]);
+        let meta_c = HashMap::from([("label".to_string(), "gamma".to_string())]);
+        __varg_vector_store_upsert(&store, "doc_a", &[1.0, 0.0, 0.0], &meta_a);
+        __varg_vector_store_upsert(&store, "doc_b", &[0.7, 0.3, 0.0], &meta_b);
+        __varg_vector_store_upsert(&store, "doc_c", &[0.0, 0.0, 1.0], &meta_c);
+
+        let results = __varg_vector_store_search(&store, &[1.0, 0.0, 0.0], 2);
+        assert_eq!(results.len(), 2);
+        // Top result should be doc_a (identical vector)
+        assert_eq!(results[0].get("_id").unwrap(), "doc_a");
+        assert_eq!(results[0].get("label").unwrap(), "alpha");
+        // Second should be doc_b (next closest)
+        assert_eq!(results[1].get("_id").unwrap(), "doc_b");
+    }
+
+    #[test]
+    fn test_vector_store_search_empty_store() {
+        let store = __varg_vector_store_open(":memory:");
+        let results = __varg_vector_store_search(&store, &[1.0, 0.0, 0.0], 5);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_vector_search_text_returns_json_strings() {
+        let store = __varg_vector_store_open(":memory:");
+        let meta = HashMap::from([("doc".to_string(), "test".to_string())]);
+        // Use embed to get the actual embedding of the text, then store it
+        let emb = __varg_embed("hello world");
+        __varg_vector_store_upsert(&store, "hello_doc", &emb, &meta);
+
+        let results = __varg_vector_search_text(&store, "hello world", 1);
+        assert_eq!(results.len(), 1);
+        // Each result should be valid JSON
+        let v: serde_json::Value = serde_json::from_str(&results[0]).unwrap();
+        assert_eq!(v["_id"].as_str().unwrap(), "hello_doc");
     }
 
     // ── LSH Index tests ───────────────────────────────────────────────────
