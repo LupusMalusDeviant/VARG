@@ -1549,6 +1549,17 @@ impl RustGenerator {
                     format!("({}).ceil()", self.gen_expression(caller))
                 } else if method_name == "round" {
                     format!("({}).round()", self.gen_expression(caller))
+                } else if method_name == "to_fixed" {
+                    let decimals = if arg_strs.is_empty() { "2".to_string() } else { arg_strs[0].clone() };
+                    format!("format!(\"{{:.prec$}}\", {} as f64, prec = {} as usize)", self.gen_expression(caller), decimals)
+                } else if method_name == "to_hex" {
+                    format!("format!(\"{{:x}}\", {} as i64)", self.gen_expression(caller))
+                } else if method_name == "to_binary" {
+                    format!("format!(\"{{:b}}\", {} as i64)", self.gen_expression(caller))
+                } else if method_name == "clamp" {
+                    let lo = &arg_strs[0];
+                    let hi = &arg_strs[1];
+                    format!("({}).clamp({}, {})", self.gen_expression(caller), lo, hi)
                 // ===== Plan 43: Iterator Chains =====
                 } else if method_name == "filter" {
                     let lambda = self.gen_expression(&args[0]);

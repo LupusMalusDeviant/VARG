@@ -275,7 +275,7 @@ impl TypeChecker {
             "last", "reverse", "is_empty", "keys", "values", "remove", "get",
             "sort", "join", "count", "filter", "map", "flat_map", "find",
             "any", "all", "zip", "enumerate", "take", "skip", "reduce", "fold", "sum",
-            "abs", "sqrt", "floor", "ceil", "round",
+            "abs", "sqrt", "floor", "ceil", "round", "to_fixed", "to_hex", "to_binary", "clamp",
             "min", "max", "parse_int", "parse_float", "to_string",
             "contains_key", "send", "request", "env", "fetch", "http_request",
             "llm_infer", "llm_chat", "encrypt", "decrypt",
@@ -2091,6 +2091,10 @@ impl TypeChecker {
                     Ok(caller_ty) // abs preserves int/float
                 } else if method_name == "sqrt" || method_name == "floor" || method_name == "ceil" || method_name == "round" {
                     Ok(TypeNode::Float)
+                } else if method_name == "to_fixed" || method_name == "to_hex" || method_name == "to_binary" {
+                    Ok(TypeNode::String)
+                } else if method_name == "clamp" {
+                    Ok(self.infer_expression_type(caller)?)
                 } else if method_name == "min" || method_name == "max" {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument".to_string(), found: format!("{} arguments", args.len()) });
