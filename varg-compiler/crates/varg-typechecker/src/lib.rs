@@ -276,6 +276,7 @@ impl TypeChecker {
             "sort", "join", "count", "filter", "map", "flat_map", "find",
             "any", "all", "zip", "enumerate", "take", "skip", "reduce", "fold", "sum",
             "flatten", "unique", "dedup", "distinct", "lines",
+            "trim_start", "trim_end", "ltrim", "rtrim", "split_once", "count_occurrences",
             "uuid", "random_int", "random_float",
             "json_stringify_pretty", "json_keys", "json_values", "json_has", "json_merge", "json_set",
             "abs", "sqrt", "floor", "ceil", "round", "to_fixed", "to_hex", "to_binary", "clamp",
@@ -1199,7 +1200,8 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::Bool)
-                } else if method_name == "to_upper" || method_name == "to_lower" || method_name == "trim" {
+                } else if method_name == "to_upper" || method_name == "to_lower" || method_name == "trim"
+                    || method_name == "trim_start" || method_name == "trim_end" || method_name == "ltrim" || method_name == "rtrim" {
                     Ok(TypeNode::String)
                 } else if method_name == "substring" {
                     if args.len() != 2 {
@@ -1232,6 +1234,10 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "2 arguments (search, replace)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::String)
+                } else if method_name == "split_once" {
+                    Ok(TypeNode::Tuple(vec![TypeNode::String, TypeNode::String]))
+                } else if method_name == "count_occurrences" {
+                    Ok(TypeNode::Int)
                 // ===== Wave 5: Collection Methods =====
                 } else if method_name == "push" {
                     if args.len() != 1 {

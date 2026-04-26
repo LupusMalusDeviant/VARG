@@ -1480,6 +1480,15 @@ impl RustGenerator {
                     format!("{}.find(&{}).map(|i| i as i64).unwrap_or(-1)", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "trim" {
                     format!("{}.trim().to_string()", self.gen_expression(caller))
+                } else if method_name == "trim_start" || method_name == "ltrim" {
+                    format!("{}.trim_start().to_string()", self.gen_expression(caller))
+                } else if method_name == "trim_end" || method_name == "rtrim" {
+                    format!("{}.trim_end().to_string()", self.gen_expression(caller))
+                } else if method_name == "split_once" {
+                    // Returns (string, string) tuple option
+                    format!("{}.split_once(&{}).map(|(a,b)| (a.to_string(), b.to_string())).unwrap_or_default()", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "count_occurrences" {
+                    format!("{}.matches({}.as_str()).count() as i64", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "chars" {
                     // Returns Vec<String> — each char as a single-char string
                     format!("{}.chars().map(|c| c.to_string()).collect::<Vec<String>>()", self.gen_expression(caller))
