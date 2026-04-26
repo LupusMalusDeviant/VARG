@@ -229,7 +229,8 @@ impl Parser {
     fn try_parse_identifier(&mut self) -> Option<String> {
         match self.peek() {
             Some(Token::Identifier(_)) | Some(Token::Stream) | Some(Token::Query)
-            | Some(Token::Select) | Some(Token::From) | Some(Token::Where) => {
+            | Some(Token::Select) | Some(Token::From) | Some(Token::Where)
+            | Some(Token::PromptKw) => {
                 match self.advance() {
                     Some(Token::Identifier(name)) => Some(name),
                     Some(Token::Stream) => Some("stream".to_string()),
@@ -237,6 +238,7 @@ impl Parser {
                     Some(Token::Select) => Some("select".to_string()),
                     Some(Token::From) => Some("from".to_string()),
                     Some(Token::Where) => Some("where".to_string()),
+                    Some(Token::PromptKw) => Some("prompt".to_string()),
                     _ => None,
                 }
             }
@@ -254,6 +256,7 @@ impl Parser {
             Some(Token::Select) => Ok("select".to_string()),
             Some(Token::From) => Ok("from".to_string()),
             Some(Token::Where) => Ok("where".to_string()),
+            Some(Token::PromptKw) => Ok("prompt".to_string()),
             Some(t) => Err(ParseError::UnexpectedToken {
                 expected: "Identifier".to_string(),
                 found: Some(t),
@@ -751,10 +754,22 @@ impl Parser {
             let mut fields = Vec::new();
             if self.peek() == Some(&Token::LParen) {
                 self.advance();
+                let mut field_idx = 0usize;
                 if self.peek() != Some(&Token::RParen) {
                     loop {
                         let field_ty = self.parse_type()?;
-                        let field_name = self.parse_identifier()?;
+                        // Field name is optional: `Custom(int)` OR `Custom(int value)`
+                        let field_name = match self.peek() {
+                            Some(Token::Comma) | Some(Token::RParen) => {
+                                let n = format!("field{}", field_idx);
+                                field_idx += 1;
+                                n
+                            }
+                            _ => {
+                                field_idx += 1;
+                                self.parse_identifier()?
+                            }
+                        };
                         fields.push((field_name, field_ty));
                         if self.peek() == Some(&Token::Comma) {
                             self.advance();
@@ -1899,7 +1914,20 @@ impl Parser {
                 } else { unreachable!() }
             },
             Some(Token::Identifier(_)) => {
-                let name = self.parse_identifier()?;
+                let first = self.parse_identifier()?;
+                // Support qualified patterns: Status.Active, Status::Active
+                // Consume the qualifier prefix and use only the variant name
+                let name = match self.peek() {
+                    Some(Token::Dot) => {
+                        self.advance(); // consume '.'
+                        self.parse_identifier()?
+                    }
+                    Some(Token::ColonColon) => {
+                        self.advance(); // consume '::'
+                        self.parse_identifier()?
+                    }
+                    _ => first,
+                };
                 if self.peek() == Some(&Token::LParen) {
                     self.advance();
                     let mut bindings = Vec::new();
@@ -2127,10 +2155,30 @@ impl Parser {
                 let inner = val.trim_start_matches("prompt").trim().trim_matches('"').to_string();
                 Expression::PromptLiteral(inner)
             },
+            // PromptKw + MultilineStringLiteral → prompt literal (two-token form)
+            Some(Token::PromptKw) => {
+                if let Some(Token::MultilineStringLiteral(val)) = self.peek().cloned() {
+                    self.advance();
+                    let inner = val.trim_matches('"').to_string();
+                    Expression::PromptLiteral(inner)
+                } else {
+                    // Used as identifier (variable named "prompt")
+                    Expression::Identifier("prompt".to_string())
+                }
+            },
             Some(Token::BoolLiteral(val)) => Expression::Bool(val),
             Some(Token::Identifier(name)) => Expression::Identifier(name),
             // Issue #4: 'stream' is a contextual keyword — allow as identifier in expressions
             Some(Token::Stream) => Expression::Identifier("stream".to_string()),
+            // Contextual keywords that may appear as identifiers in expression position
+            Some(Token::Query) => {
+                if matches!(self.peek(), Some(Token::StringLiteral(_))) {
+                    let query = if let Some(Token::StringLiteral(q)) = self.advance() { q } else { unreachable!() };
+                    Expression::Query(SurrealQueryNode { raw_query: query.trim_matches('"').to_string() })
+                } else {
+                    Expression::Identifier("query".to_string())
+                }
+            },
             Some(Token::LBracket) => {
                 let mut elements = Vec::new();
                 if self.peek() != Some(&Token::RBracket) {
@@ -2198,17 +2246,6 @@ impl Parser {
                     select_clause
                 }));
             },
-            Some(Token::Query) => {
-                if let Some(Token::StringLiteral(query)) = self.advance() {
-                    Expression::Query(SurrealQueryNode { raw_query: query.trim_matches('"').to_string() })
-                } else {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "Query String".to_string(),
-                        found: self.advance(),
-                        span: self.last_span(),
-                    });
-                }
-            },
             Some(Token::QuestionMark) => {
                 if let Some(Token::StringLiteral(query)) = self.advance() {
                     Expression::Query(SurrealQueryNode { raw_query: query.trim_matches('"').to_string() })
@@ -2264,6 +2301,13 @@ impl Parser {
             Some(Token::Retry) => {
                 self.consume(Token::LParen)?;
                 let max_attempts = self.parse_expression()?;
+                // Optional named args: retry(3, backoff: 1000, jitter: true, ...)
+                while self.peek() == Some(&Token::Comma) {
+                    self.advance(); // consume ','
+                    let _ = self.parse_identifier()?; // param name
+                    self.consume(Token::Colon)?;
+                    let _ = self.parse_expression()?; // value (stored for future use)
+                }
                 self.consume(Token::RParen)?;
                 let body = self.parse_block()?;
                 let fallback = if self.peek() == Some(&Token::Fallback) {

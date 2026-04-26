@@ -18,9 +18,10 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl ca-certificates build-essential \
-        pkg-config libssl-dev && \
+        pkg-config libssl-dev mingw-w64 && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && \
     /root/.cargo/bin/rustup component add rustfmt && \
+    /root/.cargo/bin/rustup target add x86_64-pc-windows-gnu && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/root/.cargo/bin:${PATH}"

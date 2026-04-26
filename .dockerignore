@@ -1,0 +1,6 @@
+varg-compiler/target/
+varg-web-ide/VargWebIde/bin/
+varg-web-ide/VargWebIde/obj/
+scratch/
+docs/
+*.zip

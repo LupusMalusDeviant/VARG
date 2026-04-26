@@ -11,6 +11,44 @@
 use varg_os_types::*;
 use varg_runtime::*;
 
+trait __VargFmt {
+    fn __varg_fmt(&self) -> String;
+}
+macro_rules! __varg_fmt_display { ($($t:ty),*) => { $(impl __VargFmt for $t { fn __varg_fmt(&self) -> String { self.to_string() } })* } }
+__varg_fmt_display!(
+    String, bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, usize, isize, f32, f64
+);
+impl __VargFmt for &str {
+    fn __varg_fmt(&self) -> String {
+        self.to_string()
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for Vec<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<K: std::fmt::Debug, V: std::fmt::Debug> __VargFmt for std::collections::HashMap<K, V> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for std::collections::HashSet<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug> __VargFmt for (A, B) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 fn main() {
     // .varg:1
     let mut g = varg_runtime::graph::__varg_graph_open(&"team_graph".to_string());
@@ -85,18 +123,27 @@ fn main() {
     // .varg:10
     let mut people = varg_runtime::graph::__varg_graph_query(&g, &"Person".to_string());
     // .varg:11
-    println!("{}", format!("People: {}", people.len() as i64));
+    println!(
+        "{}",
+        format!("People: {}", (people.len() as i64).__varg_fmt())
+    );
     // .varg:12
     let mut projects = varg_runtime::graph::__varg_graph_query(&g, &"Project".to_string());
     // .varg:13
-    println!("{}", format!("Projects: {}", projects.len() as i64));
+    println!(
+        "{}",
+        format!("Projects: {}", (projects.len() as i64).__varg_fmt())
+    );
     // .varg:14
     let mut one_hop =
         varg_runtime::graph::__varg_graph_traverse(&g, alice, 1, &"knows".to_string());
     // .varg:15
     println!(
         "{}",
-        format!("Alice knows (1 hop): {}", one_hop.len() as i64)
+        format!(
+            "Alice knows (1 hop): {}",
+            (one_hop.len() as i64).__varg_fmt()
+        )
     );
     // .varg:16
     let mut two_hop =
@@ -104,14 +151,20 @@ fn main() {
     // .varg:17
     println!(
         "{}",
-        format!("Alice knows (2 hops): {}", two_hop.len() as i64)
+        format!(
+            "Alice knows (2 hops): {}",
+            (two_hop.len() as i64).__varg_fmt()
+        )
     );
     // .varg:18
     let mut bob_neighbors = varg_runtime::graph::__varg_graph_neighbors(&g, bob);
     // .varg:19
     println!(
         "{}",
-        format!("Bob neighbors: {}", bob_neighbors.len() as i64)
+        format!(
+            "Bob neighbors: {}",
+            (bob_neighbors.len() as i64).__varg_fmt()
+        )
     );
     // .varg:20
     println!("{}", "Knowledge graph demo complete!".to_string());

@@ -11,6 +11,44 @@
 use varg_os_types::*;
 use varg_runtime::*;
 
+trait __VargFmt {
+    fn __varg_fmt(&self) -> String;
+}
+macro_rules! __varg_fmt_display { ($($t:ty),*) => { $(impl __VargFmt for $t { fn __varg_fmt(&self) -> String { self.to_string() } })* } }
+__varg_fmt_display!(
+    String, bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, usize, isize, f32, f64
+);
+impl __VargFmt for &str {
+    fn __varg_fmt(&self) -> String {
+        self.to_string()
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for Vec<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<K: std::fmt::Debug, V: std::fmt::Debug> __VargFmt for std::collections::HashMap<K, V> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for std::collections::HashSet<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug> __VargFmt for (A, B) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 struct FileProcessor {
     pub files_processed: i64,
 }
@@ -26,7 +64,7 @@ impl FileProcessor {
     }
     pub fn CountWords(&mut self, path: String, cap: FileAccess) -> Result<i64, String> {
         // .varg:2
-        let mut content = (std::fs::read_to_string(path).map_err(|e| e.to_string()))?;
+        let mut content = (std::fs::read_to_string(&path).map_err(|e| e.to_string()))?;
         // .varg:3
         let mut words = content
             .split(&" ".to_string())
@@ -38,7 +76,7 @@ impl FileProcessor {
     }
     pub fn ProcessDirectory(&mut self, dir: String, cap: FileAccess) {
         // .varg:5
-        let mut files = (std::fs::read_dir(dir)
+        let mut files = (std::fs::read_dir(&dir)
             .map_err(|e| e.to_string())
             .map(|entries| {
                 entries
@@ -57,14 +95,20 @@ impl FileProcessor {
                     // .varg:9
                     let mut count = self.CountWords(file, cap);
                     // .varg:10
-                    println!("[INFO] {}", format!("{}: {} words", file, count));
+                    println!(
+                        "[INFO] {}",
+                        format!("{}: {} words", (file).__varg_fmt(), (count).__varg_fmt())
+                    );
                     // .varg:11
                     self.files_processed += 1;
                     Ok(())
                 };
                 if let Err(mut err) = _varg_try_res {
                     // .varg:12
-                    eprintln!("[WARN] {}", format!("Skipping {}: {}", file, err));
+                    eprintln!(
+                        "[WARN] {}",
+                        format!("Skipping {}: {}", (file).__varg_fmt(), (err).__varg_fmt())
+                    );
                 }
             }
         }
@@ -82,7 +126,10 @@ impl FileProcessor {
         // .varg:17
         println!(
             "[INFO] {}",
-            format!("Done. Processed {} files.", self.files_processed)
+            format!(
+                "Done. Processed {} files.",
+                (self.files_processed).__varg_fmt()
+            )
         );
     }
 }

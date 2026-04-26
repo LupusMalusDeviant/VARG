@@ -283,24 +283,26 @@ enum Color {
     Red,
     Green,
     Blue,
-    Custom(int)  // Variant with data
+    Custom(int)         // Unnamed tuple field — accessed as field0 in Rust
 }
 
 enum Status {
     Active,
     Inactive,
-    Error(string)
+    Error(string msg)   // Named field — both forms work
 }
 ```
 
 ### Pattern Matching
 
+Both dot-notation (`Status.Active`) and path-notation (`Status::Active`) are accepted in match arms:
+
 ```csharp
 match status {
-    Status.Active => {
+    Status.Active => {          // dot notation
         print "System is running";
     }
-    Status.Error(msg) => {
+    Status::Error(msg) => {     // :: notation also valid
         log_error($"Error: {msg}");
     }
     _ => {
@@ -476,9 +478,18 @@ fn load(string path) -> string {
 
 ### Throw
 
+`throw` works inside `try` blocks (catches via `catch err`) **and** in any standalone function (becomes `return Err(...)`):
+
 ```csharp
+fn validate(string input) -> string {
+    if input == "" {
+        throw "Input cannot be empty";  // → return Err(...) in generated Rust
+    }
+    return input;
+}
+
 if input == "" {
-    throw "Input cannot be empty";
+    throw "Input cannot be empty";      // inside try block → caught by catch
 }
 ```
 
@@ -565,8 +576,11 @@ var pair = (42, "hello");
 ## Closures & Lambdas
 
 ```csharp
-// Single expression
+// Single expression (typed params)
 var double = (int x) => x * 2;
+
+// Call closure variable directly
+var result = double(21);     // → 42
 
 // Multi-line (block body)
 var process = (string s) => {
@@ -574,7 +588,7 @@ var process = (string s) => {
     return $"[{upper}]";
 };
 
-// Type-inferred in context
+// Type-inferred params in context
 var evens = numbers.filter((n) => n % 2 == 0);
 var names = users.map((u) => u.name);
 ```
@@ -775,7 +789,15 @@ var result = data
 ## Retry / Fallback
 
 ```csharp
+// Basic retry
 var response = retry(3) {
+    fetch(url, "GET")?
+} fallback {
+    "cached response"
+};
+
+// With named options (backoff delay in ms, jitter, etc.)
+var response = retry(5, backoff: 1000) {
     fetch(url, "GET")?
 } fallback {
     "cached response"
@@ -896,13 +918,17 @@ var key = env("API_KEY");     // reads environment variable
 ### Testing
 
 ```csharp
-assert(x > 0, "x must be positive");
-assert_eq(result, expected, "values should match");
-assert_ne(a, b, "must differ");
-assert_true(flag);
-assert_false(flag);
-assert_contains(text, "substring");
-assert_throws(() => risky_call());
+assert(x > 0, "x must be positive");                // message required
+assert_eq(result, expected, "values should match");  // message required
+assert_ne(a, b, "must differ");                      // message required
+assert_true(flag);                                   // message optional
+assert_false(flag);                                  // message optional
+assert_contains(text, "substring");                  // message optional
+assert_throws(() => risky_call());                   // message optional
+
+// With optional message:
+assert_true(x > 0, "x must be positive");
+assert_contains(output, "success", "output missing success");
 ```
 
 ### Human-in-the-Loop (HITL)

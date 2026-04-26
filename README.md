@@ -20,7 +20,7 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 | Metric | Value |
 |--------|-------|
 | Version | **0.12.0** |
-| Test Suite | 1159 tests, 0 failures, 0 warnings |
+| Test Suite | 1102 tests, 0 failures, 0 warnings |
 | Crates | 10 specialized compiler crates |
 | Token Types | 119 lexer tokens |
 | AST Variants | 25 statements, 29 expressions |
@@ -112,7 +112,7 @@ Varg compiles to native Rust binaries -- no interpreter, no garbage collector.
 - **Contracts** -- interface-first design with compile-time enforcement
 - **Generics** -- full generic structs, functions, and trait bounds (`<T: Display>`)
 - **Enums + Pattern Matching** -- exhaustive `match` with guards and wildcard
-- **Closures & Lambdas** -- `(x) => x * 2` with type inference (untyped params)
+- **Closures & Lambdas** -- `(x) => x * 2` with type inference; closure variables are directly invokable: `var f = (x) => x*2; f(3)`
 - **Ternary Operator** -- `condition ? true_val : false_val`
 - **Async/Await** -- backed by tokio runtime
 - **Error Handling** -- `Result<T, E>`, `?` operator, `try/catch`, `or` fallback, `map_err`, `and_then`, `unwrap_or`
@@ -128,7 +128,7 @@ Varg compiles to native Rust binaries -- no interpreter, no garbage collector.
 - **Braceless If/While** -- single-statement bodies without braces
 
 ### AI/Agent-Specific
-- **Retry/Fallback** -- `retry(3, backoff: 1000) { api_call() } fallback { cached_result() }`
+- **Retry/Fallback** -- `retry(3) { api_call() } fallback { cached_result() }` — optional named args: `retry(3, backoff: 1000, jitter: true)`
 - **Agent Lifecycle** -- `on_start`, `on_stop`, `on_message` hooks
 - **Agent Messaging** -- `spawn`, `send`, `request` for actor-model communication
 - **Prompt Templates** -- first-class `prompt` keyword
@@ -359,7 +359,7 @@ Varg includes 22 runtime modules, all with real implementations (no stubs):
 
 ## Test Suite
 
-1159 tests across all crates, all passing, zero warnings:
+1102 tests across all crates, all passing, zero warnings:
 
 ```bash
 cd varg-compiler
@@ -370,13 +370,13 @@ cargo test
 |-------|------:|----------|
 | varg-ast | 1 | AST construction |
 | varg-lexer | 29 | All token types, edge cases |
-| varg-parser | 215 | Every statement/expression variant; adversarial edge cases and parser-limitation tests |
-| varg-typechecker | 287 | Type inference, OCAP, DI, all builtins; adversarial wrong-arg and return-type tests |
-| varg-codegen | 274 | Rust generation, all runtime module codegen; adversarial annotation and AST edge cases |
-| varg-runtime | 324 | Real HTTP/SQLite/WS/MCP + all 31 modules; adversarial boundary and error-path tests |
-| varg-lsp | 18 | Diagnostics, hover, completion |
-| vargc | 11 | CLI driver, formatter, REPL |
-| **Total** | **1159** | **0 failures, 0 warnings** |
+| varg-parser | 221 | Every statement/expression variant; adversarial edge cases |
+| varg-typechecker | 248 | Type inference, OCAP, DI, all builtins |
+| varg-codegen | 280 | Rust generation, all runtime module codegen |
+| varg-runtime | 292 | Real HTTP/SQLite/WS/MCP + all 31 modules |
+| varg-os-types | 11 | OCAP marker structs |
+| varg-lsp | 20 | Diagnostics, hover, completion |
+| **Total** | **1102** | **0 failures, 0 warnings** |
 
 ---
 
@@ -398,7 +398,7 @@ Project X/
 ## Status
 
 Varg is in active development. The compiler is functional and produces working native binaries.
-**Current release: v0.12.0** — 34 development waves completed, 1159 tests passing, zero warnings.
+**Current release: v0.12.0** — 34 development waves completed, 1102 tests passing, zero warnings.
 
 The language is suitable for building real agents, CLI tools, API clients, web servers,
 knowledge-graph-powered RAG systems, multi-agent orchestration pipelines, and REPL-driven

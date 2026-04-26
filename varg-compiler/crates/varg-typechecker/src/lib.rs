@@ -1414,24 +1414,24 @@ impl TypeChecker {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (actual, expected, message)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
                 } else if method_name == "assert_true" {
-                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (condition, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    if args.is_empty() || args.len() > 2 { return Err(TypeError::TypeMismatch { expected: "1-2 arguments (condition[, message])".to_string(), found: format!("{} arguments", args.len()) }); }
                     let cond_ty = self.infer_expression_type(&args[0])?;
                     if cond_ty != TypeNode::Bool {
                         return Err(TypeError::TypeMismatch { expected: "bool".to_string(), found: format!("{:?}", cond_ty) });
                     }
                     Ok(TypeNode::Void)
                 } else if method_name == "assert_false" {
-                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (condition, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    if args.is_empty() || args.len() > 2 { return Err(TypeError::TypeMismatch { expected: "1-2 arguments (condition[, message])".to_string(), found: format!("{} arguments", args.len()) }); }
                     let cond_ty = self.infer_expression_type(&args[0])?;
                     if cond_ty != TypeNode::Bool {
                         return Err(TypeError::TypeMismatch { expected: "bool".to_string(), found: format!("{:?}", cond_ty) });
                     }
                     Ok(TypeNode::Void)
                 } else if method_name == "assert_contains" {
-                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (haystack, needle, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    if args.len() < 2 || args.len() > 3 { return Err(TypeError::TypeMismatch { expected: "2-3 arguments (haystack, needle[, message])".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
                 } else if method_name == "assert_throws" {
-                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (closure, message)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    if args.is_empty() || args.len() > 2 { return Err(TypeError::TypeMismatch { expected: "1-2 arguments (closure[, message])".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
                 // ===== Wave 16: set_of() constructor =====
                 } else if method_name == "set_of" {
@@ -2286,6 +2286,13 @@ impl TypeChecker {
                     // Plan 33: Check known standalone functions first
                     if let Some(sig) = self.known_functions.get(method_name) {
                         return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
+                    }
+                    // Closure variable invocation: var f = (x) => x*2; f(3)
+                    // When caller is synthetic 'self', check if method_name is a local Func variable.
+                    if matches!(&**caller, Expression::Identifier(n) if n == "self") {
+                        if let Some(TypeNode::Func(_, ret_ty)) = self.env.get(method_name.as_ref() as &str) {
+                            return Ok(*ret_ty.clone());
+                        }
                     }
                     // Issue #4: When caller is synthetic 'self' (bare function call in standalone fn),
                     // don't try to resolve 'self' — treat as forward-declared function call

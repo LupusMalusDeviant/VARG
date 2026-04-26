@@ -11,6 +11,44 @@
 use varg_os_types::*;
 use varg_runtime::*;
 
+trait __VargFmt {
+    fn __varg_fmt(&self) -> String;
+}
+macro_rules! __varg_fmt_display { ($($t:ty),*) => { $(impl __VargFmt for $t { fn __varg_fmt(&self) -> String { self.to_string() } })* } }
+__varg_fmt_display!(
+    String, bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, usize, isize, f32, f64
+);
+impl __VargFmt for &str {
+    fn __varg_fmt(&self) -> String {
+        self.to_string()
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for Vec<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<K: std::fmt::Debug, V: std::fmt::Debug> __VargFmt for std::collections::HashMap<K, V> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for std::collections::HashSet<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug> __VargFmt for (A, B) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 struct BytesTest {}
 
 impl BytesTest {
@@ -26,35 +64,41 @@ impl BytesTest {
             // .varg:5
             let mut written = ({
                 let __varg_bytes: Vec<u8> = bytes.iter().map(|b: &i64| *b as u8).collect();
-                std::fs::write(path, &__varg_bytes)
+                std::fs::write(&path, &__varg_bytes)
                     .map(|_| __varg_bytes.len() as i64)
                     .map_err(|e| e.to_string())
             })
             .unwrap_or_else(|_| 0);
             // .varg:6
-            println!("{}", format!("wrote {} bytes to {}", written, path));
+            println!("{}", format!("wrote {} bytes", (written).__varg_fmt()));
             // .varg:7
-            let mut size = (std::fs::metadata(path)
+            let mut size = (std::fs::metadata(&path)
                 .map(|m| m.len() as i64)
                 .map_err(|e| e.to_string()))
             .unwrap_or_else(|_| 0);
             // .varg:8
-            println!("{}", format!("size: {}", size));
+            println!("{}", format!("size: {}", (size).__varg_fmt()));
             // .varg:9
-            let mut read = (std::fs::read(path)
+            let mut read = (std::fs::read(&path)
                 .map(|v| v.into_iter().map(|b| b as i64).collect::<Vec<i64>>())
                 .map_err(|e| e.to_string()))
             .unwrap_or_else(|_| vec![]);
             // .varg:10
-            println!("{}", format!("read {} bytes", (read.len() as i64)));
+            println!(
+                "{}",
+                format!("read {} bytes", (read.len() as i64).__varg_fmt())
+            );
             // .varg:11
-            println!("{}", format!("first byte: {}", read[0 as usize].clone()));
+            println!(
+                "{}",
+                format!("first byte: {}", (read[(0) as usize].clone()).__varg_fmt())
+            );
             // .varg:12
             println!(
                 "{}",
                 format!(
                     "last byte: {}",
-                    read[(read.len() as i64) - 1 as usize].clone()
+                    (read[((read.len() as i64) - 1) as usize].clone()).__varg_fmt()
                 )
             );
             // .varg:13
@@ -63,7 +107,7 @@ impl BytesTest {
                 std::fs::OpenOptions::new()
                     .append(true)
                     .create(true)
-                    .open(path)
+                    .open(&path)
                     .and_then(|mut f| {
                         use std::io::Write;
                         f.write_all(&__varg_bytes)
@@ -73,14 +117,14 @@ impl BytesTest {
             })
             .unwrap_or_else(|_| 0);
             // .varg:14
-            println!("{}", format!("appended {} bytes", appended));
+            println!("{}", format!("appended {} bytes", (appended).__varg_fmt()));
             // .varg:15
-            let mut final_size = (std::fs::metadata(path)
+            let mut final_size = (std::fs::metadata(&path)
                 .map(|m| m.len() as i64)
                 .map_err(|e| e.to_string()))
             .unwrap_or_else(|_| 0);
             // .varg:16
-            println!("{}", format!("final size: {}", final_size));
+            println!("{}", format!("final size: {}", (final_size).__varg_fmt()));
         }
     }
 }

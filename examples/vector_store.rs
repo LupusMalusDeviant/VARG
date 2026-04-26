@@ -11,6 +11,44 @@
 use varg_os_types::*;
 use varg_runtime::*;
 
+trait __VargFmt {
+    fn __varg_fmt(&self) -> String;
+}
+macro_rules! __varg_fmt_display { ($($t:ty),*) => { $(impl __VargFmt for $t { fn __varg_fmt(&self) -> String { self.to_string() } })* } }
+__varg_fmt_display!(
+    String, bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, usize, isize, f32, f64
+);
+impl __VargFmt for &str {
+    fn __varg_fmt(&self) -> String {
+        self.to_string()
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for Vec<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<K: std::fmt::Debug, V: std::fmt::Debug> __VargFmt for std::collections::HashMap<K, V> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for std::collections::HashSet<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug> __VargFmt for (A, B) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 fn main() {
     // .varg:1
     let mut store = varg_runtime::vector::__varg_vector_store_open(&"documents".to_string());
@@ -58,7 +96,7 @@ fn main() {
         "{}",
         format!(
             "Documents stored: {}",
-            varg_runtime::vector::__varg_vector_store_count(&store)
+            (varg_runtime::vector::__varg_vector_store_count(&store)).__varg_fmt()
         )
     );
     // .varg:9
@@ -66,7 +104,10 @@ fn main() {
     // .varg:10
     let mut results = varg_runtime::vector::__varg_vector_store_search(&store, &search_vec, 2);
     // .varg:11
-    println!("{}", format!("Search results: {}", results.len() as i64));
+    println!(
+        "{}",
+        format!("Search results: {}", (results.len() as i64).__varg_fmt())
+    );
     // .varg:12
     varg_runtime::vector::__varg_vector_store_delete(&store, &"doc3".to_string());
     // .varg:13
@@ -74,7 +115,7 @@ fn main() {
         "{}",
         format!(
             "After delete: {}",
-            varg_runtime::vector::__varg_vector_store_count(&store)
+            (varg_runtime::vector::__varg_vector_store_count(&store)).__varg_fmt()
         )
     );
     // .varg:14

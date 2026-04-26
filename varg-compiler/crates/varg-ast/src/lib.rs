@@ -145,8 +145,12 @@ pub enum Token {
     #[regex(r#""(?:[^"\\]|\\.)*""#, |lex| lex.slice().to_string())]
     StringLiteral(String),
 
-    // Prompt Literals (Phase 20.A)
-    #[regex(r#"prompt\s*"""([^"]|"[^"]|""[^"])*""""#, |lex| lex.slice().to_string())]
+    // Prompt keyword (lowercase) — contextual, used in `prompt """..."""` expressions
+    #[token("prompt")]
+    PromptKw,
+
+    // Prompt Literals (Phase 20.A) — legacy single-token form (kept for backward compat)
+    // Note: `prompt\s*"""` conflicts with Identifier("prompt") in Logos; prefer PromptKw + MultilineStringLiteral
     PromptLiteralToken(String),
 
     // Numbers (Plan 42: Float literals must come before Int to get priority via longest-match)

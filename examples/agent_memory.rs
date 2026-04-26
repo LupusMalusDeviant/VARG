@@ -11,6 +11,44 @@
 use varg_os_types::*;
 use varg_runtime::*;
 
+trait __VargFmt {
+    fn __varg_fmt(&self) -> String;
+}
+macro_rules! __varg_fmt_display { ($($t:ty),*) => { $(impl __VargFmt for $t { fn __varg_fmt(&self) -> String { self.to_string() } })* } }
+__varg_fmt_display!(
+    String, bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, usize, isize, f32, f64
+);
+impl __VargFmt for &str {
+    fn __varg_fmt(&self) -> String {
+        self.to_string()
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for Vec<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<K: std::fmt::Debug, V: std::fmt::Debug> __VargFmt for std::collections::HashMap<K, V> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for std::collections::HashSet<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug> __VargFmt for (A, B) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 fn main() {
     // .varg:1
     let mut mem = varg_runtime::memory::__varg_memory_open(&"assistant".to_string());
@@ -29,7 +67,7 @@ fn main() {
         &"none".to_string(),
     );
     // .varg:5
-    println!("{}", format!("Current task: {}", task));
+    println!("{}", format!("Current task: {}", (task).__varg_fmt()));
     // .varg:6
     varg_runtime::memory::__varg_memory_store(
         &mem,
@@ -51,14 +89,20 @@ fn main() {
     // .varg:9
     let mut episodes = varg_runtime::memory::__varg_memory_episode_count(&mem);
     // .varg:10
-    println!("{}", format!("Episodes stored: {}", episodes));
+    println!(
+        "{}",
+        format!("Episodes stored: {}", (episodes).__varg_fmt())
+    );
     // .varg:11
     let mut relevant =
         varg_runtime::memory::__varg_memory_recall(&mem, &"compiler performance".to_string(), 2);
     // .varg:12
     println!(
         "{}",
-        format!("Relevant memories: {}", relevant.len() as i64)
+        format!(
+            "Relevant memories: {}",
+            (relevant.len() as i64).__varg_fmt()
+        )
     );
     // .varg:13
     varg_runtime::memory::__varg_memory_add_fact(
@@ -82,7 +126,10 @@ fn main() {
     let mut languages =
         varg_runtime::memory::__varg_memory_query_facts(&mem, &"Language".to_string());
     // .varg:16
-    println!("{}", format!("Known languages: {}", languages.len() as i64));
+    println!(
+        "{}",
+        format!("Known languages: {}", (languages.len() as i64).__varg_fmt())
+    );
     // .varg:17
     varg_runtime::memory::__varg_memory_clear_working(&mem);
     // .varg:18
@@ -92,7 +139,7 @@ fn main() {
         &"cleared".to_string(),
     );
     // .varg:19
-    println!("{}", format!("After clear: {}", cleared));
+    println!("{}", format!("After clear: {}", (cleared).__varg_fmt()));
     // .varg:20
     println!("{}", "Agent memory demo complete!".to_string());
 }

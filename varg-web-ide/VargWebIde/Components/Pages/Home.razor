@@ -2,17 +2,86 @@
 @rendermode InteractiveServer
 @inject IJSRuntime JS
 @inject VargCompilerService Compiler
+@using System.Text
 
 <PageTitle>Varg Playground</PageTitle>
 
 <div id="shell">
 
-    <!-- ── Title bar ───────────────────────────────────────── -->
+    <!-- ── Title bar ─────────────────────────────────────────────── -->
     <div id="titlebar">
         <span class="logo">🐺</span>
         <span class="title">Varg Playground</span>
         <span class="badge">v0.12</span>
         <div class="spacer"></div>
+
+        <!-- Examples dropdown -->
+        <div class="ex-wrap">
+            <button class="btn-ex" @onclick="ToggleExamples">Examples ▾</button>
+            @if (_examplesOpen)
+            {
+                <div class="ex-backdrop" @onclick="() => _examplesOpen = false"></div>
+                <div class="ex-menu">
+                    <div class="ex-item" @onclick='() => LoadExample("hello")'>
+                        <span class="ex-icon">👋</span>
+                        <div>
+                            <div class="ex-name">Greeting</div>
+                            <div class="ex-desc">readline, string interpolation, if/else</div>
+                        </div>
+                    </div>
+                    <div class="ex-item" @onclick='() => LoadExample("fibonacci")'>
+                        <span class="ex-icon">🔢</span>
+                        <div>
+                            <div class="ex-name">Fibonacci</div>
+                            <div class="ex-desc">readline, recursion, while loop</div>
+                        </div>
+                    </div>
+                    <div class="ex-item" @onclick='() => LoadExample("calculator")'>
+                        <span class="ex-icon">🧮</span>
+                        <div>
+                            <div class="ex-name">Calculator</div>
+                            <div class="ex-desc">readline, parse_int, arithmetic builtins</div>
+                        </div>
+                    </div>
+                    <div class="ex-item" @onclick='() => LoadExample("guess")'>
+                        <span class="ex-icon">🎯</span>
+                        <div>
+                            <div class="ex-name">Guessing Game</div>
+                            <div class="ex-desc">while loop, conditionals, game logic</div>
+                        </div>
+                    </div>
+                    <div class="ex-item" @onclick='() => LoadExample("agent")'>
+                        <span class="ex-icon">🤖</span>
+                        <div>
+                            <div class="ex-name">AI Agent</div>
+                            <div class="ex-desc">llm_chat, set_env, readline, GPT-4o-mini</div>
+                        </div>
+                    </div>
+                    <div class="ex-item" @onclick='() => LoadExample("ocap")'>
+                        <span class="ex-icon">🔒</span>
+                        <div>
+                            <div class="ex-name">OCAP Security</div>
+                            <div class="ex-desc">FileAccess, SystemAccess, capability tokens</div>
+                        </div>
+                    </div>
+                    <div class="ex-item" @onclick='() => LoadExample("http")'>
+                        <span class="ex-icon">🌐</span>
+                        <div>
+                            <div class="ex-name">HTTP Fetcher</div>
+                            <div class="ex-desc">fetch, NetworkAccess, live weather API</div>
+                        </div>
+                    </div>
+                    <div class="ex-item" @onclick='() => LoadExample("sqlite")'>
+                        <span class="ex-icon">🗄️</span>
+                        <div>
+                            <div class="ex-name">SQLite Notes</div>
+                            <div class="ex-desc">db_open, db_execute, db_query, persistent data</div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+
         <a href="https://github.com/LupusMalus/varg-compiler" target="_blank" rel="noopener">
             <svg viewBox="0 0 16 16" aria-hidden="true">
                 <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
@@ -28,26 +97,35 @@
         </a>
     </div>
 
-    <!-- ── Tab bar ──────────────────────────────────────────── -->
+    <!-- ── Tab bar ────────────────────────────────────────────────── -->
     <div id="tabbar">
-        <div class="tab active">
-            <span class="tab-icon">🐺</span>
-            <span class="tab-name">main.varg</span>
-        </div>
+        @foreach (var f in _files)
+        {
+            var fname = f.Name;
+            <div class="tab @(f.IsActive ? "active" : "")" @onclick="() => SwitchFile(fname)">
+                <span class="tab-icon">🐺</span>
+                <span class="tab-name">@f.Name</span>
+                @if (_files.Count > 1)
+                {
+                    <span class="tab-close" @onclick:stopPropagation @onclick="() => RemoveFile(fname)">×</span>
+                }
+            </div>
+        }
+        <button class="tab-add" @onclick="AddNewFile" title="New file">+</button>
     </div>
 
-    <!-- ── Editor ───────────────────────────────────────────── -->
+    <!-- ── Editor ─────────────────────────────────────────────────── -->
     <div id="editor-wrap">
         <div id="editor-container" @ref="_editorEl"></div>
     </div>
 
-    <!-- ── Output panel ─────────────────────────────────────── -->
+    <!-- ── Output panel ───────────────────────────────────────────── -->
     <div id="panel">
         <div id="resize-handle" @ref="_resizeHandleEl"></div>
         <div id="panel-header">
-            <span class="panel-tab @(_activeTab == "output"  ? "active" : "")"
+            <span class="panel-tab @(_activeTab == "output" ? "active" : "")"
                   @onclick='() => _activeTab = "output"'>OUTPUT</span>
-            <span class="panel-tab @(_activeTab == "rust" ? "active" : "")"
+            <span class="panel-tab @(_activeTab == "rust"   ? "active" : "")"
                   @onclick='() => _activeTab = "rust"'>RUST SOURCE</span>
             <div class="spacer"></div>
             <button id="btn-clear-panel" title="Clear" @onclick="ClearPanel">✕</button>
@@ -55,30 +133,322 @@
         <pre id="output">@((MarkupString)_outputHtml)</pre>
     </div>
 
-    <!-- ── Status bar ───────────────────────────────────────── -->
+    <!-- ── Status bar ─────────────────────────────────────────────── -->
     <div id="statusbar">
         <div class="status-item">🐺 Varg</div>
         <div class="status-item">@_statusText</div>
         <div class="spacer"></div>
+        <button class="btn" @onclick="ToggleDocs">📖 Docs</button>
         <button class="btn" @onclick="OnEmitRs" disabled="@_busy">▶ Emit Rust</button>
+        <div class="target-group">
+            <button class="target-btn @(_buildTarget == "linux"   ? "active" : "")"
+                    @onclick='() => _buildTarget = "linux"'   title="Linux ELF binary">🐧</button>
+            <button class="target-btn @(_buildTarget == "windows" ? "active" : "")"
+                    @onclick='() => _buildTarget = "windows"' title="Windows .exe (x86-64)">🪟</button>
+        </div>
         <button class="btn primary" @onclick="OnBuild" disabled="@_busy">⬇ Build &amp; Download</button>
     </div>
 
 </div>
 
-<!-- ── Loading overlay ────────────────────────────────────── -->
+<!-- ── Docs overlay ──────────────────────────────────────────────── -->
+@if (_docsOpen)
+{
+    <div id="docs-backdrop" @onclick="ToggleDocs"></div>
+    <div id="docs-panel">
+        <div id="docs-head">
+            <span>Varg Language Reference</span>
+            <button @onclick="ToggleDocs">✕</button>
+        </div>
+        <div id="docs-body">
+
+            <h3>Agents</h3>
+            <pre><code>agent MyAgent {
+    // field with contract type → DI
+    ILogger logger;
+
+    public MyAgent(ILogger logger) {
+        self.logger = logger;
+    }
+
+    public void Run() { ... }
+
+    // Lifecycle hooks
+    on_start { ... }
+    on_stop  { ... }
+}</code></pre>
+
+            <h3>Contracts (interfaces)</h3>
+            <pre><code>contract ILogger {
+    fn log(msg: string) -> void;
+}
+
+agent ConsoleLogger implements ILogger {
+    public void log(string msg) {
+        print(msg);
+    }
+}</code></pre>
+
+            <h3>Types</h3>
+            <pre><code>int  float  string  bool  void  ulong
+
+// Generics
+Result&lt;T, E&gt;   List&lt;T&gt;
+
+// AI types
+Tensor  Prompt  Context  Embedding
+
+// Capability tokens (OCAP)
+FileAccess  NetworkAccess  DbAccess
+LlmAccess   SystemAccess</code></pre>
+
+            <h3>Variables &amp; Functions</h3>
+            <pre><code>var x = 42;
+let y = "hello";     // immutable
+const PI = 3.14;
+
+fn add(a: int, b: int) -> int {
+    return a + b;
+}
+
+// Closures / lambdas
+var double = (x) => x * 2;
+var evens = nums.filter((x) => x % 2 == 0);</code></pre>
+
+            <h3>Control Flow</h3>
+            <pre><code>// if / else if / else  (no parens needed)
+if score >= 90 {
+    print("A");
+} else if score >= 70 {
+    print("B");
+} else {
+    print("F");
+}
+
+// while
+var i = 0;
+while i &lt; 10 { i = i + 1; }
+
+// for range
+for i in 0..10 { print(i); }
+
+// foreach
+foreach item in list { print(item); }
+
+// match
+match value {
+    0 => print("zero"),
+    _ => print("other"),
+}</code></pre>
+
+            <h3>Strings</h3>
+            <pre><code>var s = "hello";
+var interp = $"Value: {s}";         // interpolation
+var multi = """
+    multiline
+    string
+""";
+
+// Methods / builtins
+len(s)          split(s, ",")
+to_upper(s)     to_lower(s)
+trim(s)         contains(s, "x")
+starts_with(s, "h")  ends_with(s, "o")
+replace(s, "l", "r") substring(s, 0, 3)</code></pre>
+
+            <h3>Collections</h3>
+            <pre><code>var list = [1, 2, 3];
+var map  = {"key": "value"};
+var set  = {1, 2, 3};
+
+// Iterator chains
+list.filter((x) => x % 2 == 0)
+    .map((x) => x * 2)
+    .sort()
+
+list.push(4)
+list.pop()
+len(list)
+list.contains(2)
+list.join(", ")</code></pre>
+
+            <h3>Error Handling</h3>
+            <pre><code>try {
+    var data = fs_read("file.txt");
+} catch e {
+    print($"Error: {e}");
+}
+
+// Result type + ? operator
+fn read_file(path: string) -> Result&lt;string, string&gt; {
+    var content = fs_read(path)?;
+    return content;
+}</code></pre>
+
+            <h3>Async / Await</h3>
+            <pre><code>agent Fetcher {
+    public async void Run() {
+        var resp = await fetch("https://api.example.com/data");
+        print(resp);
+    }
+}</code></pre>
+
+            <h3>Structs &amp; Enums</h3>
+            <pre><code>struct Point { x: float, y: float }
+
+enum Status {
+    Ok,
+    Error(string),
+    Pending,
+}
+
+var p = Point { x: 1.0, y: 2.0 };
+print(p.x);</code></pre>
+
+            <h3>Builtins (selection)</h3>
+            <pre><code>// Math
+abs(x)  sqrt(x)  floor(x)  ceil(x)
+round(x)  min(a,b)  max(a,b)  pow(b,e)
+
+// Parsing
+parse_int("42")   parse_float("3.14")
+
+// I/O
+print(msg)
+fs_read(path)   fs_write(path, content)
+fs_read_lines(path)
+
+// HTTP
+fetch(url)   http_request("POST", url, body, headers)
+
+// JSON
+json_parse(str)   json_stringify(val)
+json_get(obj, "key")
+
+// DB (SQLite)
+var db = db_open("app.db")
+db_execute(db, "CREATE TABLE ...", [])
+db_query(db, "SELECT ...", [])
+
+// LLM
+llm_chat("openai", "gpt-4o", [{"role":"user","content":"Hi"}])
+
+// Shell
+exec("echo hello")
+env("HOME")
+sleep(1000)</code></pre>
+
+            <h3>OCAP Security</h3>
+            <pre><code>// Capability tokens gate privileged operations
+fn read_file(path: string, fa: FileAccess) -> string {
+    return fs_read(path);
+}
+
+// Tokens can only be constructed in unsafe blocks
+unsafe {
+    var cap = FileAccess {};
+    read_file("data.txt", cap);
+}</code></pre>
+
+            <h3>Testing</h3>
+            <pre><code>agent MyTests {
+    @@[BeforeEach]
+    public void setup() { ... }
+
+    @@[Test]
+    public void test_add() {
+        assert_eq(add(2, 3), 5);
+        assert_true(2 + 2 == 4);
+        assert_contains("hello world", "world");
+    }
+}</code></pre>
+
+            <h3>External Crates</h3>
+            <pre><code>import crate serde_json;
+import serde_json::Value;
+import axum::{Router, Json};</code></pre>
+
+            <h3>CLI Commands</h3>
+            <pre><code>vargc build hello.varg   # native binary
+vargc run   hello.varg   # build + run
+vargc emit-rs hello.varg # show Rust output
+vargc test  tests.varg   # run @@[Test] methods
+vargc fmt   hello.varg   # format source</code></pre>
+
+        </div>
+    </div>
+}
+
+<!-- ── Loading overlay ──────────────────────────────────────────── -->
 <div id="loading-overlay" class="@(_loading ? "visible" : "")">
     <div class="loading-spinner"></div>
     <div class="loading-text">@_loadingText</div>
-    <div class="loading-sub">Compiling to native binary via cargo…</div>
+    <div class="loading-sub">Compiling Rust dependencies via cargo — first build takes ~35 s</div>
 </div>
 
 @code {
     ElementReference _editorEl;
     ElementReference _resizeHandleEl;
 
+    // ── File tabs ─────────────────────────────────────────────────────────────
+
+    record VargFile(string Name) { public bool IsActive { get; set; } }
+
+    List<VargFile> _files = new List<VargFile> { new VargFile("main.varg") { IsActive = true } };
+    int _newFileCounter = 1;
+
+    async Task SwitchFile(string name)
+    {
+        foreach (var f in _files) f.IsActive = f.Name == name;
+        await JS.InvokeVoidAsync("vargIde.switchFile", name);
+    }
+
+    async Task AddNewFile()
+    {
+        _newFileCounter++;
+        var name = $"file{_newFileCounter}.varg";
+        _files.Add(new VargFile(name) { IsActive = false });
+        await SwitchFile(name);
+        await JS.InvokeVoidAsync("vargIde.addFile", name, "");
+        await SwitchFile(name);
+    }
+
+    async Task RemoveFile(string name)
+    {
+        if (_files.Count <= 1) return;
+        var idx = _files.FindIndex(f => f.Name == name);
+        _files.RemoveAt(idx);
+        await JS.InvokeVoidAsync("vargIde.removeFile", name);
+        // activate whichever file JS switched to
+        var active = await JS.InvokeAsync<string>("vargIde.activeFile");
+        foreach (var f in _files) f.IsActive = f.Name == active;
+    }
+
+    // ── Examples ──────────────────────────────────────────────────────────────
+
+    bool _examplesOpen = false;
+    void ToggleExamples() => _examplesOpen = !_examplesOpen;
+
+    async Task LoadExample(string name)
+    {
+        _examplesOpen = false;
+        var fileNames = await JS.InvokeAsync<string[]>("vargIde.loadExample", name);
+        _files.Clear();
+        _newFileCounter = 1;
+        for (var i = 0; i < fileNames.Length; i++)
+            _files.Add(new VargFile(fileNames[i]) { IsActive = i == 0 });
+    }
+
+    // ── Docs ──────────────────────────────────────────────────────────────────
+
+    bool _docsOpen = false;
+    void ToggleDocs() => _docsOpen = !_docsOpen;
+
+    // ── Output ────────────────────────────────────────────────────────────────
+
+    string _buildTarget = "linux";
     string _activeTab   = "output";
-    string _outputHtml  = "<span class=\"line-info\">// Welcome to the Varg Playground!\n// Click ▶ Emit Rust to see generated Rust code, or ⬇ Build &amp; Download for a native binary.</span>";
+    string _outputHtml  = "<span class=\"line-info\">// Welcome to the Varg Playground!\n// ▶ Emit Rust to inspect generated Rust code.\n// ⬇ Build &amp; Download compiles to a native binary.</span>";
     string _statusText  = "Ready";
     string _loadingText = "Building…";
     bool   _busy        = false;
@@ -87,9 +457,7 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
-        {
             await JS.InvokeVoidAsync("vargIde.init", _editorEl, _resizeHandleEl);
-        }
     }
 
     // ── Emit Rust ─────────────────────────────────────────────────────────────
@@ -97,8 +465,8 @@
     async Task OnEmitRs()
     {
         SetBusy("Checking…");
-        var code = await JS.InvokeAsync<string>("vargIde.getCode");
-        var result = await Compiler.EmitRsAsync(code);
+        var files = await GetFilesFromJs();
+        var result = await Compiler.EmitRsAsync(files);
 
         if (result.Success)
         {
@@ -125,17 +493,20 @@
         _loading = true;
         StateHasChanged();
 
-        var code = await JS.InvokeAsync<string>("vargIde.getCode");
-        var result = await Compiler.BuildAsync(code);
-
+        var files  = await GetFilesFromJs();
+        var target = _buildTarget == "windows" ? BuildTarget.Windows : BuildTarget.Linux;
+        var result = await Compiler.BuildAsync(files, target);
         _loading = false;
 
         if (result.Success)
         {
             _activeTab  = "output";
-            _outputHtml = BuildHtml(result.Output, "line-success");
+            var filename = target == BuildTarget.Windows ? "main.exe" : "main";
+            var hint = target == BuildTarget.Windows
+                ? $"\n// ── How to run ────────────────────────────────────\n// Open PowerShell or CMD in the download folder, then:\n//   .\\{filename}\n// (Double-clicking closes before you can read output.)"
+                : $"\n// ── How to run ────────────────────────────────────\n// chmod +x {filename} && ./{filename}";
+            _outputHtml = BuildHtml(result.Output + hint, "line-success");
             _statusText = "✔ Build succeeded";
-            var filename = OperatingSystem.IsWindows() ? "main.exe" : "main";
             await JS.InvokeVoidAsync("vargIde.downloadBytes",
                 Convert.ToBase64String(result.Binary!), filename);
         }
@@ -151,6 +522,22 @@
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    async Task<List<(string Name, string Code)>> GetFilesFromJs()
+    {
+        var map = await JS.InvokeAsync<Dictionary<string, string>>("vargIde.getFiles");
+        // Concatenate all non-main files before main.varg so vargc sees one compilation unit.
+        var sb = new StringBuilder();
+        foreach (var (k, v) in map)
+        {
+            if (k == "main.varg") continue;
+            sb.Append(v);
+            sb.Append('\n');
+        }
+        if (map.TryGetValue("main.varg", out var mainCode))
+            sb.Append(mainCode);
+        return new List<(string Name, string Code)> { ("main.varg", sb.ToString()) };
+    }
+
     void ClearPanel()
     {
         _outputHtml = "";
@@ -159,7 +546,7 @@
 
     void SetBusy(string status)
     {
-        _busy       = true;
+        _busy = true;
         _statusText = status;
         StateHasChanged();
     }

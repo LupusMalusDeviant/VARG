@@ -11,6 +11,44 @@
 use varg_os_types::*;
 use varg_runtime::*;
 
+trait __VargFmt {
+    fn __varg_fmt(&self) -> String;
+}
+macro_rules! __varg_fmt_display { ($($t:ty),*) => { $(impl __VargFmt for $t { fn __varg_fmt(&self) -> String { self.to_string() } })* } }
+__varg_fmt_display!(
+    String, bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, usize, isize, f32, f64
+);
+impl __VargFmt for &str {
+    fn __varg_fmt(&self) -> String {
+        self.to_string()
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for Vec<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<K: std::fmt::Debug, V: std::fmt::Debug> __VargFmt for std::collections::HashMap<K, V> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<T: std::fmt::Debug> __VargFmt for std::collections::HashSet<T> {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug> __VargFmt for (A, B) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) {
+    fn __varg_fmt(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 struct ClawLite {}
 
 impl ClawLite {
@@ -38,19 +76,26 @@ impl ClawLite {
             "{}",
             format!(
                 "{}claw_lite{} — tiny CLI agent harness in Varg",
-                bold, reset
+                (bold).__varg_fmt(),
+                (reset).__varg_fmt()
             )
         );
         // .varg:5
         println!("{}", "".to_string());
         // .varg:6
-        println!("{}", format!("{}USAGE{}", cyan, reset));
+        println!(
+            "{}",
+            format!("{}USAGE{}", (cyan).__varg_fmt(), (reset).__varg_fmt())
+        );
         // .varg:7
         println!("{}", "  claw_lite <subcommand> [args...]".to_string());
         // .varg:8
         println!("{}", "".to_string());
         // .varg:9
-        println!("{}", format!("{}SUBCOMMANDS{}", cyan, reset));
+        println!(
+            "{}",
+            format!("{}SUBCOMMANDS{}", (cyan).__varg_fmt(), (reset).__varg_fmt())
+        );
         // .varg:10
         println!(
             "{}",
@@ -120,7 +165,14 @@ impl ClawLite {
         // .varg:18
         let mut reset = "\x1b[0m".to_string();
         // .varg:19
-        println!("{}", format!("{}claw_lite doctor{}", bold, reset));
+        println!(
+            "{}",
+            format!(
+                "{}claw_lite doctor{}",
+                (bold).__varg_fmt(),
+                (reset).__varg_fmt()
+            )
+        );
         // .varg:20
         println!("{}", "".to_string());
         // .varg:21
@@ -137,14 +189,20 @@ impl ClawLite {
                 "{}",
                 format!(
                     "  {}FAIL{}  no HOME or USERPROFILE in environment",
-                    red, reset
+                    (red).__varg_fmt(),
+                    (reset).__varg_fmt()
                 )
             );
         } else {
             // .varg:26
             println!(
                 "{}",
-                format!("  {}OK{}    home directory: {}", green, reset, home)
+                format!(
+                    "  {}OK{}    home directory: {}",
+                    (green).__varg_fmt(),
+                    (reset).__varg_fmt(),
+                    (home).__varg_fmt()
+                )
             );
         }
         // .varg:27
@@ -154,7 +212,11 @@ impl ClawLite {
                 // .varg:29
                 println!(
                     "{}",
-                    format!("  {}OK{}    home is a directory", green, reset)
+                    format!(
+                        "  {}OK{}    home is a directory",
+                        (green).__varg_fmt(),
+                        (reset).__varg_fmt()
+                    )
                 );
             } else {
                 // .varg:30
@@ -162,7 +224,8 @@ impl ClawLite {
                     "{}",
                     format!(
                         "  {}FAIL{}  home path does not point to a directory",
-                        red, reset
+                        (red).__varg_fmt(),
+                        (reset).__varg_fmt()
                     )
                 );
             }
@@ -176,14 +239,19 @@ impl ClawLite {
                 "{}",
                 format!(
                     "  {}WARN{}  ANTHROPIC_API_KEY not set (LLM features unavailable)",
-                    yellow, reset
+                    (yellow).__varg_fmt(),
+                    (reset).__varg_fmt()
                 )
             );
         } else {
             // .varg:34
             println!(
                 "{}",
-                format!("  {}OK{}    ANTHROPIC_API_KEY is set", green, reset)
+                format!(
+                    "  {}OK{}    ANTHROPIC_API_KEY is set",
+                    (green).__varg_fmt(),
+                    (reset).__varg_fmt()
+                )
             );
         }
         // .varg:35
@@ -191,12 +259,23 @@ impl ClawLite {
         // .varg:36
         if std::path::Path::new(&cwd).is_dir() {
             // .varg:37
-            println!("{}", format!("  {}OK{}    cwd is accessible", green, reset));
+            println!(
+                "{}",
+                format!(
+                    "  {}OK{}    cwd is accessible",
+                    (green).__varg_fmt(),
+                    (reset).__varg_fmt()
+                )
+            );
         } else {
             // .varg:38
             println!(
                 "{}",
-                format!("  {}FAIL{}  cwd is not accessible", red, reset)
+                format!(
+                    "  {}FAIL{}  cwd is not accessible",
+                    (red).__varg_fmt(),
+                    (reset).__varg_fmt()
+                )
             );
         }
         // .varg:39
@@ -222,7 +301,11 @@ impl ClawLite {
         // .varg:43
         println!(
             "{}",
-            format!("{}ANSI color palette{}", "\x1b[1m".to_string(), reset)
+            format!(
+                "{}ANSI color palette{}",
+                ("\x1b[1m".to_string()).__varg_fmt(),
+                (reset).__varg_fmt()
+            )
         );
         // .varg:44
         println!("{}", "".to_string());
@@ -243,14 +326,26 @@ impl ClawLite {
             })
             .to_string();
             // .varg:47
-            println!("{}", format!("  {}██{} {}", color, reset, name));
+            println!(
+                "{}",
+                format!(
+                    "  {}██{} {}",
+                    (color).__varg_fmt(),
+                    (reset).__varg_fmt(),
+                    (name).__varg_fmt()
+                )
+            );
         }
         // .varg:48
         println!("{}", "".to_string());
         // .varg:49
         println!(
             "{}",
-            format!("  {}bold text{} (no color)", "\x1b[1m".to_string(), reset)
+            format!(
+                "  {}bold text{} (no color)",
+                ("\x1b[1m".to_string()).__varg_fmt(),
+                (reset).__varg_fmt()
+            )
         );
     }
     pub fn Inspect(&mut self, path: String) {
@@ -273,19 +368,48 @@ impl ClawLite {
         // .varg:52
         let mut reset = "\x1b[0m".to_string();
         // .varg:53
-        println!("{}", format!("{}inspecting{} {}", bold, reset, path));
+        println!(
+            "{}",
+            format!(
+                "{}inspecting{} {}",
+                (bold).__varg_fmt(),
+                (reset).__varg_fmt(),
+                (path).__varg_fmt()
+            )
+        );
         // .varg:54
         println!("{}", "".to_string());
         // .varg:55
         if std::path::Path::new(&path).is_dir() {
             // .varg:56
-            println!("{}", format!("  {}type{}     directory", cyan, reset));
+            println!(
+                "{}",
+                format!(
+                    "  {}type{}     directory",
+                    (cyan).__varg_fmt(),
+                    (reset).__varg_fmt()
+                )
+            );
         } else if std::path::Path::new(&path).is_file() {
             // .varg:57
-            println!("{}", format!("  {}type{}     file", cyan, reset));
+            println!(
+                "{}",
+                format!(
+                    "  {}type{}     file",
+                    (cyan).__varg_fmt(),
+                    (reset).__varg_fmt()
+                )
+            );
         } else {
             // .varg:58
-            println!("{}", format!("  {}type{}     does not exist", cyan, reset));
+            println!(
+                "{}",
+                format!(
+                    "  {}type{}     does not exist",
+                    (cyan).__varg_fmt(),
+                    (reset).__varg_fmt()
+                )
+            );
             // .varg:59
             return;
         }
@@ -294,12 +418,13 @@ impl ClawLite {
             "{}",
             format!(
                 "  {}parent{}   {}",
-                cyan,
-                reset,
-                std::path::Path::new(&path)
+                (cyan).__varg_fmt(),
+                (reset).__varg_fmt(),
+                (std::path::Path::new(&path)
                     .parent()
                     .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default()
+                    .unwrap_or_default())
+                .__varg_fmt()
             )
         );
         // .varg:61
@@ -312,11 +437,27 @@ impl ClawLite {
             match resolved {
                 Ok(abs) => {
                     // .varg:64
-                    println!("{}", format!("  {}absolute{} {}", cyan, reset, abs));
+                    println!(
+                        "{}",
+                        format!(
+                            "  {}absolute{} {}",
+                            (cyan).__varg_fmt(),
+                            (reset).__varg_fmt(),
+                            (abs).__varg_fmt()
+                        )
+                    );
                 }
                 Err(e) => {
                     // .varg:65
-                    println!("{}", format!("  {}absolute{} (error: {})", cyan, reset, e));
+                    println!(
+                        "{}",
+                        format!(
+                            "  {}absolute{} (error: {})",
+                            (cyan).__varg_fmt(),
+                            (reset).__varg_fmt(),
+                            (e).__varg_fmt()
+                        )
+                    );
                 }
             }
         }
@@ -371,7 +512,14 @@ impl ClawLite {
         // .varg:71
         println!(
             "{}",
-            format!("{}exec{} {}${} {}", bold, reset, dim, reset, cmd)
+            format!(
+                "{}exec{} {}${} {}",
+                (bold).__varg_fmt(),
+                (reset).__varg_fmt(),
+                (dim).__varg_fmt(),
+                (reset).__varg_fmt(),
+                (cmd).__varg_fmt()
+            )
         );
         // .varg:72
         println!("{}", "".to_string());
@@ -381,7 +529,15 @@ impl ClawLite {
         match spawned {
             Err(e) => {
                 // .varg:75
-                println!("{}", format!("{}spawn failed:{} {}", red, reset, e));
+                println!(
+                    "{}",
+                    format!(
+                        "{}spawn failed:{} {}",
+                        (red).__varg_fmt(),
+                        (reset).__varg_fmt(),
+                        (e).__varg_fmt()
+                    )
+                );
                 // .varg:76
                 return;
             }
@@ -396,7 +552,15 @@ impl ClawLite {
                     match line_result {
                         Err(e) => {
                             // .varg:81
-                            println!("{}", format!("{}read error:{} {}", red, reset, e));
+                            println!(
+                                "{}",
+                                format!(
+                                    "{}read error:{} {}",
+                                    (red).__varg_fmt(),
+                                    (reset).__varg_fmt(),
+                                    (e).__varg_fmt()
+                                )
+                            );
                             // .varg:82
                             break;
                         }
@@ -407,7 +571,7 @@ impl ClawLite {
                                 break;
                             }
                             // .varg:85
-                            println!("{}", format!("  {}", line));
+                            println!("{}", format!("  {}", (line).__varg_fmt()));
                             // .varg:86
                             line_count += 1;
                         }
@@ -419,7 +583,15 @@ impl ClawLite {
                 match code_result {
                     Err(e) => {
                         // .varg:89
-                        println!("{}", format!("{}wait error:{} {}", red, reset, e));
+                        println!(
+                            "{}",
+                            format!(
+                                "{}wait error:{} {}",
+                                (red).__varg_fmt(),
+                                (reset).__varg_fmt(),
+                                (e).__varg_fmt()
+                            )
+                        );
                     }
                     Ok(code) => {
                         // .varg:90
@@ -434,7 +606,13 @@ impl ClawLite {
                         // .varg:94
                         println!(
                             "{}",
-                            format!("  {}exit{} {} ({} lines)", color, reset, code, line_count)
+                            format!(
+                                "  {}exit{} {} ({} lines)",
+                                (color).__varg_fmt(),
+                                (reset).__varg_fmt(),
+                                (code).__varg_fmt(),
+                                (line_count).__varg_fmt()
+                            )
                         );
                     }
                 }
@@ -452,7 +630,7 @@ impl ClawLite {
             return;
         }
         // .varg:99
-        let mut subcommand = argv[0 as usize].clone();
+        let mut subcommand = argv[(0) as usize].clone();
         // .varg:100
         if subcommand == "doctor".to_string() {
             // .varg:101
@@ -477,22 +655,37 @@ impl ClawLite {
                 return;
             }
             // .varg:110
-            self.Inspect(argv[1 as usize].clone());
+            self.Inspect(argv[(1) as usize].clone());
             // .varg:111
             return;
         }
         // .varg:112
-        let mut sys = SystemAccess {};
-        // .varg:113
         if subcommand == "exec".to_string() {
-            // .varg:114
+            // .varg:113
+            if (argv.len() as i64) < 2 {
+                // .varg:114
+                println!("{}", "usage: claw_lite exec <cmd>".to_string());
+                // .varg:115
+                return;
+            }
+            // .varg:116
+            unsafe {
+                // .varg:117
+                let mut sys = SystemAccess {};
+                // .varg:118
+                self.Exec(argv[(1) as usize].clone(), sys);
+            }
+            // .varg:119
             return;
         }
-        // .varg:115
-        println!("{}", format!("unknown subcommand: {}", subcommand));
-        // .varg:116
+        // .varg:120
+        println!(
+            "{}",
+            format!("unknown subcommand: {}", (subcommand).__varg_fmt())
+        );
+        // .varg:121
         println!("{}", "".to_string());
-        // .varg:117
+        // .varg:122
         self.PrintUsage();
     }
 }

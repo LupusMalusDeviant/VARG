@@ -130,6 +130,8 @@ pub struct RustGenerator {
     known_function_params: HashMap<String, Vec<FieldDecl>>,
     /// Method names defined in user impl blocks — these take priority over builtin dispatch
     user_impl_methods: HashSet<String>,
+    /// Whether we are currently generating the body of a TryCatch try block
+    in_try_block: bool,
 }
 
 impl RustGenerator {
@@ -153,6 +155,7 @@ impl RustGenerator {
             known_function_defaults: HashMap::new(),
             known_function_params: HashMap::new(),
             user_impl_methods: HashSet::new(),
+            in_try_block: false,
         }
     }
 
@@ -948,6 +951,10 @@ impl RustGenerator {
                     if matches!(ty, Some(TypeNode::Map(_, _))) || matches!(value, Expression::MapLiteral(_)) {
                         self.map_vars.insert(name.clone());
                     }
+                    // Closure variable: treat as callable function so `f(args)` works
+                    if matches!(value, Expression::Lambda { .. }) {
+                        self.known_functions.insert(name.clone());
+                    }
                     let val_str = self.gen_expression(value);
                     let val_str = self.clone_self_field_if_needed(&val_str);
                     out.push_str(&format!("{}let mut {} = {};\n", indent, name, val_str));
@@ -1141,7 +1148,10 @@ impl RustGenerator {
                 Statement::TryCatch { try_block, catch_var, catch_block } => {
                     out.push_str(&format!("{}#[allow(unreachable_code, unused_labels)]\n", indent));
                     out.push_str(&format!("{}let _varg_try_res: std::result::Result<(), String> = 'varg_try: {{\n", indent));
+                    let prev_in_try = self.in_try_block;
+                    self.in_try_block = true;
                     out.push_str(&self.gen_block(try_block, indent_level + 1));
+                    self.in_try_block = prev_in_try;
                     out.push_str(&format!("{}    Ok(())\n", indent));
                     out.push_str(&format!("{}}};\n", indent));
                     out.push_str(&format!("{}if let Err(mut {}) = _varg_try_res {{\n", indent, catch_var));
@@ -1149,7 +1159,11 @@ impl RustGenerator {
                     out.push_str(&format!("{}}}\n", indent));
                 },
                 Statement::Throw(expr) => {
-                    out.push_str(&format!("{}break 'varg_try Err(format!(\"{{}}\", {}));\n", indent, self.gen_expression(expr)));
+                    if self.in_try_block {
+                        out.push_str(&format!("{}break 'varg_try Err(format!(\"{{}}\", {}));\n", indent, self.gen_expression(expr)));
+                    } else {
+                        out.push_str(&format!("{}return Err(format!(\"{{}}\", {}));\n", indent, self.gen_expression(expr)));
+                    }
                 },
                 Statement::LetDestructure { pattern, value } => {
                     let val_str = self.gen_expression(value);
@@ -1968,13 +1982,17 @@ impl RustGenerator {
                 } else if method_name == "assert_ne" {
                     format!("if ({}) == ({}) {{ panic!(\"assert_ne failed: both were {{:?}} — {{}}\", {}, {}); }}", arg_strs[0], arg_strs[1], arg_strs[0], arg_strs[2])
                 } else if method_name == "assert_true" {
-                    format!("if !({}) {{ panic!(\"assert_true failed — {{}}\", {}); }}", arg_strs[0], arg_strs[1])
+                    let msg = if arg_strs.len() > 1 { arg_strs[1].clone() } else { "\"assert_true failed\"".to_string() };
+                    format!("if !({}) {{ panic!(\"{{}}\", {}); }}", arg_strs[0], msg)
                 } else if method_name == "assert_false" {
-                    format!("if ({}) {{ panic!(\"assert_false failed — {{}}\", {}); }}", arg_strs[0], arg_strs[1])
+                    let msg = if arg_strs.len() > 1 { arg_strs[1].clone() } else { "\"assert_false failed\"".to_string() };
+                    format!("if ({}) {{ panic!(\"{{}}\", {}); }}", arg_strs[0], msg)
                 } else if method_name == "assert_contains" {
-                    format!("if !format!(\"{{:?}}\", {}).contains(&format!(\"{{}}\", {})) {{ panic!(\"assert_contains failed: {{:?}} does not contain {{:?}} — {{}}\", {}, {}, {}); }}", arg_strs[0], arg_strs[1], arg_strs[0], arg_strs[1], arg_strs[2])
+                    let msg = if arg_strs.len() > 2 { arg_strs[2].clone() } else { format!("format!(\"assert_contains failed: {{:?}} does not contain {{:?}}\", {}, {})", arg_strs[0], arg_strs[1]) };
+                    format!("if !format!(\"{{:?}}\", {}).contains(&format!(\"{{}}\", {})) {{ panic!(\"{{}}\", {}); }}", arg_strs[0], arg_strs[1], msg)
                 } else if method_name == "assert_throws" {
-                    format!("{{ let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{ {} }})); if __result.is_ok() {{ panic!(\"assert_throws: expected panic but none occurred — {{}}\", {}); }} }}", arg_strs[0], arg_strs[1])
+                    let msg = if arg_strs.len() > 1 { arg_strs[1].clone() } else { "\"assert_throws: expected panic but none occurred\"".to_string() };
+                    format!("{{ let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{ {} }})); if __result.is_ok() {{ panic!(\"{{}}\", {}); }} }}", arg_strs[0], msg)
                 // ===== Wave 16: set_of() constructor =====
                 } else if method_name == "set_of" {
                     format!("vec![{}].into_iter().collect::<std::collections::HashSet<_>>()", arg_strs.join(", "))
@@ -6932,38 +6950,68 @@ mod tests {
 
     #[test]
     fn test_codegen_assert_true() {
-        let expr = Expression::MethodCall {
+        let mut gen = RustGenerator::new();
+        // With message: panic message is the custom message
+        let expr_with_msg = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "assert_true".to_string(),
             args: vec![Expression::Bool(true), Expression::String("should be true".to_string())],
         };
-        let mut gen = RustGenerator::new();
-        let code = gen.gen_expression(&expr);
-        assert!(code.contains("assert_true failed"), "assert_true should have failure message: {}", code);
+        let code = gen.gen_expression(&expr_with_msg);
+        assert!(code.contains("panic!"), "assert_true should panic: {}", code);
+        assert!(code.contains("should be true"), "assert_true should use custom message: {}", code);
+        // Without message: default message
+        let expr_no_msg = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "assert_true".to_string(),
+            args: vec![Expression::Bool(true)],
+        };
+        let code2 = gen.gen_expression(&expr_no_msg);
+        assert!(code2.contains("assert_true failed"), "assert_true default message: {}", code2);
     }
 
     #[test]
     fn test_codegen_assert_false() {
+        let mut gen = RustGenerator::new();
+        // With message
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "assert_false".to_string(),
             args: vec![Expression::Bool(false), Expression::String("should be false".to_string())],
         };
-        let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("assert_false failed"), "assert_false should have failure message: {}", code);
+        assert!(code.contains("panic!"), "assert_false should panic: {}", code);
+        assert!(code.contains("should be false"), "assert_false uses custom message: {}", code);
+        // Without message
+        let expr2 = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "assert_false".to_string(),
+            args: vec![Expression::Bool(false)],
+        };
+        let code2 = gen.gen_expression(&expr2);
+        assert!(code2.contains("assert_false failed"), "assert_false default message: {}", code2);
     }
 
     #[test]
     fn test_codegen_assert_contains() {
+        let mut gen = RustGenerator::new();
+        // With message
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "assert_contains".to_string(),
             args: vec![Expression::String("hello world".to_string()), Expression::String("world".to_string()), Expression::String("should contain".to_string())],
         };
-        let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("assert_contains failed"), "assert_contains should have failure message: {}", code);
+        assert!(code.contains("contains"), "assert_contains should check contains: {}", code);
+        assert!(code.contains("should contain"), "assert_contains uses custom message: {}", code);
+        // Without message
+        let expr2 = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "assert_contains".to_string(),
+            args: vec![Expression::String("hello world".to_string()), Expression::String("world".to_string())],
+        };
+        let code2 = gen.gen_expression(&expr2);
+        assert!(code2.contains("assert_contains failed"), "assert_contains default message: {}", code2);
     }
 
     #[test]
@@ -6983,7 +7031,7 @@ mod tests {
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
         assert!(code.contains("catch_unwind"), "assert_throws should use catch_unwind: {}", code);
-        assert!(code.contains("assert_throws"), "assert_throws should have failure message: {}", code);
+        assert!(code.contains("should throw"), "assert_throws should include message: {}", code);
     }
 
     // ===== Wave 15: Typed JSON =====

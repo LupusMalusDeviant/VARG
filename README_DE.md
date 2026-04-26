@@ -20,7 +20,7 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 | Metrik | Wert |
 |--------|------|
 | Version | **0.12.0** |
-| Testsuite | 1159 Tests, 0 Fehler, 0 Warnungen |
+| Testsuite | 1102 Tests, 0 Fehler, 0 Warnungen |
 | Crates | 10 spezialisierte Compiler-Crates |
 | Token-Typen | 119 Lexer-Tokens |
 | AST-Varianten | 25 Statements, 29 Expressions |
@@ -293,7 +293,7 @@ Siehe das [`examples/`](examples/)-Verzeichnis:
 
 ## Testsuite
 
-1159 Tests ueber alle Crates, alle bestanden, null Warnungen:
+1102 Tests ueber alle Crates, alle bestanden, null Warnungen:
 
 ```bash
 cd varg-compiler
@@ -304,13 +304,13 @@ cargo test
 |-------|------:|-----------|
 | varg-ast | 1 | AST-Konstruktion |
 | varg-lexer | 29 | Alle Token-Typen, Randfaelle |
-| varg-parser | 215 | Jede Statement/Expression-Variante; adversarielle Randfaelle und Parser-Limitierungstests |
-| varg-typechecker | 287 | Typinferenz, OCAP, DI, alle Builtins; adversarielle Arg-Anzahl- und Rueckgabe-Typ-Tests |
-| varg-codegen | 274 | Rust-Generierung, alle Runtime-Module; adversarielle Annotation- und AST-Randfaelle |
-| varg-runtime | 324 | Echtes HTTP/SQLite/WS/MCP + alle 31 Module; adversarielle Grenzwert- und Fehlerpfad-Tests |
-| varg-lsp | 18 | Diagnosen, Hover, Completion |
-| vargc | 11 | CLI-Treiber, Formatter, REPL |
-| **Gesamt** | **1159** | **0 Fehler, 0 Warnungen** |
+| varg-parser | 221 | Jede Statement/Expression-Variante; adversarielle Randfaelle und Parser-Limitierungstests |
+| varg-typechecker | 248 | Typinferenz, OCAP, DI, alle Builtins; adversarielle Arg-Anzahl- und Rueckgabe-Typ-Tests |
+| varg-codegen | 280 | Rust-Generierung, alle Runtime-Module; adversarielle Annotation- und AST-Randfaelle |
+| varg-os-types | 11 | OCAP-Marker-Structs, Context, Prompt, Tensor, Embedding |
+| varg-runtime | 292 | Echtes HTTP/SQLite/WS/MCP + alle 31 Module; adversarielle Grenzwert- und Fehlerpfad-Tests |
+| varg-lsp | 20 | Diagnosen, Hover, Completion |
+| **Gesamt** | **1102** | **0 Fehler, 0 Warnungen** |
 
 ---
 
@@ -333,7 +333,7 @@ Project X/
 ## Status
 
 Varg wird aktiv entwickelt. Der Compiler ist funktionsfaehig und erzeugt lauffaehige native Binaries.
-**Aktuelles Release: v0.12.0** -- 34 Entwicklungswellen abgeschlossen, 1159 Tests bestanden, null Warnungen.
+**Aktuelles Release: v0.12.0** -- 34 Entwicklungswellen abgeschlossen, 1102 Tests bestanden, null Warnungen.
 
 Die Sprache eignet sich fuer den Bau von echten Agenten, CLI-Tools, API-Clients, Web-Servern,
 Knowledge-Graph-gestuetzten RAG-Systemen, Multi-Agent-Orchestration-Pipelines und REPL-getriebenen

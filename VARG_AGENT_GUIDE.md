@@ -66,10 +66,26 @@ agent WebFetcher {
 ```
 
 ## 4. Error Handling
-- Use the `?` operator for functions returning `Result<T, string>`. 
+- Use the `?` operator for functions returning `Result<T, string>`.
 - Using `?` automatically makes your function's return type `Result<T, string>`.
 - Or use `try { ... } catch err { ... }`.
 - Or use `or` fallback value: `var data = fs_read("file") or "default";`.
+- `throw "message"` works **anywhere** — inside `try` blocks it is caught by `catch`; inside standalone functions it becomes `return Err(...)`.
+
+```csharp
+fn validate(string s) -> string {
+    if s == "" {
+        throw "empty input";   // becomes: return Err("empty input")
+    }
+    return s;
+}
+
+try {
+    var result = validate(input);
+} catch err {
+    print $"Error: {err}";
+}
+```
 
 ## 5. Built-in Collections & Methods
 - **Arrays (`T[]`):** `.push(v)`, `.len()`, `.first()`, `.last()`, `.is_empty()`, `.sort()`, `.reverse()`.
@@ -86,10 +102,18 @@ agent WebFetcher {
 - **Actor Messaging:** `spawn Worker {}`, `worker.send("task", args)`, `worker.request("status")`. Worker implements `public void on_message(string msg, string[] args)`.
 - **Retry / Fallback:**
 ```csharp
+// Basic retry
 var html = retry(3) {
     fetch(url, "GET")?
 } fallback {
     ""
+};
+
+// With backoff delay (ms) and other named options
+var html = retry(5, backoff: 1000) {
+    fetch(url, "GET")?
+} fallback {
+    "cached"
 };
 ```
 
@@ -206,31 +230,47 @@ agent MyService {
 agent MyTests {
     @[BeforeEach]
     public void setup() {
-        // runs before each test
+        // runs before each @[Test] method
     }
 
     @[AfterEach]
     public void teardown() {
-        // runs after each test
+        // runs after each @[Test] method
     }
 
     @[Test]
     public void test_addition() {
-        assert_eq(1 + 1, 2);
+        assert_eq(1 + 1, 2, "1+1 should be 2");    // message required
+        assert_ne(1, 2, "1 and 2 are different");   // message required
     }
 
     @[Test]
     public void test_strings() {
-        assert_contains("hello world", "world");
+        // message is optional for assert_true/false/contains/throws
         assert_true("abc".starts_with("a"));
         assert_false("abc".is_empty());
+        assert_contains("hello world", "world");
+        assert_throws(() => { throw "boom"; });
+
+        // or with an optional custom message:
+        assert_true(1 > 0, "positive check");
+        assert_contains("hello world", "world", "must contain world");
     }
 }
 ```
 Run with: `vargc test my_tests.varg`
 Coverage: `vargc test --coverage my_tests.varg`
 
-**Assertions:** `assert`, `assert_eq`, `assert_ne`, `assert_true`, `assert_false`, `assert_contains`, `assert_throws`
+**Assertion signatures:**
+| Assertion | Signature |
+|-----------|-----------|
+| `assert` | `assert(cond, message)` — message required |
+| `assert_eq` | `assert_eq(actual, expected, message)` — message required |
+| `assert_ne` | `assert_ne(a, b, message)` — message required |
+| `assert_true` | `assert_true(cond[, message])` — message optional |
+| `assert_false` | `assert_false(cond[, message])` — message optional |
+| `assert_contains` | `assert_contains(haystack, needle[, message])` — message optional |
+| `assert_throws` | `assert_throws(closure[, message])` — message optional |
 
 ## 15. External Crate Imports
 ```csharp
