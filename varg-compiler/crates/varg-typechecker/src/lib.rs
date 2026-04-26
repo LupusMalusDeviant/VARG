@@ -260,7 +260,8 @@ impl TypeChecker {
         let builtins = [
             "len", "length", "contains", "starts_with", "ends_with",
             "to_upper", "to_lower", "trim", "substring", "char_at",
-            "index_of", "split", "replace", "push", "pop", "first",
+            "index_of", "split", "replace", "chars", "repeat", "pad_left", "pad_right",
+            "push", "pop", "first",
             "last", "reverse", "is_empty", "keys", "values", "remove", "get",
             "sort", "join", "count", "filter", "map", "flat_map", "find",
             "any", "all", "abs", "sqrt", "floor", "ceil", "round",
@@ -1191,6 +1192,12 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (substring)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::Int)
+                } else if method_name == "chars" {
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "repeat" {
+                    Ok(TypeNode::String)
+                } else if method_name == "pad_left" || method_name == "pad_right" {
+                    Ok(TypeNode::String)
                 } else if method_name == "split" {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (delimiter)".to_string(), found: format!("{} arguments", args.len()) });

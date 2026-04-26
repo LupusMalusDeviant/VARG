@@ -417,7 +417,21 @@ impl RustGenerator {
                     }
                 }
 
+                // on_error hook: detect if agent defines an error handler
+                let has_on_error = a.methods.iter().any(|m| m.name == "on_error");
+
                 for method in &a.methods {
+                    // on_error method: private handler — use declared parameter names
+                    if method.name == "on_error" && has_on_error {
+                        let sig = self.gen_method_signature(method, true); // force_no_vis=true
+                        out.push_str(&format!("    {} {{\n", sig));
+                        if let Some(body) = &method.body {
+                            out.push_str(&self.gen_block(body, 2));
+                        }
+                        out.push_str("    }\n");
+                        continue;
+                    }
+
                     // Method-level Annotations
                     for ann in &method.annotations {
                         if ann.name == "McpTool" {
@@ -476,21 +490,50 @@ impl RustGenerator {
 
                     // Wave 14: Auto-detect if method uses ? and needs Result wrapping
                     let uses_try = method.body.as_ref().map_or(false, |b| block_contains_try_propagate(b));
-                    if uses_try {
-                        out.push_str(&format!("    {} {{\n", self.gen_method_signature_result_wrapped(method, false)));
-                    } else {
-                        out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, false)));
-                    }
-                    let prev = self.in_result_function;
-                    self.in_result_function = uses_try;
-                    if let Some(body) = &method.body {
-                        out.push_str(&self.gen_block(body, 2));
-                    }
-                    self.in_result_function = prev;
-                    if uses_try {
+
+                    // on_error hook: wrap fallible methods so errors route to on_error()
+                    if has_on_error && uses_try {
+                        // Private _impl method carries the Result logic
+                        let impl_name = format!("{}_impl", method.name);
+                        // gen_method_signature_result_wrapped with force_no_vis=true → no `pub`
+                        let impl_sig = self.gen_method_signature_result_wrapped(method, true)
+                            .replacen(&format!("fn {}", method.name), &format!("fn {}", impl_name), 1);
+                        out.push_str(&format!("    {} {{\n", impl_sig));
+                        let prev = self.in_result_function;
+                        self.in_result_function = true;
+                        if let Some(body) = &method.body {
+                            out.push_str(&self.gen_block(body, 2));
+                        }
+                        self.in_result_function = prev;
                         out.push_str("        Ok(())\n");
+                        out.push_str("    }\n");
+                        // Public wrapper calls _impl and routes Err to on_error
+                        out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, false)));
+                        let arg_names: Vec<String> = method.args.iter().map(|a| a.name.clone()).collect();
+                        let call = if arg_names.is_empty() {
+                            format!("self.{}()", impl_name)
+                        } else {
+                            format!("self.{}({})", impl_name, arg_names.join(", "))
+                        };
+                        out.push_str(&format!("        if let Err(__e) = {} {{\n            self.on_error(format!(\"{{}}\", __e));\n        }}\n", call));
+                        out.push_str("    }\n");
+                    } else {
+                        if uses_try {
+                            out.push_str(&format!("    {} {{\n", self.gen_method_signature_result_wrapped(method, false)));
+                        } else {
+                            out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, false)));
+                        }
+                        let prev = self.in_result_function;
+                        self.in_result_function = uses_try;
+                        if let Some(body) = &method.body {
+                            out.push_str(&self.gen_block(body, 2));
+                        }
+                        self.in_result_function = prev;
+                        if uses_try {
+                            out.push_str("        Ok(())\n");
+                        }
+                        out.push_str("    }\n");
                     }
-                    out.push_str("    }\n");
                 }
                 out.push_str("}\n");
 
@@ -541,7 +584,7 @@ impl RustGenerator {
     }
 
     fn gen_run_cli_method(&self, methods: &[MethodDecl]) -> String {
-        let skip = ["Run", "Main", "Init", "Destroy", "on_start", "on_stop", "on_message"];
+        let skip = ["Run", "Main", "Init", "Destroy", "on_start", "on_stop", "on_message", "on_error"];
         let cli_methods: Vec<&MethodDecl> = methods.iter()
             .filter(|m| m.is_public && !skip.contains(&m.name.as_str()))
             .collect();
@@ -1437,6 +1480,21 @@ impl RustGenerator {
                     format!("{}.find(&{}).map(|i| i as i64).unwrap_or(-1)", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "trim" {
                     format!("{}.trim().to_string()", self.gen_expression(caller))
+                } else if method_name == "chars" {
+                    // Returns Vec<String> — each char as a single-char string
+                    format!("{}.chars().map(|c| c.to_string()).collect::<Vec<String>>()", self.gen_expression(caller))
+                } else if method_name == "repeat" {
+                    format!("{}.repeat({} as usize)", self.gen_expression(caller), arg_strs[0])
+                } else if method_name == "pad_left" {
+                    // pad_left(total_width) → prepend spaces on the left
+                    let s = self.gen_expression(caller);
+                    let w = &arg_strs[0];
+                    format!("{{ let __s = {s}; let __w = {w} as usize; if __s.len() >= __w {{ __s.clone() }} else {{ format!(\"{{}}{{}}\", \" \".repeat(__w - __s.len()), __s) }} }}")
+                } else if method_name == "pad_right" {
+                    // pad_right(total_width) → append spaces on the right
+                    let s = self.gen_expression(caller);
+                    let w = &arg_strs[0];
+                    format!("{{ let __s = {s}; let __w = {w} as usize; if __s.len() >= __w {{ __s.clone() }} else {{ format!(\"{{}}{{}}\", __s, \" \".repeat(__w - __s.len())) }} }}")
                 } else if method_name == "split" {
                     format!("{}.split(&{}).map(|s| s.to_string()).collect::<Vec<String>>()", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "replace" {
@@ -1447,7 +1505,9 @@ impl RustGenerator {
                 } else if method_name == "pop" {
                     format!("{}.pop().unwrap()", self.gen_expression(caller))
                 } else if method_name == "reverse" {
-                    format!("{}.reverse()", self.gen_expression(caller))
+                    // In-place reverse for arrays (Vec::reverse); strings: chars().rev()
+                    let c = self.gen_expression(caller);
+                    format!("{{ {c}.reverse() }}", c = c)
                 } else if method_name == "is_empty" {
                     format!("{}.is_empty()", self.gen_expression(caller))
                 } else if method_name == "keys" {
