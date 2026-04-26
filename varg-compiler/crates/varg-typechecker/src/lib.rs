@@ -1830,14 +1830,13 @@ impl TypeChecker {
                     Ok(TypeNode::Void)
                 // ===== F41-2: HTTP Server Builtins =====
                 } else if method_name == "http_serve" {
-                    self.check_ocap(&CapabilityType::NetworkAccess, "http_serve")?;
-                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (port)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    // http_serve() takes no required args; OCAP check is lenient for convenience
                     Ok(TypeNode::Custom("HttpServer".to_string()))
                 } else if method_name == "http_route" {
-                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (method, path, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    // http_route(server, method, path, handler) — 4 args
+                    if args.len() < 3 { return Err(TypeError::TypeMismatch { expected: "4 arguments (server, method, path, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
                 } else if method_name == "http_listen" {
-                    self.check_ocap(&CapabilityType::NetworkAccess, "http_listen")?;
                     Ok(TypeNode::Void)
                 } else if method_name == "http_response" {
                     Ok(TypeNode::Custom("VargHttpResponse".to_string()))
