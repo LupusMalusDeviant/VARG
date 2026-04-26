@@ -2342,6 +2342,14 @@ impl TypeChecker {
                 if caller_ty == TypeNode::Tensor && *property_name == "data" {
                     return Ok(TypeNode::Array(Box::new(TypeNode::Custom("f32".to_string()))));
                 }
+                // VargRequest fields: body, method, path, headers, query_params
+                if caller_ty == TypeNode::Custom("VargRequest".to_string()) {
+                    return Ok(match property_name.as_str() {
+                        "body" | "method" | "path" => TypeNode::String,
+                        "headers" | "query_params" => TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)),
+                        _ => TypeNode::Custom("Dynamic".to_string()),
+                    });
+                }
                 // Plan 30: Struct/Agent field lookup
                 if let TypeNode::Custom(ref type_name) = caller_ty {
                     // Check struct fields
