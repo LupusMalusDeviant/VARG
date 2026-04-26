@@ -1291,6 +1291,7 @@ impl RustGenerator {
                     BinaryOperator::GtEq => ">=",
                     BinaryOperator::And => "&&",
                     BinaryOperator::Or => "||",
+                    BinaryOperator::BitOr => "|",
                     BinaryOperator::CosineSim => unreachable!(),
                 };
                 format!("{} {} {}", self.gen_expression(left), op, self.gen_expression(right))
@@ -1307,6 +1308,16 @@ impl RustGenerator {
             },
             Expression::MethodCall { caller, method_name, args } => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.gen_expression(a)).collect();
+                // Bare function calls are parsed as MethodCall{caller:self, method:fn_name}.
+                // Resolve known standalone functions FIRST so their names cannot be shadowed
+                // by built-in method handlers (e.g. a user fn named `add` must not become
+                // HashSet::insert, and `diff` must not become self.diff()).
+                if matches!(**caller, Expression::Identifier(ref n) if n == "self")
+                    && self.known_functions.contains(method_name.as_str())
+                {
+                    let cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    return format!("{}({})", method_name, cloned_args.join(", "));
+                }
                 if method_name == "encrypt" {
                     format!("__varg_encrypt(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "decrypt" {
@@ -1413,9 +1424,12 @@ impl RustGenerator {
                 } else if method_name == "to_string" {
                     format!("{}.to_string()", self.gen_expression(caller))
                 } else if method_name == "parse_int" {
-                    format!("{}.parse::<i64>().unwrap_or(0)", self.gen_expression(caller))
+                    // When called as free function parse_int(x), parser emits MethodCall{caller:self, args:[x]}
+                    let target = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    format!("{}.parse::<i64>().unwrap_or(0)", target)
                 } else if method_name == "parse_float" {
-                    format!("{}.parse::<f64>().unwrap_or(0.0)", self.gen_expression(caller))
+                    let target = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    format!("{}.parse::<f64>().unwrap_or(0.0)", target)
                 } else if method_name == "abs" {
                     format!("{}.abs()", self.gen_expression(caller))
                 } else if method_name == "sort" {
@@ -1503,9 +1517,11 @@ impl RustGenerator {
                     format!("varg_runtime::config::__varg_config_load_cascade(&{})", arg_strs[0])
                 // ===== Wave 29: Readline / REPL =====
                 } else if method_name == "readline_new" {
-                    "varg_runtime::readline::__varg_readline_new()".to_string()
+                    "varg_runtime::readline::__varg_readline_new().unwrap()".to_string()
                 } else if method_name == "readline_read" {
-                    format!("varg_runtime::readline::__varg_readline_read(&{}, &{})", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::readline::__varg_readline_read(&{}, &{}).unwrap_or_default()", arg_strs[0], arg_strs[1])
+                } else if method_name == "set_env" {
+                    format!("{{ std::env::set_var({}, {}) }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "readline_add_history" {
                     format!("varg_runtime::readline::__varg_readline_add_history(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "readline_load_history" {
@@ -2036,6 +2052,12 @@ impl RustGenerator {
                 }
             },
             Expression::PropertyAccess { caller, property_name } => {
+                // Enum variant access: Color.Red → Color::Red in Rust
+                if let Expression::Identifier(ref name) = **caller {
+                    if self.known_enums.contains_key(name) {
+                        return format!("{}::{}", name, property_name);
+                    }
+                }
                 format!("{}.{}", self.gen_expression(caller), property_name)
             },
             Expression::IndexAccess { caller, index } => {
@@ -7752,5 +7774,101 @@ mod tests {
         let code = RustGenerator::new().generate(&program);
         assert!(code.contains("Process_checkpoint"), "checkpoint helper: {code}");
         assert!(code.contains("__varg_checkpoint_open"), "checkpoint open: {code}");
+    }
+
+    // ===== Regression: Issue #6 — user-defined fn named `add` must not become HashSet::insert =====
+    #[test]
+    fn test_codegen_user_fn_add_not_rewritten_as_hashset_insert() {
+        let add_fn = Item::Function(FunctionDef {
+            name: "add".to_string(),
+            is_public: false,
+            params: vec![
+                FieldDecl { name: "a".to_string(), ty: TypeNode::Int, default_value: None },
+                FieldDecl { name: "b".to_string(), ty: TypeNode::Int, default_value: None },
+            ],
+            return_ty: Some(TypeNode::Int),
+            body: Block { statements: vec![
+                Statement::Return(Some(Expression::BinaryOp {
+                    left: Box::new(Expression::Identifier("a".to_string())),
+                    operator: BinaryOperator::Add,
+                    right: Box::new(Expression::Identifier("b".to_string())),
+                })),
+            ]},
+        });
+        // Call add(3, 4) as a bare function — parser emits MethodCall{caller:self, method:"add"}
+        let main_fn = Item::Function(FunctionDef {
+            name: "main".to_string(),
+            is_public: false,
+            params: vec![],
+            return_ty: None,
+            body: Block { statements: vec![
+                Statement::Let {
+                    name: "sum".to_string(), ty: None,
+                    value: Expression::MethodCall {
+                        caller: Box::new(Expression::Identifier("self".to_string())),
+                        method_name: "add".to_string(),
+                        args: vec![Expression::Int(3), Expression::Int(4)],
+                    },
+                },
+            ]},
+        });
+        let program = Program { no_std: false, docs: std::collections::HashMap::new(), items: vec![add_fn, main_fn] };
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("add(3, 4)"), "should emit direct fn call: {code}");
+        assert!(!code.contains("insert"), "must NOT emit HashSet insert: {code}");
+    }
+
+    // ===== Regression: Issue #7 — enum variant access Color.Red → Color::Red =====
+    #[test]
+    fn test_codegen_enum_variant_access_uses_double_colon() {
+        let color_enum = Item::Enum(EnumDef {
+            name: "Color".to_string(),
+            is_public: false,
+            variants: vec![
+                EnumVariant { name: "Red".to_string(), fields: vec![] },
+                EnumVariant { name: "Green".to_string(), fields: vec![] },
+            ],
+        });
+        // Expression: Color.Red  →  PropertyAccess{caller: Identifier("Color"), property: "Red"}
+        let fn_item = Item::Function(FunctionDef {
+            name: "get_red".to_string(),
+            is_public: false,
+            params: vec![],
+            return_ty: Some(TypeNode::Custom("Color".to_string())),
+            body: Block { statements: vec![
+                Statement::Return(Some(Expression::PropertyAccess {
+                    caller: Box::new(Expression::Identifier("Color".to_string())),
+                    property_name: "Red".to_string(),
+                })),
+            ]},
+        });
+        let program = Program { no_std: false, docs: std::collections::HashMap::new(), items: vec![color_enum, fn_item] };
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("Color::Red"), "enum variant must use :: not .: {code}");
+        assert!(!code.contains("Color.Red"), "must NOT emit dot access for enum: {code}");
+    }
+
+    // ===== Regression: Issue #8 — BitOr operator emits | =====
+    #[test]
+    fn test_codegen_bitor_operator_emits_pipe() {
+        let fn_item = Item::Function(FunctionDef {
+            name: "bitmask".to_string(),
+            is_public: false,
+            params: vec![
+                FieldDecl { name: "a".to_string(), ty: TypeNode::Int, default_value: None },
+                FieldDecl { name: "b".to_string(), ty: TypeNode::Int, default_value: None },
+            ],
+            return_ty: Some(TypeNode::Int),
+            body: Block { statements: vec![
+                Statement::Return(Some(Expression::BinaryOp {
+                    left: Box::new(Expression::Identifier("a".to_string())),
+                    operator: BinaryOperator::BitOr,
+                    right: Box::new(Expression::Identifier("b".to_string())),
+                })),
+            ]},
+        });
+        let program = Program { no_std: false, docs: std::collections::HashMap::new(), items: vec![fn_item] };
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("a | b"), "BitOr must emit |: {code}");
     }
 }

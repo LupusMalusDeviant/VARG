@@ -1857,6 +1857,7 @@ impl Parser {
             Token::DotDot | Token::DotDotEquals        => Some((2, 3)),  // Plan 37: range (very low)
             Token::QuestionMark                        => Some((3, 2)),  // Wave 19: ternary (very low, right-assoc)
             Token::Or                                  => Some((3, 4)),  // ||
+            Token::BitOr                               => Some((4, 5)),  // |  (bitwise)
             Token::And                                 => Some((5, 6)),  // &&
             Token::Equals | Token::NotEquals           => Some((7, 8)),  // == !=
             Token::LessThan | Token::GreaterThan |
@@ -2162,6 +2163,7 @@ impl Parser {
                     Token::GreaterOrEqual => BinaryOperator::GtEq,
                     Token::And => BinaryOperator::And,
                     Token::Or => BinaryOperator::Or,
+                    Token::BitOr => BinaryOperator::BitOr,
                     Token::Tilde => BinaryOperator::CosineSim,
                     _ => unreachable!(),
                 };
@@ -7012,5 +7014,34 @@ mod tests {
         let mut parser = Parser::new(source);
         let result = parser.parse_program();
         assert!(result.is_ok(), "while false must parse: {:?}", result.err());
+    }
+
+    // ===== Regression: Issue #8 — BitOr | operator must parse as BinaryOp =====
+    #[test]
+    fn test_parse_bitor_in_assignment() {
+        let source = r#"
+            fn safe_eq(int a, int b) -> int {
+                var diff = 0;
+                diff = diff | a;
+                return diff;
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "BitOr expression must parse: {:?}", result.err());
+        let program = result.unwrap();
+        if let Item::Function(f) = &program.items[0] {
+            // Second statement: diff = diff | a
+            if let Statement::Assign { value, .. } = &f.body.statements[1] {
+                assert!(
+                    matches!(value, Expression::BinaryOp { operator: BinaryOperator::BitOr, .. }),
+                    "RHS must be BitOr BinaryOp, got: {:?}", value
+                );
+            } else {
+                panic!("Expected assignment statement");
+            }
+        } else {
+            panic!("Expected function item");
+        }
     }
 }

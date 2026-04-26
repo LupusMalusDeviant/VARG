@@ -201,6 +201,8 @@ pub enum Token {
 
     #[token("->")] Arrow,
     #[token("|>")] Pipe,
+    // Bitwise OR — matched only when not followed by > (pipe) or | (logical or)
+    #[token("|")] BitOr,
 
     // ---- Plan 37: Range Expressions ----
     #[token("..=")] DotDotEquals,

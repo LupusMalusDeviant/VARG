@@ -320,7 +320,7 @@ pub struct LinqQuery {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum BinaryOperator {
-    Add, Sub, Mul, Div, Mod, Eq, NotEq, Lt, Gt, LtEq, GtEq, And, Or, CosineSim
+    Add, Sub, Mul, Div, Mod, Eq, NotEq, Lt, Gt, LtEq, GtEq, And, Or, BitOr, CosineSim
 }
 
 #[derive(Debug, PartialEq, Clone)]

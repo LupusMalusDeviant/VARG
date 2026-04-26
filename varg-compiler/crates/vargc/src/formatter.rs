@@ -597,6 +597,7 @@ impl VargFormatter {
             BinaryOperator::GtEq => ">=",
             BinaryOperator::And => "&&",
             BinaryOperator::Or => "||",
+            BinaryOperator::BitOr => "|",
             BinaryOperator::CosineSim => "~",
         }
     }

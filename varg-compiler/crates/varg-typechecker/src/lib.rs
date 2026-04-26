@@ -301,6 +301,7 @@ impl TypeChecker {
             // Wave 29: Readline / REPL
             "readline_new", "readline_read", "readline_add_history",
             "readline_load_history", "readline_save_history",
+            "set_env",
             // Wave 30: Human-in-the-Loop
             "await_approval", "await_input", "await_choice",
             // Wave 30: Rate Limiting
@@ -1038,6 +1039,9 @@ impl TypeChecker {
             Expression::Identifier(name) => {
                 if let Some(ty) = self.env.get(name) {
                     Ok(ty.clone())
+                } else if self.enum_defs.contains_key(name) {
+                    // Enum names are types, not variables — treat as Custom type reference
+                    Ok(TypeNode::Custom(name.clone()))
                 } else {
                     Err(self.undeclared_variable_error(name))
                 }
@@ -1256,6 +1260,12 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::String)
+                } else if method_name == "set_env" {
+                    if args.len() != 2 {
+                        return Err(TypeError::TypeMismatch { expected: "2 arguments (key, value)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    self.check_ocap(&CapabilityType::SystemAccess, "set_env")?;
+                    Ok(TypeNode::Void)
                 // ===== Wave 13: Stdlib Expansion — fs =====
                 // ===== Wave 14: Fallible builtins return Result<T, String> =====
                 } else if method_name == "fs_read" {
@@ -8426,5 +8436,51 @@ mod tests {
         ])).unwrap();
         // channel_new returns a ChannelHandle (Custom type)
         assert!(matches!(ty, TypeNode::Custom(_)), "channel_new must resolve to a custom handle type");
+    }
+
+    // ===== Regression: Issue #7 — enum name must not produce UndeclaredVariable =====
+    #[test]
+    fn test_tc_enum_identifier_resolves_to_custom_type() {
+        // Color.Red: infer_expression_type(Identifier("Color")) must not error
+        let mut c = TypeChecker::new();
+        c.enum_defs.insert("Color".to_string(), vec![
+            EnumVariant { name: "Red".to_string(), fields: vec![] },
+        ]);
+        let ty = c.infer_expression_type(&Expression::Identifier("Color".to_string())).unwrap();
+        assert!(matches!(ty, TypeNode::Custom(ref n) if n == "Color"),
+            "enum name must resolve to Custom(\"Color\"), got {:?}", ty);
+    }
+
+    #[test]
+    fn test_tc_enum_declaration_does_not_error() {
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Enum(EnumDef {
+                    name: "Color".to_string(),
+                    is_public: false,
+                    variants: vec![
+                        EnumVariant { name: "Red".to_string(), fields: vec![] },
+                        EnumVariant { name: "Green".to_string(), fields: vec![] },
+                        EnumVariant { name: "Blue".to_string(), fields: vec![] },
+                    ],
+                }),
+                Item::Function(FunctionDef {
+                    name: "get_red".to_string(),
+                    is_public: false,
+                    params: vec![],
+                    return_ty: Some(TypeNode::Custom("Color".to_string())),
+                    body: Block { statements: vec![
+                        Statement::Return(Some(Expression::PropertyAccess {
+                            caller: Box::new(Expression::Identifier("Color".to_string())),
+                            property_name: "Red".to_string(),
+                        })),
+                    ]},
+                }),
+            ],
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_ok(), "enum declaration + variant access must typecheck: {:?}", result);
     }
 }
