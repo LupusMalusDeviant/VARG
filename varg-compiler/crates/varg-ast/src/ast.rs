@@ -292,6 +292,13 @@ pub enum Expression {
         variant_name: String,    // "Circle"
         args: Vec<Expression>,
     },
+
+    // Named/keyword arguments: add(b: 4, a: 3) — used when ≥1 arg has a label
+    NamedCall {
+        caller: Box<Expression>,     // Identifier("self") for bare calls
+        method_name: String,
+        named_args: Vec<(String, Expression)>, // (param_name, value)
+    },
 }
 
 // Plan 35: Parts of an interpolated string

@@ -74,6 +74,40 @@ impl Parser {
         self.tokens.get(self.pos).map(|(tok, _)| tok)
     }
 
+    /// Peek N tokens ahead (0 = current/peek, 1 = next, ...)
+    fn peek_at(&self, offset: usize) -> Option<&Token> {
+        self.tokens.get(self.pos + offset).map(|(tok, _)| tok)
+    }
+
+    /// Named-arg detection: after the opening `(` has been consumed, check if
+    /// the first argument looks like `identifier :` (named arg).
+    /// Returns true only when the very first token after `(` is an Identifier
+    /// immediately followed by a Colon (not ColonColon).
+    fn is_named_arg_call(&self) -> bool {
+        matches!(self.peek_at(0), Some(Token::Identifier(_)))
+            && matches!(self.peek_at(1), Some(Token::Colon))
+    }
+
+    /// Parse a named-argument list `name: expr, name: expr, ...` until `)`.
+    /// The opening `(` must already have been consumed.
+    fn parse_named_args(&mut self) -> Result<Vec<(String, Expression)>, ParseError> {
+        let mut named_args = Vec::new();
+        if self.peek() != Some(&Token::RParen) {
+            loop {
+                let name = self.parse_identifier()?;
+                self.consume(Token::Colon)?;
+                let value = self.parse_expression()?;
+                named_args.push((name, value));
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(named_args)
+    }
+
     /// Plan 47: Recursively resolve Custom("T") → TypeVar("T") for declared type params
     fn resolve_type_vars(ty: &TypeNode, type_params: &[String]) -> TypeNode {
         match ty {
@@ -2192,23 +2226,33 @@ impl Parser {
                     let prop = self.parse_identifier()?;
                     if let Some(Token::LParen) = self.peek() {
                         self.advance();
-                        let mut args = Vec::new();
-                        if self.peek() != Some(&Token::RParen) {
-                            loop {
-                                args.push(self.parse_expression()?);
-                                if self.peek() == Some(&Token::Comma) {
-                                    self.advance();
-                                } else {
-                                    break;
+                        if self.is_named_arg_call() {
+                            let named_args = self.parse_named_args()?;
+                            self.consume(Token::RParen)?;
+                            left = Expression::NamedCall {
+                                caller: Box::new(left),
+                                method_name: prop,
+                                named_args,
+                            };
+                        } else {
+                            let mut args = Vec::new();
+                            if self.peek() != Some(&Token::RParen) {
+                                loop {
+                                    args.push(self.parse_expression()?);
+                                    if self.peek() == Some(&Token::Comma) {
+                                        self.advance();
+                                    } else {
+                                        break;
+                                    }
                                 }
                             }
+                            self.consume(Token::RParen)?;
+                            left = Expression::MethodCall {
+                                caller: Box::new(left),
+                                method_name: prop,
+                                args,
+                            };
                         }
-                        self.consume(Token::RParen)?;
-                        left = Expression::MethodCall {
-                            caller: Box::new(left),
-                            method_name: prop,
-                            args,
-                        };
                     } else {
                         left = Expression::PropertyAccess {
                             caller: Box::new(left),
@@ -2227,32 +2271,43 @@ impl Parser {
                 },
                 Token::LParen => {
                     self.advance(); // consume LParen
-                    let mut args = Vec::new();
-                    if self.peek() != Some(&Token::RParen) {
-                        loop {
-                            args.push(self.parse_expression()?);
-                            if self.peek() == Some(&Token::Comma) {
-                                self.advance();
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    self.consume(Token::RParen)?;
                     if let Expression::Identifier(method_name) = left {
-                        // Wave 12: Bare enum variant construction — Ok(val), Err(e), Some(x)
-                        if method_name == "Ok" || method_name == "Err" || method_name == "Some" {
-                            left = Expression::EnumConstruct {
-                                enum_name: String::new(),
-                                variant_name: method_name,
-                                args,
-                            };
-                        } else {
-                            left = Expression::MethodCall {
+                        // Named-arg detection: peek for `ident :` pattern
+                        if self.is_named_arg_call() {
+                            let named_args = self.parse_named_args()?;
+                            self.consume(Token::RParen)?;
+                            left = Expression::NamedCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name,
-                                args,
+                                named_args,
                             };
+                        } else {
+                            let mut args = Vec::new();
+                            if self.peek() != Some(&Token::RParen) {
+                                loop {
+                                    args.push(self.parse_expression()?);
+                                    if self.peek() == Some(&Token::Comma) {
+                                        self.advance();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.consume(Token::RParen)?;
+                            // Wave 12: Bare enum variant construction — Ok(val), Err(e), Some(x)
+                            if method_name == "Ok" || method_name == "Err" || method_name == "Some" {
+                                left = Expression::EnumConstruct {
+                                    enum_name: String::new(),
+                                    variant_name: method_name,
+                                    args,
+                                };
+                            } else {
+                                left = Expression::MethodCall {
+                                    caller: Box::new(Expression::Identifier("self".to_string())),
+                                    method_name,
+                                    args,
+                                };
+                            }
                         }
                     } else {
                         return Err(ParseError::UnexpectedToken { expected: "Identifier before call".to_string(), found: Some(Token::LParen), span: self.last_span() });
@@ -7014,6 +7069,83 @@ mod tests {
         let mut parser = Parser::new(source);
         let result = parser.parse_program();
         assert!(result.is_ok(), "while false must parse: {:?}", result.err());
+    }
+
+    // ===== Named/keyword argument calls =====
+
+    #[test]
+    fn test_parse_named_argument_call() {
+        let source = r#"
+            fn add(int a, int b) -> int { return a + b; }
+            fn main() {
+                var result = add(b: 4, a: 3);
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "named arg call must parse: {:?}", result.err());
+        let program = result.unwrap();
+        if let Item::Function(main_fn) = &program.items[1] {
+            if let Statement::Let { value, .. } = &main_fn.body.statements[0] {
+                if let Expression::NamedCall { method_name, named_args, .. } = value {
+                    assert_eq!(method_name, "add");
+                    assert_eq!(named_args.len(), 2);
+                    assert_eq!(named_args[0].0, "b");
+                    assert_eq!(named_args[1].0, "a");
+                } else {
+                    panic!("Expected NamedCall expression, got: {:?}", value);
+                }
+            } else {
+                panic!("Expected let statement");
+            }
+        } else {
+            panic!("Expected function item");
+        }
+    }
+
+    #[test]
+    fn test_parse_named_arg_single() {
+        let source = r#"
+            fn greet(string name) -> string { return name; }
+            fn main() {
+                var s = greet(name: "Alice");
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "single named arg must parse: {:?}", result.err());
+        let program = result.unwrap();
+        if let Item::Function(main_fn) = &program.items[1] {
+            if let Statement::Let { value, .. } = &main_fn.body.statements[0] {
+                assert!(
+                    matches!(value, Expression::NamedCall { .. }),
+                    "Expected NamedCall, got: {:?}", value
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_positional_call_unchanged() {
+        // Positional calls must still produce MethodCall, not NamedCall
+        let source = r#"
+            fn add(int a, int b) -> int { return a + b; }
+            fn main() {
+                var result = add(3, 4);
+            }
+        "#;
+        let mut parser = Parser::new(source);
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "positional call must parse: {:?}", result.err());
+        let program = result.unwrap();
+        if let Item::Function(main_fn) = &program.items[1] {
+            if let Statement::Let { value, .. } = &main_fn.body.statements[0] {
+                assert!(
+                    matches!(value, Expression::MethodCall { .. }),
+                    "positional call must stay MethodCall, got: {:?}", value
+                );
+            }
+        }
     }
 
     // ===== Regression: Issue #8 — BitOr | operator must parse as BinaryOp =====

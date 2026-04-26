@@ -2398,6 +2398,19 @@ impl TypeChecker {
                 Ok(TypeNode::Custom(type_name.clone()))
             },
             // Wave 12: Enum variant construction — Shape::Circle(5) or Ok(value)
+            Expression::NamedCall { method_name, named_args, .. } => {
+                // Type-check all argument expressions
+                for (_, expr) in named_args {
+                    self.infer_expression_type(expr)?;
+                }
+                // Return type from known function signatures if available
+                if let Some(sig) = self.known_functions.get(method_name.as_str()) {
+                    Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void))
+                } else {
+                    Ok(TypeNode::Custom("Dynamic".to_string()))
+                }
+            },
+
             Expression::EnumConstruct { enum_name, variant_name, args } => {
                 // Type-check all arguments
                 for arg in args {

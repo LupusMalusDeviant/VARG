@@ -2297,7 +2297,6 @@ dependencies = [
  "base64",
  "flate2",
  "log",
- "native-tls",
  "once_cell",
  "rustls",
  "rustls-pki-types",
@@ -2419,7 +2418,6 @@ dependencies = [
  "sha2",
  "tokio",
  "tungstenite",
- "ureq",
  "varg-os-types",
 ]
 
@@ -2435,7 +2433,9 @@ name = "vargc"
 version = "0.12.0"
 dependencies = [
  "codespan-reporting",
+ "dirs",
  "serde_json",
+ "ureq",
  "varg-ast",
  "varg-codegen",
  "varg-lexer",

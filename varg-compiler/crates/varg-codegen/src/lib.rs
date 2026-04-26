@@ -72,6 +72,9 @@ fn expr_contains_try_propagate(expr: &Expression) -> bool {
         Expression::MethodCall { caller, args, .. } => {
             expr_contains_try_propagate(caller) || args.iter().any(expr_contains_try_propagate)
         }
+        Expression::NamedCall { caller, named_args, .. } => {
+            expr_contains_try_propagate(caller) || named_args.iter().any(|(_, v)| expr_contains_try_propagate(v))
+        }
         Expression::IndexAccess { caller, index } => {
             expr_contains_try_propagate(caller) || expr_contains_try_propagate(index)
         }
@@ -121,6 +124,8 @@ pub struct RustGenerator {
     map_vars: HashSet<String>,
     /// Plan 40: Default parameter values per function — fn_name → ordered list of Option<Expression>
     known_function_defaults: HashMap<String, Vec<Option<Expression>>>,
+    /// Named-arg support: fn_name → ordered param declarations (name + type + default)
+    known_function_params: HashMap<String, Vec<FieldDecl>>,
 }
 
 impl RustGenerator {
@@ -141,6 +146,7 @@ impl RustGenerator {
             contract_typed_fields: HashSet::new(),
             map_vars: HashSet::new(),
             known_function_defaults: HashMap::new(),
+            known_function_params: HashMap::new(),
         }
     }
 
@@ -170,6 +176,8 @@ impl RustGenerator {
             // Plan 33: Collect standalone function names + Plan 40: defaults
             if let Item::Function(f) = item {
                 self.known_functions.insert(f.name.clone());
+                // Named-arg support: store full param list for reordering
+                self.known_function_params.insert(f.name.clone(), f.params.clone());
                 let defaults: Vec<Option<Expression>> = f.params.iter()
                     .map(|p| p.default_value.clone())
                     .collect();
@@ -798,6 +806,7 @@ impl RustGenerator {
             Expression::Identifier(name) => { *counts.entry(name.clone()).or_insert(0) += 1; }
             Expression::BinaryOp { left, right, .. } => { self.count_usages_in_expr(left, counts); self.count_usages_in_expr(right, counts); }
             Expression::MethodCall { caller, args, .. } => { self.count_usages_in_expr(caller, counts); for a in args { self.count_usages_in_expr(a, counts); } }
+            Expression::NamedCall { caller, named_args, .. } => { self.count_usages_in_expr(caller, counts); for (_, v) in named_args { self.count_usages_in_expr(v, counts); } }
             Expression::PropertyAccess { caller, .. } => self.count_usages_in_expr(caller, counts),
             Expression::IndexAccess { caller, index } => { self.count_usages_in_expr(caller, counts); self.count_usages_in_expr(index, counts); }
             Expression::ArrayLiteral(elems) | Expression::TupleLiteral(elems) => { for e in elems { self.count_usages_in_expr(e, counts); } }
@@ -2308,6 +2317,45 @@ impl RustGenerator {
                             let arg_strs: Vec<String> = args.iter().map(|a| self.gen_expression(a)).collect();
                             format!("{}::{}({})", enum_name, variant_name, arg_strs.join(", "))
                         }
+                    }
+                }
+            },
+
+            // Named/keyword argument calls: reorder to match declared param order
+            Expression::NamedCall { caller, method_name, named_args } => {
+                // Build a map from arg name → expression for quick lookup
+                let named_map: HashMap<&str, &Expression> = named_args.iter()
+                    .map(|(k, v)| (k.as_str(), v))
+                    .collect();
+
+                // Try to reorder based on known function signature
+                if let Some(params) = self.known_function_params.get(method_name.as_str()).cloned() {
+                    let ordered_args: Vec<String> = params.iter()
+                        .map(|p| {
+                            if let Some(expr) = named_map.get(p.name.as_str()) {
+                                self.gen_cloned_arg(expr)
+                            } else if let Some(ref default) = p.default_value {
+                                self.gen_expression(default)
+                            } else {
+                                format!("/* missing arg {} */", p.name)
+                            }
+                        })
+                        .collect();
+                    // Bare (self.method) vs dot (obj.method) dispatch
+                    if matches!(**caller, Expression::Identifier(ref n) if n == "self") {
+                        format!("{}({})", method_name, ordered_args.join(", "))
+                    } else {
+                        format!("{}.{}({})", self.gen_expression(caller), method_name, ordered_args.join(", "))
+                    }
+                } else {
+                    // Unknown function (builtin or forward-declared): pass in given order
+                    let arg_strs: Vec<String> = named_args.iter()
+                        .map(|(_, v)| self.gen_cloned_arg(v))
+                        .collect();
+                    if matches!(**caller, Expression::Identifier(ref n) if n == "self") {
+                        format!("{}({})", method_name, arg_strs.join(", "))
+                    } else {
+                        format!("{}.{}({})", self.gen_expression(caller), method_name, arg_strs.join(", "))
                     }
                 }
             },
@@ -7888,6 +7936,106 @@ mod tests {
         let code = RustGenerator::new().generate(&program);
         assert!(code.contains("Color::Red"), "enum variant must use :: not .: {code}");
         assert!(!code.contains("Color.Red"), "must NOT emit dot access for enum: {code}");
+    }
+
+    // ===== Named/keyword argument codegen =====
+
+    #[test]
+    fn test_codegen_named_args_reordered_to_param_order() {
+        // add(b: 4, a: 3) should generate add(3, 4) — a before b per declaration
+        let fn_def = Item::Function(FunctionDef {
+            name: "add".to_string(),
+            is_public: false,
+            params: vec![
+                FieldDecl { name: "a".to_string(), ty: TypeNode::Int, default_value: None },
+                FieldDecl { name: "b".to_string(), ty: TypeNode::Int, default_value: None },
+            ],
+            return_ty: Some(TypeNode::Int),
+            body: Block { statements: vec![
+                Statement::Return(Some(Expression::BinaryOp {
+                    left: Box::new(Expression::Identifier("a".to_string())),
+                    operator: BinaryOperator::Add,
+                    right: Box::new(Expression::Identifier("b".to_string())),
+                })),
+            ]},
+        });
+        let main_fn = Item::Function(FunctionDef {
+            name: "main".to_string(),
+            is_public: true,
+            params: vec![],
+            return_ty: None,
+            body: Block { statements: vec![
+                Statement::Let {
+                    name: "result".to_string(),
+                    ty: None,
+                    value: Expression::NamedCall {
+                        caller: Box::new(Expression::Identifier("self".to_string())),
+                        method_name: "add".to_string(),
+                        named_args: vec![
+                            ("b".to_string(), Expression::Int(4)),
+                            ("a".to_string(), Expression::Int(3)),
+                        ],
+                    },
+                },
+            ]},
+        });
+        let program = Program {
+            no_std: false,
+            docs: std::collections::HashMap::new(),
+            items: vec![fn_def, main_fn],
+        };
+        let code = RustGenerator::new().generate(&program);
+        // Must be add(3, 4) — a=3 comes first per declaration order
+        assert!(code.contains("add(3, 4)"), "named args must be reordered to param order: {code}");
+        assert!(!code.contains("add(4, 3)"), "wrong order emitted: {code}");
+    }
+
+    #[test]
+    fn test_codegen_named_args_same_order_is_noop() {
+        // add(a: 10, b: 20) — same order as declaration, should just work
+        let fn_def = Item::Function(FunctionDef {
+            name: "mul".to_string(),
+            is_public: false,
+            params: vec![
+                FieldDecl { name: "a".to_string(), ty: TypeNode::Int, default_value: None },
+                FieldDecl { name: "b".to_string(), ty: TypeNode::Int, default_value: None },
+            ],
+            return_ty: Some(TypeNode::Int),
+            body: Block { statements: vec![
+                Statement::Return(Some(Expression::BinaryOp {
+                    left: Box::new(Expression::Identifier("a".to_string())),
+                    operator: BinaryOperator::Mul,
+                    right: Box::new(Expression::Identifier("b".to_string())),
+                })),
+            ]},
+        });
+        let main_fn = Item::Function(FunctionDef {
+            name: "main".to_string(),
+            is_public: true,
+            params: vec![],
+            return_ty: None,
+            body: Block { statements: vec![
+                Statement::Let {
+                    name: "r".to_string(),
+                    ty: None,
+                    value: Expression::NamedCall {
+                        caller: Box::new(Expression::Identifier("self".to_string())),
+                        method_name: "mul".to_string(),
+                        named_args: vec![
+                            ("a".to_string(), Expression::Int(10)),
+                            ("b".to_string(), Expression::Int(20)),
+                        ],
+                    },
+                },
+            ]},
+        });
+        let program = Program {
+            no_std: false,
+            docs: std::collections::HashMap::new(),
+            items: vec![fn_def, main_fn],
+        };
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("mul(10, 20)"), "in-order named args must emit correctly: {code}");
     }
 
     // ===== Regression: Issue #8 — BitOr operator emits | =====

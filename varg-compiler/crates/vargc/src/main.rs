@@ -5,6 +5,234 @@ use std::process::{Command, exit};
 
 mod formatter;
 
+// ── Package registry ───────────────────────────────────────────────────────────
+
+/// Fallback registry embedded in the binary. Used when the network is unavailable.
+const EMBEDDED_REGISTRY: &str = r#"{
+  "packages": [
+    {
+      "name": "varg-http-utils",
+      "version": "0.1.0",
+      "description": "HTTP utility functions for Varg agents",
+      "url": "https://raw.githubusercontent.com/LupusMalusDeviant/VARG/main/packages/http_utils.varg",
+      "checksum": ""
+    },
+    {
+      "name": "varg-json-tools",
+      "version": "0.1.0",
+      "description": "JSON parsing and transformation helpers for Varg",
+      "url": "https://raw.githubusercontent.com/LupusMalusDeviant/VARG/main/packages/json_tools.varg",
+      "checksum": ""
+    },
+    {
+      "name": "varg-agent-kit",
+      "version": "0.1.0",
+      "description": "Reusable agent patterns: retry, circuit-breaker, fan-out",
+      "url": "https://raw.githubusercontent.com/LupusMalusDeviant/VARG/main/packages/agent_kit.varg",
+      "checksum": ""
+    }
+  ]
+}"#;
+
+const REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/LupusMalusDeviant/VARG/main/registry/packages.json";
+
+/// Returns the local package installation directory: ~/.varg/packages/
+fn packages_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".varg")
+        .join("packages")
+}
+
+/// Fetch the registry JSON.  Falls back to the embedded copy on any network error.
+fn fetch_registry() -> serde_json::Value {
+    match ureq::get(REGISTRY_URL).call() {
+        Ok(response) => {
+            match response.into_string() {
+                Ok(body) => {
+                    match serde_json::from_str(&body) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("Warning: registry JSON parse error ({}); using embedded fallback.", e);
+                            serde_json::from_str(EMBEDDED_REGISTRY).expect("embedded registry is valid JSON")
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not read registry response ({}); using embedded fallback.", e);
+                    serde_json::from_str(EMBEDDED_REGISTRY).expect("embedded registry is valid JSON")
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: could not reach registry ({}); using embedded fallback.", e);
+            serde_json::from_str(EMBEDDED_REGISTRY).expect("embedded registry is valid JSON")
+        }
+    }
+}
+
+/// `vargc search <query>` — filter packages by name/description
+fn cmd_search(query: &str) {
+    println!("Searching Varg package registry for \"{}\"...\n", query);
+    let registry = fetch_registry();
+    let packages = registry["packages"].as_array().cloned().unwrap_or_default();
+    let q = query.to_lowercase();
+    let matches: Vec<_> = packages.iter().filter(|p| {
+        let name = p["name"].as_str().unwrap_or("").to_lowercase();
+        let desc = p["description"].as_str().unwrap_or("").to_lowercase();
+        name.contains(&q) || desc.contains(&q)
+    }).collect();
+
+    if matches.is_empty() {
+        println!("No packages found matching \"{}\".", query);
+        println!("\nAvailable packages:");
+        for p in &packages {
+            println!("  {:<25} {} — {}",
+                p["name"].as_str().unwrap_or(""),
+                p["version"].as_str().unwrap_or(""),
+                p["description"].as_str().unwrap_or(""));
+        }
+    } else {
+        println!("{:<25} {:<10} {}", "NAME", "VERSION", "DESCRIPTION");
+        println!("{}", "-".repeat(70));
+        for p in matches {
+            println!("  {:<23} {:<10} {}",
+                p["name"].as_str().unwrap_or(""),
+                p["version"].as_str().unwrap_or(""),
+                p["description"].as_str().unwrap_or(""));
+        }
+    }
+}
+
+/// `vargc install <package>` — download a package to ~/.varg/packages/
+fn cmd_install(package_name: &str) {
+    println!("Fetching registry...");
+    let registry = fetch_registry();
+    let packages = registry["packages"].as_array().cloned().unwrap_or_default();
+
+    let pkg = packages.iter().find(|p| {
+        p["name"].as_str().unwrap_or("") == package_name
+    });
+
+    let pkg = match pkg {
+        Some(p) => p.clone(),
+        None => {
+            eprintln!("Error: package \"{}\" not found in registry.", package_name);
+            eprintln!("\nAvailable packages:");
+            for p in &packages {
+                eprintln!("  {} — {}", p["name"].as_str().unwrap_or(""), p["description"].as_str().unwrap_or(""));
+            }
+            exit(1);
+        }
+    };
+
+    let name    = pkg["name"].as_str().unwrap_or(package_name);
+    let version = pkg["version"].as_str().unwrap_or("0.1.0");
+    let url     = pkg["url"].as_str().unwrap_or("");
+
+    if url.is_empty() {
+        eprintln!("Error: package \"{}\" has no download URL.", name);
+        exit(1);
+    }
+
+    // Resolve destination: ~/.varg/packages/<name>/<version>/<name>.varg
+    // (underscores replace hyphens in the filename to be Varg-import-friendly)
+    let dest_dir = packages_dir().join(name).join(version);
+    let file_name = format!("{}.varg", name.replace('-', "_"));
+    let dest_file = dest_dir.join(&file_name);
+
+    fs::create_dir_all(&dest_dir).unwrap_or_else(|e| {
+        eprintln!("Error creating package directory {:?}: {}", dest_dir, e);
+        exit(1);
+    });
+
+    println!("Downloading {} {}...", name, version);
+    match ureq::get(url).call() {
+        Ok(response) => {
+            match response.into_string() {
+                Ok(content) => {
+                    fs::write(&dest_file, &content).unwrap_or_else(|e| {
+                        eprintln!("Error writing package file: {}", e);
+                        exit(1);
+                    });
+                    println!("Installed {} {} -> {}", name, version, dest_file.display());
+                }
+                Err(e) => {
+                    eprintln!("Error downloading package source: {}", e);
+                    exit(1);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error downloading {}: {}", url, e);
+            exit(1);
+        }
+    }
+}
+
+/// `vargc list` — list all locally installed packages
+fn cmd_list() {
+    let base = packages_dir();
+    if !base.exists() {
+        println!("No packages installed. Use `vargc install <package>` to install one.");
+        return;
+    }
+
+    println!("{:<25} {}", "PACKAGE", "VERSION");
+    println!("{}", "-".repeat(40));
+
+    let mut found = false;
+    if let Ok(pkg_entries) = fs::read_dir(&base) {
+        for pkg_entry in pkg_entries.flatten() {
+            let pkg_name = pkg_entry.file_name().to_string_lossy().to_string();
+            if let Ok(ver_entries) = fs::read_dir(pkg_entry.path()) {
+                for ver_entry in ver_entries.flatten() {
+                    let version = ver_entry.file_name().to_string_lossy().to_string();
+                    println!("  {:<23} {}", pkg_name, version);
+                    found = true;
+                }
+            }
+        }
+    }
+
+    if !found {
+        println!("No packages installed.");
+    }
+}
+
+// Maps varg_runtime module prefixes → Cargo feature names.
+// vargc scans the generated Rust source for these patterns and enables only
+// the features that are actually needed, keeping binaries small.
+const FEATURE_MAP: &[(&str, &str)] = &[
+    ("varg_runtime::net::",        "net"),
+    ("varg_runtime::sse_client::", "net"),
+    ("varg_runtime::server::",     "server"),
+    ("varg_runtime::db_sqlite::",  "db"),
+    ("varg_runtime::checkpoint::", "db"),
+    ("varg_runtime::llm::",        "llm"),
+    ("varg_runtime::multimodal::", "llm"),
+    ("varg_runtime::websocket::",  "ws"),
+    ("varg_runtime::pdf::",        "pdf"),
+    ("varg_runtime::readline::",   "readline"),
+    ("varg_runtime::crypto::",     "crypto"),
+    ("varg_runtime::encoding::",   "encoding"),
+];
+
+fn detect_runtime_features(rust_src: &str) -> String {
+    let mut features: Vec<&str> = vec![];
+    for (pattern, feature) in FEATURE_MAP {
+        if rust_src.contains(pattern) && !features.contains(feature) {
+            features.push(feature);
+        }
+    }
+    if features.is_empty() {
+        String::new()
+    } else {
+        format!(", features = {:?}", features)
+    }
+}
+
 use varg_parser::{Parser, ParseError};
 use varg_typechecker::TypeChecker;
 use varg_codegen::RustGenerator;
@@ -23,38 +251,80 @@ fn main() {
 
     let command = &args[1];
 
+    // ── Commands that don't need a file argument ───────────────────────────────
+
     // Wave 13: REPL doesn't need a file argument
     if command == "repl" {
         run_repl();
         return;
     }
 
-    if args.len() < 3 {
-        print_usage();
-        exit(1);
+    // Package manager: list installed packages
+    if command == "list" {
+        cmd_list();
+        return;
     }
 
-    let input_file = &args[2];
-
-    if !input_file.ends_with(".varg") {
-        eprintln!("Error: Input file must have a .varg extension.");
-        exit(1);
+    // Package manager: install or search need a second argument
+    if command == "install" || command == "search" {
+        if args.len() < 3 {
+            eprintln!("Usage: vargc {} <name>", command);
+            exit(1);
+        }
+        let arg = &args[2];
+        match command.as_str() {
+            "install" => cmd_install(arg),
+            "search"  => cmd_search(arg),
+            _ => unreachable!(),
+        }
+        return;
     }
+
+    // ── Commands that do need a .varg file ────────────────────────────────────
+
+    // Parse --target <triple> before the file name (for build / run).
+    // Scan all args after the command for --target and pick up the next token.
+    let wasm_target: Option<String> = {
+        let mut t = None;
+        let mut iter = args[2..].iter();
+        while let Some(a) = iter.next() {
+            if a == "--target" {
+                if let Some(triple) = iter.next() {
+                    t = Some(triple.clone());
+                }
+            }
+        }
+        t
+    };
+
+    // Find the .varg input file: the first argument that ends with ".varg".
+    let input_file_str: String = args[2..].iter()
+        .find(|a| a.ends_with(".varg"))
+        .cloned()
+        .unwrap_or_else(|| {
+            // No .varg file supplied — commands that need one print usage and exit.
+            if ["build", "run", "emit-rs", "watch", "fmt", "doc", "test"].contains(&command.as_str()) {
+                eprintln!("Error: no .varg file specified.");
+                print_usage();
+                exit(1);
+            }
+            String::new()
+        });
 
     // Wave 14: --debug flag for debug builds (faster compilation, debug symbols)
     let debug_mode = args.iter().any(|a| a == "--debug");
 
     match command.as_str() {
         "build" => {
-            compile_varg_file(input_file, false, debug_mode);
+            compile_varg_file(&input_file_str, false, debug_mode, wasm_target.as_deref());
         },
         "run" => {
-            compile_varg_file(input_file, true, debug_mode);
+            compile_varg_file(&input_file_str, true, debug_mode, wasm_target.as_deref());
         },
         "emit-rs" => {
             // The old behavior (just spit out the .rs file)
-            let (rust_source, _) = parse_and_generate(input_file);
-            let output_path = input_file.replace(".varg", ".rs");
+            let (rust_source, _) = parse_and_generate(&input_file_str);
+            let output_path = input_file_str.replace(".varg", ".rs");
             // Plan 44: Prepend #![allow(...)] and run rustfmt
             let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
             let formatted = format!("{}{}", allow_header, rust_source);
@@ -64,20 +334,20 @@ fn main() {
         }
         // Wave 13: Watch mode — recompile on .varg file changes
         "watch" => {
-            watch_varg_file(input_file);
+            watch_varg_file(&input_file_str);
         }
         // Wave 13: Format .varg source code
         "fmt" => {
-            format_varg_file(input_file);
+            format_varg_file(&input_file_str);
         }
         // Wave 13: Doc generation — output markdown docs from doc comments
         "doc" => {
-            generate_docs(input_file);
+            generate_docs(&input_file_str);
         }
         // Wave 15: Test runner — find @[Test] methods and run them
         "test" => {
             let coverage = args.iter().any(|a| a == "--coverage");
-            test_varg_file(input_file, debug_mode, coverage);
+            test_varg_file(&input_file_str, debug_mode, coverage);
         }
         _ => {
             eprintln!("Unknown command: {}", command);
@@ -90,15 +360,23 @@ fn main() {
 fn print_usage() {
     println!("Varg Compiler (vargc) v0.12.0");
     println!("Usage:");
-    println!("  vargc build <file.varg>   - Compiles down to a native executable in the current directory");
-    println!("  vargc run <file.varg>     - Compiles and immediately executes the script");
-    println!("  vargc emit-rs <file.varg> - Translates to Rust source code (.rs) but does not compile");
-    println!("  vargc watch <file.varg>   - Watch for changes and recompile automatically");
-    println!("  vargc fmt <file.varg>     - Format Varg source code");
-    println!("  vargc doc <file.varg>     - Generate markdown documentation from doc comments");
-    println!("  vargc test <file.varg>    - Run @[Test] methods in the file");
-    println!("  vargc test <file.varg> --coverage - Run tests with code coverage report");
-    println!("  vargc repl                - Interactive REPL (Read-Eval-Print Loop)");
+    println!("  vargc build [--target <triple>] <file.varg>   Build to a native (or WASM) executable");
+    println!("  vargc run   [--target <triple>] <file.varg>   Build and immediately execute");
+    println!("  vargc emit-rs <file.varg>                     Emit generated Rust source only");
+    println!("  vargc watch <file.varg>                       Watch for changes and recompile");
+    println!("  vargc fmt <file.varg>                         Format Varg source code");
+    println!("  vargc doc <file.varg>                         Generate markdown docs");
+    println!("  vargc test [--coverage] <file.varg>           Run @[Test] methods");
+    println!("  vargc repl                                    Interactive REPL");
+    println!();
+    println!("Package manager:");
+    println!("  vargc install <package>   Install a package from the registry");
+    println!("  vargc search  <query>     Search the package registry");
+    println!("  vargc list                List all locally installed packages");
+    println!();
+    println!("WASM example:");
+    println!("  vargc build --target wasm32-wasip1 hello.varg");
+    println!("  wasmtime hello.wasm");
 }
 
 /// Wave 13: Interactive REPL — parse, typecheck, and show generated Rust for each line
@@ -282,7 +560,7 @@ fn watch_varg_file(input_file: &str) {
     println!("[watch] Press Ctrl+C to stop.");
 
     // Initial compile
-    compile_varg_file(input_file, false, false);
+    compile_varg_file(input_file, false, false, None);
 
     let mut last_modified = get_latest_varg_mtime(dir);
 
@@ -291,7 +569,7 @@ fn watch_varg_file(input_file: &str) {
         let current = get_latest_varg_mtime(dir);
         if current > last_modified {
             println!("\n[watch] Change detected, recompiling...");
-            compile_varg_file(input_file, false, false);
+            compile_varg_file(input_file, false, false, None);
             last_modified = current;
         }
     }
@@ -613,8 +891,10 @@ fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mu
 
 }
 
-fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool) {
+fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, wasm_target: Option<&str>) {
     let varg_name = Path::new(input_path).file_stem().unwrap().to_str().unwrap();
+
+    let is_wasm = wasm_target.map(|t| t.starts_with("wasm")).unwrap_or(false);
     
     println!("-> Transpiling {}...", input_path);
     let (mut final_rust_source, ast) = parse_and_generate(input_path);
@@ -904,22 +1184,42 @@ fn {handler_name}(body: String) -> String {{
         }
     }
 
+    // Detect which varg-runtime features are actually used and emit a minimal dep.
+    // For WASM targets we force the "wasm-safe" feature and drop all heavy features.
+    let runtime_features = if is_wasm {
+        ", features = [\"wasm-safe\"], default-features = false".to_string()
+    } else {
+        detect_runtime_features(&final_rust_source)
+    };
+
+    // For WASM we also skip tokio (it doesn't compile to wasm32).
+    let tokio_dep_str = if is_wasm { "" } else { tokio_dep };
+
+    // For WASM targets inject the wasm32 crate type so cargo outputs a .wasm file.
+    let lib_section = if is_wasm {
+        "\n[lib]\ncrate-type = [\"cdylib\"]\n"
+    } else {
+        ""
+    };
+
     let cargo_toml = format!(r#"
 [package]
 name = "{}"
 version = "0.1.0"
 edition = "2021"
-
+{}
 [dependencies]
 varg-os-types = {{ path = "{}" }}
-varg-runtime = {{ path = "{}" }}
+varg-runtime  = {{ path = "{}"{} }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
 {}{}"#, varg_name,
-    varg_os_types_path.display().to_string().replace("\\", "/"),
-    varg_runtime_path.display().to_string().replace("\\", "/"),
-    tokio_dep,
-    extra_deps);
+        lib_section,
+        varg_os_types_path.display().to_string().replace("\\", "/"),
+        varg_runtime_path.display().to_string().replace("\\", "/"),
+        runtime_features,
+        tokio_dep_str,
+        extra_deps);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml).unwrap();
@@ -928,7 +1228,7 @@ serde_json = "1.0"
     if !src_dir.exists() {
         fs::create_dir(&src_dir).unwrap();
     }
-    
+
     let main_rs_path = src_dir.join("main.rs");
     // Plan 44: Prepend #![allow(...)] to suppress common Rust warnings
     let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
@@ -940,18 +1240,30 @@ serde_json = "1.0"
         .arg(main_rs_path.to_str().unwrap())
         .status();
 
-    println!("-> Compiling native binary using rustc...");
-    
-    let cargo_cmd = if run_immediately { "run" } else { "build" };
+    // Resolve effective target triple: CLI flag wins, then env var fallback.
+    let effective_triple: Option<String> = wasm_target.map(|t| t.to_string())
+        .or_else(|| std::env::var("VARGC_TARGET_TRIPLE").ok());
+
+    if is_wasm {
+        println!("-> Compiling to WebAssembly (target: {})...", effective_triple.as_deref().unwrap_or("wasm32-wasip1"));
+    } else {
+        println!("-> Compiling native binary using rustc...");
+    }
+
+    // WASM: always use `cargo build` (can't `cargo run` a .wasm directly).
+    let cargo_cmd = if is_wasm || !run_immediately { "build" } else { "run" };
     let mut cmd = Command::new("cargo");
     cmd.arg(cargo_cmd);
     // Wave 14: Only use --release when not in debug mode
     if !debug_mode {
         cmd.arg("--release");
     }
+    if let Some(ref triple) = effective_triple {
+        cmd.arg("--target").arg(triple);
+    }
     cmd.current_dir(&cache_dir);
 
-    if run_immediately {
+    if !is_wasm && run_immediately {
         cmd.arg("-q"); // Quiet cargo output when running tools
     }
 
@@ -965,18 +1277,62 @@ serde_json = "1.0"
         exit(1);
     }
 
-    if !run_immediately {
-        // Copy the executable out of the target folder into the current directory
-        #[cfg(target_os = "windows")]
-        let exe_name = format!("{}.exe", varg_name);
-        #[cfg(not(target_os = "windows"))]
-        let exe_name = varg_name.to_string();
+    if is_wasm {
+        // Copy the .wasm file to the current directory.
+        let profile_dir = if debug_mode { "debug" } else { "release" };
+        let target_base = std::env::var("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| cache_dir.join("target"));
+        let triple = effective_triple.as_deref().unwrap_or("wasm32-wasip1");
+        let wasm_src = target_base.join(triple).join(profile_dir).join(format!("{}.wasm", varg_name));
+        let wasm_dest = PathBuf::from(format!("{}.wasm", varg_name));
+
+        if fs::copy(&wasm_src, &wasm_dest).is_ok() {
+            println!("-> Built {}", wasm_dest.display());
+            println!("   Run with: wasmtime {}", wasm_dest.display());
+        } else {
+            eprintln!("-> Built, but could not locate .wasm at {:?}", wasm_src);
+            eprintln!("   Check .vargc_cache/target/{}/{}/ manually.", triple, profile_dir);
+        }
+
+        // If the user also asked to run it immediately, invoke wasmtime.
+        if run_immediately {
+            let run_status = Command::new("wasmtime")
+                .arg(wasm_dest.to_str().unwrap_or(""))
+                .status();
+            match run_status {
+                Ok(s) if !s.success() => exit(s.code().unwrap_or(1)),
+                Err(e) => {
+                    eprintln!("Warning: could not invoke wasmtime: {}", e);
+                    eprintln!("Run manually: wasmtime {}", wasm_dest.display());
+                }
+                _ => {}
+            }
+        }
+    } else if !run_immediately {
+        // Determine exe suffix from target triple (or host OS if not cross-compiling)
+        let is_windows_target = effective_triple.as_deref()
+            .map(|t| t.contains("windows"))
+            .unwrap_or(cfg!(target_os = "windows"));
+        let exe_name = if is_windows_target {
+            format!("{}.exe", varg_name)
+        } else {
+            varg_name.to_string()
+        };
 
         // Wave 14: Use correct target subdirectory based on build profile
         let profile_dir = if debug_mode { "debug" } else { "release" };
-        let compiled_exe_path = cache_dir.join("target").join(profile_dir).join(&exe_name);
+        // Respect CARGO_TARGET_DIR if set (e.g. by the web playground for shared dep caching)
+        let target_base = std::env::var("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| cache_dir.join("target"));
+        // Cross-compilation places binary under target/<triple>/profile/
+        let compiled_exe_path = match &effective_triple {
+            Some(triple) => target_base.join(triple).join(profile_dir).join(&exe_name),
+            None         => target_base.join(profile_dir).join(&exe_name),
+        };
         let dest_path = PathBuf::from(&exe_name);
-        
+
         if fs::copy(&compiled_exe_path, &dest_path).is_ok() {
             println!("-> Successfully built: {}", dest_path.display());
         } else {
@@ -1086,6 +1442,7 @@ fn test_varg_file(input_path: &str, debug_mode: bool, coverage: bool) {
     let varg_os_types_path = current_dir.join("crates").join("varg-os-types");
     let varg_runtime_path = current_dir.join("crates").join("varg-runtime");
 
+    let runtime_features = detect_runtime_features(&final_rust_source);
     let cargo_toml = format!(r#"
 [package]
 name = "{}"
@@ -1094,12 +1451,13 @@ edition = "2021"
 
 [dependencies]
 varg-os-types = {{ path = "{}" }}
-varg-runtime = {{ path = "{}" }}
+varg-runtime  = {{ path = "{}"{} }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
 "#, varg_name,
     varg_os_types_path.display().to_string().replace("\\", "/"),
-    varg_runtime_path.display().to_string().replace("\\", "/"));
+    varg_runtime_path.display().to_string().replace("\\", "/"),
+    runtime_features);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml).unwrap();
@@ -1250,5 +1608,32 @@ mod tests {
         };
         assert!(find_struct_def(&program, "MyStruct").is_some());
         assert!(find_struct_def(&program, "NonExistent").is_none());
+    }
+
+    // ── Package manager tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_packages_dir_returns_valid_path() {
+        let dir = packages_dir();
+        // Must not be empty and must end with .varg/packages
+        assert!(!dir.as_os_str().is_empty());
+        assert!(dir.ends_with(std::path::Path::new(".varg/packages")),
+            "packages_dir() should end with .varg/packages, got: {:?}", dir);
+    }
+
+    #[test]
+    fn test_registry_parse_embedded() {
+        let registry: serde_json::Value = serde_json::from_str(EMBEDDED_REGISTRY)
+            .expect("EMBEDDED_REGISTRY must be valid JSON");
+        let packages = registry["packages"].as_array()
+            .expect("registry must have a 'packages' array");
+        assert!(!packages.is_empty(), "embedded registry must contain at least one package");
+        // Every entry must have name, version, description, url fields.
+        for pkg in packages {
+            assert!(pkg["name"].as_str().is_some(), "package missing 'name'");
+            assert!(pkg["version"].as_str().is_some(), "package missing 'version'");
+            assert!(pkg["description"].as_str().is_some(), "package missing 'description'");
+            assert!(pkg["url"].as_str().is_some(), "package missing 'url'");
+        }
     }
 }

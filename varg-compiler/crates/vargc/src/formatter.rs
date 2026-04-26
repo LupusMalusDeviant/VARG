@@ -579,6 +579,16 @@ impl VargFormatter {
             Expression::IfExpr { condition, then_block: _, else_block: _ } => {
                 format!("if {} {{ ... }} else {{ ... }}", self.format_expression(condition))
             }
+            Expression::NamedCall { caller, method_name, named_args } => {
+                let arg_strs: Vec<String> = named_args.iter()
+                    .map(|(name, val)| format!("{}: {}", name, self.format_expression(val)))
+                    .collect();
+                if matches!(**caller, Expression::Identifier(ref n) if n == "self") {
+                    format!("{}({})", method_name, arg_strs.join(", "))
+                } else {
+                    format!("{}.{}({})", self.format_expression(caller), method_name, arg_strs.join(", "))
+                }
+            }
         }
     }
 

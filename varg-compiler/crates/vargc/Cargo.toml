@@ -11,3 +11,5 @@ varg-typechecker = { path = "../varg-typechecker" }
 varg-codegen = { path = "../varg-codegen" }
 codespan-reporting.workspace = true
 serde_json.workspace = true
+ureq = { version = "2.9", features = ["tls"] }
+dirs = "5.0"

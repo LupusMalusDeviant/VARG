@@ -10,16 +10,19 @@ description = "Runtime helpers for compiled Varg programs (networking, DB, LLM, 
 # Note: rusqlite is always-on because graph.rs and vector.rs use it internally
 # for their SQLite-backed persistence (user-facing db builtins are gated by "db").
 [features]
-default  = []
-net      = ["dep:ureq"]
-server   = ["dep:axum", "dep:tokio", "dep:futures"]
-db       = []          # gates db_sqlite + checkpoint modules (rusqlite always present)
-llm      = ["dep:reqwest"]
-ws       = ["dep:tungstenite"]
-pdf      = ["dep:printpdf"]
-readline = ["dep:rustyline"]
-crypto   = ["dep:aes-gcm", "dep:pbkdf2", "dep:sha2"]
-encoding = ["dep:base64"]
+default   = []
+net       = ["dep:reqwest"]
+server    = ["dep:axum", "dep:tokio", "dep:futures"]
+db        = []          # gates db_sqlite + checkpoint modules (rusqlite always present)
+llm       = ["dep:reqwest"]
+ws        = ["dep:tungstenite"]
+pdf       = ["dep:printpdf"]
+readline  = ["dep:rustyline"]
+crypto    = ["dep:aes-gcm", "dep:pbkdf2", "dep:sha2"]
+encoding  = ["dep:base64"]
+# WASM-safe subset: only pure-Rust modules (serde, serde_json, rand).
+# Heavy deps (rusqlite, axum, reqwest, tungstenite) are excluded.
+wasm-safe = []
 
 # ── Always-on (tiny / fundamental) ────────────────────────────────────────────
 [dependencies]
@@ -31,10 +34,10 @@ dirs          = "5.0"
 rusqlite      = { version = "0.31", features = ["bundled"] }
 
 # ── Optional heavy deps ────────────────────────────────────────────────────────
-ureq        = { version = "2",    features = ["native-tls"],  optional = true }
-axum        = { version = "0.7",                              optional = true }
-tokio       = { version = "1",    features = ["full"],        optional = true }
-reqwest     = { version = "0.12", features = ["blocking"],    optional = true }
+axum        = { version = "0.7",                                                  optional = true }
+tokio       = { version = "1",    features = ["full"],                            optional = true }
+reqwest     = { version = "0.12", features = ["blocking", "json", "native-tls"], optional = true }
+# ureq removed: net feature now uses reqwest::blocking
 tungstenite = { version = "0.24", features = ["native-tls"],  optional = true }
 printpdf    = { version = "0.7",                              optional = true }
 rustyline   = { version = "14.0",                             optional = true }

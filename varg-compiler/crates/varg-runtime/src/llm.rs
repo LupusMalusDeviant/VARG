@@ -321,19 +321,24 @@ pub fn __varg_llm_stream(prompt: &str, model: &str) -> Vec<String> {
     let messages_json = single_prompt_messages(prompt);
     let body = provider.build_body(&model_str, &messages_json, true);
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(30))
+    let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
-        .build();
-    let mut req = agent.post(&provider.chat_endpoint());
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => { eprintln!("[Varg LLM] llm_stream client error: {e}"); return Vec::new(); }
+    };
+
+    let mut req = client.post(&provider.chat_endpoint());
     for (k, v) in provider.headers() {
-        req = req.set(&k, &v);
+        req = req.header(k, v);
     }
+    req = req.body(body);
 
     let mut chunks = Vec::new();
-    match req.send_string(&body) {
+    match req.send() {
         Ok(resp) => {
-            let reader = BufReader::new(resp.into_reader());
+            let reader = BufReader::new(resp);
             for line in reader.lines().filter_map(Result::ok) {
                 if let Some(c) = provider.parse_stream_chunk(&line) {
                     if !c.is_empty() { chunks.push(c); }
