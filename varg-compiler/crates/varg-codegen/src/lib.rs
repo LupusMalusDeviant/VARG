@@ -1576,6 +1576,29 @@ impl RustGenerator {
                     let lambda = self.gen_expression(&args[0]);
                     let caller_code = self.gen_expression(caller);
                     format!("{}.into_iter().flat_map({}).collect::<Vec<_>>()", caller_code, lambda)
+                } else if method_name == "zip" {
+                    let other = self.gen_expression(&args[0]);
+                    let caller_code = self.gen_expression(caller);
+                    format!("{}.into_iter().zip({}.into_iter()).collect::<Vec<_>>()", caller_code, other)
+                } else if method_name == "enumerate" {
+                    let caller_code = self.gen_expression(caller);
+                    format!("{}.into_iter().enumerate().collect::<Vec<_>>()", caller_code)
+                } else if method_name == "take" {
+                    let n = &arg_strs[0];
+                    let caller_code = self.gen_expression(caller);
+                    format!("{}.into_iter().take({} as usize).collect::<Vec<_>>()", caller_code, n)
+                } else if method_name == "skip" {
+                    let n = &arg_strs[0];
+                    let caller_code = self.gen_expression(caller);
+                    format!("{}.into_iter().skip({} as usize).collect::<Vec<_>>()", caller_code, n)
+                } else if method_name == "reduce" || method_name == "fold" {
+                    let init = self.gen_expression(&args[0]);
+                    let lambda = self.gen_expression(&args[1]);
+                    let caller_code = self.gen_expression(caller);
+                    format!("{}.into_iter().fold({}, {})", caller_code, init, lambda)
+                } else if method_name == "sum" {
+                    let caller_code = self.gen_expression(caller);
+                    format!("{}.iter().sum::<i64>()", caller_code)
                 } else if method_name == "find" {
                     let lambda = self.gen_expression(&args[0]);
                     let caller_code = self.gen_expression(caller);

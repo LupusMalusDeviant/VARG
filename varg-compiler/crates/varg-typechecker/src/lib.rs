@@ -274,7 +274,8 @@ impl TypeChecker {
             "push", "pop", "first",
             "last", "reverse", "is_empty", "keys", "values", "remove", "get",
             "sort", "join", "count", "filter", "map", "flat_map", "find",
-            "any", "all", "abs", "sqrt", "floor", "ceil", "round",
+            "any", "all", "zip", "enumerate", "take", "skip", "reduce", "fold", "sum",
+            "abs", "sqrt", "floor", "ceil", "round",
             "min", "max", "parse_int", "parse_float", "to_string",
             "contains_key", "send", "request", "env", "fetch", "http_request",
             "llm_infer", "llm_chat", "encrypt", "decrypt",
@@ -2144,6 +2145,25 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     Ok(TypeNode::Bool)
+                } else if method_name == "zip" {
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    let other_ty = if !args.is_empty() { self.infer_expression_type(&args[0])? } else { TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string()))) };
+                    let inner_a = match caller_ty { TypeNode::Array(i) | TypeNode::List(i) => *i, _ => TypeNode::Custom("Dynamic".to_string()) };
+                    let inner_b = match other_ty { TypeNode::Array(i) | TypeNode::List(i) => *i, _ => TypeNode::Custom("Dynamic".to_string()) };
+                    Ok(TypeNode::Array(Box::new(TypeNode::Tuple(vec![inner_a, inner_b]))))
+                } else if method_name == "enumerate" {
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    let inner = match caller_ty { TypeNode::Array(i) | TypeNode::List(i) => *i, _ => TypeNode::Custom("Dynamic".to_string()) };
+                    Ok(TypeNode::Array(Box::new(TypeNode::Tuple(vec![TypeNode::Int, inner]))))
+                } else if method_name == "take" || method_name == "skip" {
+                    Ok(self.infer_expression_type(caller)?)
+                } else if method_name == "reduce" || method_name == "fold" {
+                    if args.len() < 2 {
+                        return Err(TypeError::TypeMismatch { expected: "2 arguments (initial value, closure)".to_string(), found: format!("{} arguments", args.len()) });
+                    }
+                    self.infer_expression_type(&args[0])
+                } else if method_name == "sum" {
+                    Ok(TypeNode::Int)
                 // ===== F41-5: Result methods (map_err, map, and_then, unwrap, is_ok, is_err) =====
                 } else if method_name == "map_err" {
                     if args.len() != 1 {
