@@ -319,7 +319,9 @@ impl RustGenerator {
                 if uses_try {
                     body.push_str("    Ok(())\n");
                 }
-                format!("fn {}({}){} {{\n{}}}\n", f.name, params.join(", "), ret, body)
+                let type_param_str = if f.type_params.is_empty() { String::new() }
+                    else { format!("<{}>", f.type_params.join(", ")) };
+                format!("fn {}{}({}){} {{\n{}}}\n", f.name, type_param_str, params.join(", "), ret, body)
             },
             Item::TypeAlias { name, target } => {
                 format!("type {} = {};\n", name, self.gen_type(target))
@@ -4702,7 +4704,7 @@ mod tests {
         let mut gen = RustGenerator::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef {
+            items: vec![Item::Function(FunctionDef { type_params: vec![],
                 name: "add".to_string(),
                 is_public: false,
                 params: vec![
@@ -4730,7 +4732,7 @@ mod tests {
         let mut gen = RustGenerator::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef {
+            items: vec![Item::Function(FunctionDef { type_params: vec![],
                 name: "double".to_string(),
                 is_public: false,
                 params: vec![
@@ -5336,7 +5338,7 @@ mod tests {
                     implements: vec![],
                     annotations: vec![],
                 }),
-                Item::Function(FunctionDef {
+                Item::Function(FunctionDef { type_params: vec![],
                     name: "main".to_string(),
                     is_public: true,
                     params: vec![],
@@ -5948,7 +5950,7 @@ mod tests {
         // Standalone function: fibonacci with while loop
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef {
+            items: vec![Item::Function(FunctionDef { type_params: vec![],
                 name: "fibonacci".to_string(),
                 is_public: false,
                 params: vec![FieldDecl { name: "n".to_string(), ty: TypeNode::Int, default_value: None }],
@@ -6704,7 +6706,7 @@ mod tests {
     fn test_function_with_try_propagate_gets_result_return() {
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef {
+            items: vec![Item::Function(FunctionDef { type_params: vec![],
                 name: "load_config".to_string(),
                 is_public: false,
                 params: vec![FieldDecl { name: "path".to_string(), ty: TypeNode::String, default_value: None }],
@@ -6732,7 +6734,7 @@ mod tests {
     fn test_function_without_try_propagate_normal_return() {
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef {
+            items: vec![Item::Function(FunctionDef { type_params: vec![],
                 name: "add".to_string(),
                 is_public: false,
                 params: vec![
@@ -8168,7 +8170,7 @@ mod tests {
     // ===== Regression: Issue #6 — user-defined fn named `add` must not become HashSet::insert =====
     #[test]
     fn test_codegen_user_fn_add_not_rewritten_as_hashset_insert() {
-        let add_fn = Item::Function(FunctionDef {
+        let add_fn = Item::Function(FunctionDef { type_params: vec![],
             name: "add".to_string(),
             is_public: false,
             params: vec![
@@ -8185,7 +8187,7 @@ mod tests {
             ]},
         });
         // Call add(3, 4) as a bare function — parser emits MethodCall{caller:self, method:"add"}
-        let main_fn = Item::Function(FunctionDef {
+        let main_fn = Item::Function(FunctionDef { type_params: vec![],
             name: "main".to_string(),
             is_public: false,
             params: vec![],
@@ -8219,7 +8221,7 @@ mod tests {
             ],
         });
         // Expression: Color.Red  →  PropertyAccess{caller: Identifier("Color"), property: "Red"}
-        let fn_item = Item::Function(FunctionDef {
+        let fn_item = Item::Function(FunctionDef { type_params: vec![],
             name: "get_red".to_string(),
             is_public: false,
             params: vec![],
@@ -8242,7 +8244,7 @@ mod tests {
     #[test]
     fn test_codegen_named_args_reordered_to_param_order() {
         // add(b: 4, a: 3) should generate add(3, 4) — a before b per declaration
-        let fn_def = Item::Function(FunctionDef {
+        let fn_def = Item::Function(FunctionDef { type_params: vec![],
             name: "add".to_string(),
             is_public: false,
             params: vec![
@@ -8258,7 +8260,7 @@ mod tests {
                 })),
             ]},
         });
-        let main_fn = Item::Function(FunctionDef {
+        let main_fn = Item::Function(FunctionDef { type_params: vec![],
             name: "main".to_string(),
             is_public: true,
             params: vec![],
@@ -8292,7 +8294,7 @@ mod tests {
     #[test]
     fn test_codegen_named_args_same_order_is_noop() {
         // add(a: 10, b: 20) — same order as declaration, should just work
-        let fn_def = Item::Function(FunctionDef {
+        let fn_def = Item::Function(FunctionDef { type_params: vec![],
             name: "mul".to_string(),
             is_public: false,
             params: vec![
@@ -8308,7 +8310,7 @@ mod tests {
                 })),
             ]},
         });
-        let main_fn = Item::Function(FunctionDef {
+        let main_fn = Item::Function(FunctionDef { type_params: vec![],
             name: "main".to_string(),
             is_public: true,
             params: vec![],
@@ -8340,7 +8342,7 @@ mod tests {
     // ===== Regression: Issue #8 — BitOr operator emits | =====
     #[test]
     fn test_codegen_bitor_operator_emits_pipe() {
-        let fn_item = Item::Function(FunctionDef {
+        let fn_item = Item::Function(FunctionDef { type_params: vec![],
             name: "bitmask".to_string(),
             is_public: false,
             params: vec![

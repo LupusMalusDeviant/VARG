@@ -59,6 +59,7 @@ pub enum ImportItems {
 pub struct FunctionDef {
     pub name: String,
     pub is_public: bool,
+    pub type_params: Vec<String>,
     pub params: Vec<FieldDecl>,
     pub return_ty: Option<TypeNode>,
     pub body: Block,
