@@ -2709,6 +2709,16 @@ impl TypeChecker {
                 // A non-null value can be assigned to a nullable variable: string? x = "hello"
                 self.types_match(inner, actual)
             },
+            // Result type covariance: Err(x) inferred as Result<Void, E> matches Result<T, E>
+            // and Ok(x) inferred as Result<T, Error> matches Result<T, E>
+            (TypeNode::Result(ok1, err1), TypeNode::Result(ok2, err2)) => {
+                let ok_compat = **ok1 == TypeNode::Void || **ok2 == TypeNode::Void
+                    || self.types_match(ok1, ok2);
+                let err_compat = **err1 == TypeNode::Void || **err2 == TypeNode::Void
+                    || **err1 == TypeNode::Error || **err2 == TypeNode::Error
+                    || self.types_match(err1, err2);
+                ok_compat && err_compat
+            },
             (TypeNode::TypeVar(_), _) => {
                 // MVP Generic Substitution: A TypeVar (e.g. T) natively accepts the instanced type
                 true
