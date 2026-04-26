@@ -1781,11 +1781,11 @@ impl RustGenerator {
                     format!("std::path::Path::new(&{}).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()", arg_strs[0])
                 // ===== Wave 13/14: Stdlib Expansion — regex (Result-based) =====
                 } else if method_name == "regex_match" {
-                    format!("regex::Regex::new(&{}).map(|r| r.is_match(&{})).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::regex_utils::__varg_regex_match(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "regex_find_all" {
-                    format!("regex::Regex::new(&{}).map(|r| r.find_iter(&{}).map(|m| m.as_str().to_string()).collect::<Vec<String>>()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::regex_utils::__varg_regex_find_all(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "regex_replace" {
-                    format!("regex::Regex::new(&{}).map(|r| r.replace_all(&{}, {}).to_string()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1], arg_strs[2])
+                    format!("varg_runtime::regex_utils::__varg_regex_replace(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 // ===== Wave 28: System Primitives =====
                 } else if method_name == "args" {
                     "std::env::args().skip(1).collect::<Vec<String>>()".to_string()
@@ -2263,6 +2263,30 @@ impl RustGenerator {
                 let then_str = self.gen_block_as_expr(then_block, 2);
                 let else_str = self.gen_block_as_expr(else_block, 2);
                 format!("if {} {{\n{}\n    }} else {{\n{}\n    }}", cond_str, then_str.trim_end(), else_str.trim_end())
+            },
+            // Match-as-expression — emits a Rust match block as a value
+            Expression::MatchExpr { subject, arms } => {
+                let subject_str = self.gen_expression(subject);
+                let subject_str = if Self::match_has_string_literal_arm(arms) {
+                    format!("{}.as_str()", subject_str)
+                } else {
+                    subject_str
+                };
+                let mut out = format!("match {} {{\n", subject_str);
+                for arm in arms {
+                    let pattern_str = self.gen_pattern(&arm.pattern);
+                    let arm_str = if let Some(guard) = &arm.guard {
+                        format!("    {} if {} => {{\n{}\n    }},\n",
+                            pattern_str, self.gen_expression(guard),
+                            self.gen_block_as_expr(&arm.body, 2))
+                    } else {
+                        format!("    {} => {{\n{}\n    }},\n",
+                            pattern_str, self.gen_block_as_expr(&arm.body, 2))
+                    };
+                    out.push_str(&arm_str);
+                }
+                out.push('}');
+                out
             },
             // Wave 11: Type casting — expr as Type
             Expression::Cast { expr, target_type } => {
@@ -6291,11 +6315,7 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("regex::Regex::new"), "regex_match should use regex crate: {}", code);
-        assert!(code.contains("is_match"), "regex_match should call is_match: {}", code);
-        // Wave 14: Must use map/map_err instead of unwrap
-        assert!(code.contains("map_err"), "regex_match should return Result via map_err: {}", code);
-        assert!(!code.contains("unwrap"), "regex_match must NOT use unwrap: {}", code);
+        assert!(code.contains("varg_runtime::regex_utils::__varg_regex_match"), "regex_match should use runtime: {}", code);
     }
 
     #[test]

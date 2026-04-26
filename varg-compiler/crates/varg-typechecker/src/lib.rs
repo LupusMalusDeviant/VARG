@@ -2377,6 +2377,23 @@ impl TypeChecker {
                     Ok(TypeNode::Void)
                 }
             },
+            // Match-as-expression
+            Expression::MatchExpr { subject, arms } => {
+                self.infer_expression_type(subject)?;
+                // Infer type from the first arm's last expression
+                let arm_ty = arms.first().and_then(|arm| arm.body.statements.last())
+                    .and_then(|stmt| match stmt {
+                        Statement::Expr(e) | Statement::Return(Some(e)) => {
+                            self.infer_expression_type(e).ok()
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(TypeNode::Void);
+                for arm in arms {
+                    self.check_block(&arm.body)?;
+                }
+                Ok(arm_ty)
+            },
             // Wave 11: Type casting — expr as Type
             Expression::Cast { expr, target_type } => {
                 // Validate the source expression type-checks

@@ -1955,6 +1955,30 @@ impl Parser {
                     else_block,
                 }
             },
+            // Match-as-expression — var x = match val { "a" => { 1 } _ => { 0 } }
+            Some(Token::Match) => {
+                let prev_no_struct = self.no_struct_literal;
+                self.no_struct_literal = true;
+                let subject = self.parse_expression()?;
+                self.no_struct_literal = prev_no_struct;
+                self.consume(Token::LBrace)?;
+                let mut arms = Vec::new();
+                while self.peek() != Some(&Token::RBrace) {
+                    let pattern = self.parse_pattern()?;
+                    let guard = if self.peek() == Some(&Token::If) {
+                        self.advance();
+                        Some(self.parse_expression()?)
+                    } else {
+                        None
+                    };
+                    self.consume(Token::FatArrow)?;
+                    let body = self.parse_block()?;
+                    if self.peek() == Some(&Token::Comma) { self.advance(); }
+                    arms.push(MatchArm { pattern, guard, body });
+                }
+                self.consume(Token::RBrace)?;
+                Expression::MatchExpr { subject: Box::new(subject), arms }
+            },
             Some(Token::Null) => Expression::Null,
             Some(Token::FloatLiteral(val)) => Expression::Float(val),  // Plan 42
             Some(Token::IntLiteral(val)) => Expression::Int(val),

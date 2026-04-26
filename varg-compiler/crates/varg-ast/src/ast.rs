@@ -280,6 +280,12 @@ pub enum Expression {
         else_block: Block,
     },
 
+    // Match-as-expression — var x = match val { "a" => { 1 } _ => { 0 } }
+    MatchExpr {
+        subject: Box<Expression>,
+        arms: Vec<MatchArm>,
+    },
+
     // Wave 12: Struct literal — Point { x: 5, y: 10 }
     StructLiteral {
         type_name: String,

@@ -6,6 +6,8 @@
 
 // ── Always-on modules (pure Rust, no heavy deps) ──────────────────────────────
 pub mod db;            // legacy stub
+pub mod regex_utils;   // Regex builtins: regex_match, regex_find_all, regex_replace
+pub use regex_utils::*;
 pub mod graph;         // Wave 20: Knowledge Graph
 pub mod memory;        // Wave 21: Agent Memory (3 layers)
 pub mod trace;         // Wave 22: Observability & Tracing
