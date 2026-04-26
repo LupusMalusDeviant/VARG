@@ -116,6 +116,8 @@ pub struct RustGenerator {
     usage_remaining: HashMap<String, usize>,
     /// Wave 12: Known enum definitions for variant construction codegen
     known_enums: HashMap<String, Vec<EnumVariant>>,
+    /// Reverse map: variant_name → enum_name, for qualified pattern generation
+    variant_to_enum: HashMap<String, String>,
     /// Wave 14: Whether current function/method uses ? and returns Result
     in_result_function: bool,
     /// F41-6: Fields with contract types (struct_name.field_name → true) for Box<dyn> wrapping
@@ -142,6 +144,7 @@ impl RustGenerator {
             current_file: String::new(),
             usage_remaining: HashMap::new(),
             known_enums: HashMap::new(),
+            variant_to_enum: HashMap::new(),
             in_result_function: false,
             contract_typed_fields: HashSet::new(),
             map_vars: HashSet::new(),
@@ -189,8 +192,11 @@ impl RustGenerator {
             if let Item::Contract(c) = item {
                 self.known_contract_methods.insert(c.name.clone(), c.methods.iter().map(|m| m.name.clone()).collect());
             }
-            // Wave 12: Collect enum definitions for variant construction
+            // Wave 12: Collect enum definitions for variant construction + pattern resolution
             if let Item::Enum(e) = item {
+                for v in &e.variants {
+                    self.variant_to_enum.insert(v.name.clone(), e.name.clone());
+                }
                 self.known_enums.insert(e.name.clone(), e.variants.clone());
             }
         }
@@ -1241,10 +1247,38 @@ impl RustGenerator {
             Pattern::Literal(Expression::String(s)) => format!("{:?}", s),
             Pattern::Literal(expr) => self.gen_expression(expr),
             Pattern::Variant(name, bindings) => {
-                if bindings.is_empty() {
-                    name.clone()
+                // Qualify with enum name if known (Status::Active, not bare Active)
+                let qualified = if let Some(enum_name) = self.variant_to_enum.get(name).cloned() {
+                    format!("{}::{}", enum_name, name)
                 } else {
-                    format!("{}({})", name, bindings.join(", "))
+                    name.clone()
+                };
+                if bindings.is_empty() {
+                    qualified
+                } else {
+                    // Enum variants with fields are struct variants in Rust — use { field } syntax
+                    let enum_name_opt = self.variant_to_enum.get(name).cloned();
+                    if let Some(en) = enum_name_opt {
+                        if let Some(variants) = self.known_enums.get(&en).cloned() {
+                            if let Some(variant) = variants.iter().find(|v| v.name == *name) {
+                                if !variant.fields.is_empty() {
+                                    // Struct variant: Status::Error { msg } or Status::Error { field0: b0, .. }
+                                    let field_names: Vec<String> = variant.fields.iter()
+                                        .enumerate()
+                                        .map(|(i, (fname, _))| {
+                                            if let Some(binding) = bindings.get(i) {
+                                                if binding == fname { fname.clone() }
+                                                else { format!("{}: {}", fname, binding) }
+                                            } else { format!("{}: _", fname) }
+                                        })
+                                        .collect();
+                                    return format!("{}::{}{{ {} }}", en, name, field_names.join(", "));
+                                }
+                            }
+                        }
+                    }
+                    // Fallback: tuple variant syntax
+                    format!("{}({})", qualified, bindings.join(", "))
                 }
             },
             Pattern::Or(alternatives) => {
@@ -1836,6 +1870,8 @@ impl RustGenerator {
                     format!("varg_runtime::llm::__varg_llm_structured(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "llm_stream" {
                     format!("varg_runtime::llm::__varg_llm_stream(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "sse_read" {
+                    format!("varg_runtime::llm::__varg_sse_read(&{})", arg_strs[0])
                 } else if method_name == "llm_embed_batch" {
                     format!("varg_runtime::llm::__varg_llm_embed_batch({})", arg_strs[0])
                 // ===== Vector Extended =====
@@ -3099,6 +3135,62 @@ mod tests {
         assert!(code.contains("pub enum Status"));
         assert!(code.contains("Active,"));
         assert!(code.contains("Suspended { reason: String }"));
+    }
+
+    #[test]
+    fn test_codegen_enum_match_qualified_patterns() {
+        // Enum variant patterns must be fully qualified (Status::Active) and use struct syntax
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![
+                Item::Enum(EnumDef {
+                    name: "Status".to_string(),
+                    is_public: false,
+                    variants: vec![
+                        EnumVariant { name: "Active".to_string(), fields: vec![] },
+                        EnumVariant { name: "Error".to_string(), fields: vec![
+                            ("msg".to_string(), TypeNode::String),
+                        ]},
+                    ],
+                }),
+                Item::Agent(AgentDef {
+                    name: "Test".to_string(), is_system: false, is_public: false,
+                    target_annotation: None, annotations: vec![], implements: vec![], fields: vec![],
+                    methods: vec![MethodDecl {
+                        name: "run".to_string(), is_public: true, is_async: false,
+                        annotations: vec![], type_params: vec![], constraints: vec![],
+                        args: vec![], return_ty: Some(TypeNode::Void),
+                        body: Some(Block { statements: vec![
+                            Statement::Match {
+                                subject: Expression::Identifier("s".to_string()),
+                                arms: vec![
+                                    MatchArm {
+                                        pattern: Pattern::Variant("Active".to_string(), vec![]),
+                                        guard: None,
+                                        body: Block { statements: vec![] },
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern::Variant("Error".to_string(), vec!["msg".to_string()]),
+                                        guard: None,
+                                        body: Block { statements: vec![] },
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern::Wildcard,
+                                        guard: None,
+                                        body: Block { statements: vec![] },
+                                    },
+                                ],
+                            },
+                        ]}),
+                    }],
+                }),
+            ],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.generate(&program);
+        assert!(code.contains("Status::Active"), "bare Active must be qualified: {}", code);
+        assert!(code.contains("Status::Error"), "bare Error must be qualified: {}", code);
+        assert!(code.contains("{ msg }"), "struct variant must use brace syntax: {}", code);
     }
 
     #[test]

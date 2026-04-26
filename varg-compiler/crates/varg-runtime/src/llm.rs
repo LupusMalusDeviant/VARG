@@ -355,6 +355,12 @@ pub fn __varg_llm_embed_batch(texts: Vec<String>) -> Vec<Vec<f32>> {
     texts.iter().map(|t| crate::vector::__varg_embed(t)).collect()
 }
 
+/// Read an SSE stream (Vec<String> of chunks) as a single concatenated string.
+/// Use `for chunk in llm_stream(...)` for chunk-by-chunk processing instead.
+pub fn __varg_sse_read(stream: &[String]) -> String {
+    stream.join("")
+}
+
 // ─── Task 1: Prompt Caching ───────────────────────────────────────────────
 
 /// Build an Anthropic request body with `cache_control` applied to the system

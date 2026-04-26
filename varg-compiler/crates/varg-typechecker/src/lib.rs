@@ -355,7 +355,7 @@ impl TypeChecker {
             "registry_open", "registry_install", "registry_uninstall",
             "registry_is_installed", "registry_version", "registry_list", "registry_search",
             // LLM Extended (Wave 30-34)
-            "llm_structured", "llm_stream", "llm_embed_batch",
+            "llm_structured", "llm_stream", "sse_read", "llm_embed_batch",
             // Vector Extended (Wave 34)
             "vector_build_index", "vector_search_fast",
             // SSE Server (Wave 32)
@@ -1797,6 +1797,9 @@ impl TypeChecker {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (prompt, model)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::LlmAccess, "llm_stream")?;
                     Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "sse_read" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (stream)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
                 } else if method_name == "llm_embed_batch" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (texts)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::LlmAccess, "llm_embed_batch")?;
