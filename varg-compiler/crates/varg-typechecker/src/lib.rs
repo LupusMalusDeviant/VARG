@@ -2138,8 +2138,12 @@ impl TypeChecker {
                     Ok(TypeNode::String)
                 // ===== Wave 12: Math Methods =====
                 } else if method_name == "abs" {
-                    let caller_ty = self.infer_expression_type(caller)?;
-                    Ok(caller_ty) // abs preserves int/float
+                    // abs(x) standalone or x.abs() — int/float preserving
+                    if args.is_empty() {
+                        Ok(self.infer_expression_type(caller)?)
+                    } else {
+                        Ok(self.infer_expression_type(&args[0])?)
+                    }
                 } else if method_name == "sqrt" || method_name == "floor" || method_name == "ceil" || method_name == "round" {
                     Ok(TypeNode::Float)
                 } else if method_name == "to_fixed" || method_name == "to_hex" || method_name == "to_binary" {
@@ -2147,8 +2151,9 @@ impl TypeChecker {
                 } else if method_name == "clamp" {
                     Ok(self.infer_expression_type(caller)?)
                 } else if method_name == "min" || method_name == "max" {
-                    if args.len() != 1 {
-                        return Err(TypeError::TypeMismatch { expected: "1 argument".to_string(), found: format!("{} arguments", args.len()) });
+                    // min(a, b) standalone (2 args) or a.min(b) method (1 arg)
+                    if args.len() != 1 && args.len() != 2 {
+                        return Err(TypeError::TypeMismatch { expected: "1 or 2 arguments".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     let caller_ty = self.infer_expression_type(caller)?;
                     Ok(caller_ty)

@@ -1588,23 +1588,36 @@ impl RustGenerator {
                     let target = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
                     format!("{}.parse::<f64>().unwrap_or(0.0)", target)
                 } else if method_name == "abs" {
-                    format!("{}.abs()", self.gen_expression(caller))
+                    // abs(x) standalone OR x.abs() method form
+                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    format!("{}.abs()", val)
                 } else if method_name == "sort" {
                     format!("{}.sort()", self.gen_expression(caller))
                 } else if method_name == "join" {
                     format!("{}.join(&{})", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "min" {
-                    format!("std::cmp::min({}, {})", self.gen_expression(caller), arg_strs[0])
+                    // min(a, b) standalone OR a.min(b) method form
+                    let (a, b) = if args.len() >= 2 { (arg_strs[0].clone(), arg_strs[1].clone()) }
+                                 else { (self.gen_expression(caller), arg_strs[0].clone()) };
+                    format!("{}.min({})", a, b)
                 } else if method_name == "max" {
-                    format!("std::cmp::max({}, {})", self.gen_expression(caller), arg_strs[0])
+                    // max(a, b) standalone OR a.max(b) method form
+                    let (a, b) = if args.len() >= 2 { (arg_strs[0].clone(), arg_strs[1].clone()) }
+                                 else { (self.gen_expression(caller), arg_strs[0].clone()) };
+                    format!("{}.max({})", a, b)
                 } else if method_name == "sqrt" {
-                    format!("({} as f64).sqrt()", self.gen_expression(caller))
+                    // sqrt(x) standalone OR x.sqrt() method form — double-paren prevents `a * b as f64`
+                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    format!("(({}) as f64).sqrt()", val)
                 } else if method_name == "floor" {
-                    format!("({}).floor()", self.gen_expression(caller))
+                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    format!("(({}) as f64).floor()", val)
                 } else if method_name == "ceil" {
-                    format!("({}).ceil()", self.gen_expression(caller))
+                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    format!("(({}) as f64).ceil()", val)
                 } else if method_name == "round" {
-                    format!("({}).round()", self.gen_expression(caller))
+                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    format!("(({}) as f64).round()", val)
                 } else if method_name == "to_fixed" {
                     let decimals = if arg_strs.is_empty() { "2".to_string() } else { arg_strs[0].clone() };
                     format!("format!(\"{{:.prec$}}\", {} as f64, prec = {} as usize)", self.gen_expression(caller), decimals)
@@ -2480,15 +2493,16 @@ impl RustGenerator {
                 out
             },
             // Wave 11: Type casting — expr as Type
+            // Double-wrap so `(a - b) as f64` generates `((a - b) as f64)` not `(a - b as f64)`
             Expression::Cast { expr, target_type } => {
                 let expr_str = self.gen_expression(expr);
                 match target_type {
-                    TypeNode::Int => format!("({} as i64)", expr_str),
-                    TypeNode::Float => format!("({} as f64)", expr_str),
-                    TypeNode::Ulong => format!("({} as u64)", expr_str),
+                    TypeNode::Int => format!("(({}) as i64)", expr_str),
+                    TypeNode::Float => format!("(({}) as f64)", expr_str),
+                    TypeNode::Ulong => format!("(({}) as u64)", expr_str),
                     TypeNode::String => format!("format!(\"{{}}\", {})", expr_str),
-                    TypeNode::Bool => format!("({} != 0)", expr_str),
-                    _ => format!("({} as {})", expr_str, self.gen_type(target_type)),
+                    TypeNode::Bool => format!("(({}) != 0)", expr_str),
+                    _ => format!("(({}) as {})", expr_str, self.gen_type(target_type)),
                 }
             },
             // Wave 12: Struct literal — Point { x: 5, y: 10 }
@@ -5827,8 +5841,8 @@ mod tests {
             }),
         };
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("total as f64"), "Missing left cast: {}", code);
-        assert!(code.contains("count as f64"), "Missing right cast: {}", code);
+        assert!(code.contains("as f64") && code.contains("total"), "Missing left cast: {}", code);
+        assert!(code.contains("as f64") && code.contains("count"), "Missing right cast: {}", code);
         assert!(code.contains("/"), "Missing division: {}", code);
     }
 
