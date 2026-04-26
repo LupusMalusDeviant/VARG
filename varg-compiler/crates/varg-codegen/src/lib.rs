@@ -1943,6 +1943,14 @@ impl RustGenerator {
                 // ===== Wave 13: Stdlib Expansion — time =====
                 } else if method_name == "sleep" {
                     format!("std::thread::sleep(std::time::Duration::from_millis({} as u64))", arg_strs[0])
+                } else if method_name == "uuid" {
+                    "{ use rand::Rng; let mut __rng = rand::thread_rng(); let p1: u32 = __rng.gen(); let p2: u16 = __rng.gen(); let p3: u16 = (__rng.gen::<u16>() & 0x0fff) | 0x4000; let p4: u16 = (__rng.gen::<u16>() & 0x3fff) | 0x8000; let p5: u64 = __rng.gen::<u64>() & 0x0000_ffff_ffff_ffffu64; format!(\"{:08x}-{:04x}-{:04x}-{:04x}-{:012x}\", p1, p2, p3, p4, p5) }".to_string()
+                } else if method_name == "random_int" {
+                    let lo = if arg_strs.len() > 0 { arg_strs[0].clone() } else { "0".to_string() };
+                    let hi = if arg_strs.len() > 1 { arg_strs[1].clone() } else { "i64::MAX".to_string() };
+                    format!("{{ use rand::Rng; rand::thread_rng().gen_range(({}i64)..=(({}i64))) }}", lo, hi)
+                } else if method_name == "random_float" {
+                    "{ use rand::Rng; rand::thread_rng().gen::<f64>() }".to_string()
                 } else if method_name == "timestamp" {
                     "chrono::Local::now().to_rfc3339()".to_string()
                 // ===== Wave 16: Date/Time Builtins =====

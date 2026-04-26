@@ -276,6 +276,7 @@ impl TypeChecker {
             "sort", "join", "count", "filter", "map", "flat_map", "find",
             "any", "all", "zip", "enumerate", "take", "skip", "reduce", "fold", "sum",
             "flatten", "unique", "dedup", "distinct", "lines",
+            "uuid", "random_int", "random_float",
             "abs", "sqrt", "floor", "ceil", "round", "to_fixed", "to_hex", "to_binary", "clamp",
             "min", "max", "parse_int", "parse_float", "to_string",
             "contains_key", "send", "request", "env", "fetch", "http_request",
@@ -285,7 +286,8 @@ impl TypeChecker {
             "create_dir", "delete_file",
             "path_exists", "path_join", "path_parent", "path_extension", "path_stem",
             "regex_match", "regex_find_all", "regex_replace",
-            "sleep", "timestamp", "time_millis", "time_format", "time_parse", "time_add", "time_diff",
+            "sleep", "uuid", "random_int", "random_float",
+            "timestamp", "time_millis", "time_format", "time_parse", "time_add", "time_diff",
             "log_debug", "log_info", "log_warn", "log_error",
             "exec", "exec_status",
             "json_parse", "json_get", "json_get_int", "json_get_bool", "json_get_array", "json_stringify",
@@ -1777,6 +1779,12 @@ impl TypeChecker {
                 } else if method_name == "sleep" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (ms)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
+                } else if method_name == "uuid" {
+                    Ok(TypeNode::String)
+                } else if method_name == "random_int" {
+                    Ok(TypeNode::Int)
+                } else if method_name == "random_float" {
+                    Ok(TypeNode::Float)
                 } else if method_name == "timestamp" {
                     if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
