@@ -277,6 +277,7 @@ impl TypeChecker {
             "any", "all", "zip", "enumerate", "take", "skip", "reduce", "fold", "sum",
             "flatten", "unique", "dedup", "distinct", "lines",
             "uuid", "random_int", "random_float",
+            "json_stringify_pretty", "json_keys", "json_values", "json_has", "json_merge", "json_set",
             "abs", "sqrt", "floor", "ceil", "round", "to_fixed", "to_hex", "to_binary", "clamp",
             "min", "max", "parse_int", "parse_float", "to_string",
             "contains_key", "send", "request", "env", "fetch", "http_request",
@@ -290,7 +291,8 @@ impl TypeChecker {
             "timestamp", "time_millis", "time_format", "time_parse", "time_add", "time_diff",
             "log_debug", "log_info", "log_warn", "log_error",
             "exec", "exec_status",
-            "json_parse", "json_get", "json_get_int", "json_get_bool", "json_get_array", "json_stringify",
+            "json_parse", "json_get", "json_get_int", "json_get_bool", "json_get_array",
+            "json_stringify", "json_stringify_pretty", "json_keys", "json_values", "json_has", "json_merge", "json_set",
             "assert", "assert_eq", "assert_ne", "assert_true", "assert_false", "assert_contains", "assert_throws",
             "set_of",
             "graph_open", "graph_add_node", "graph_add_edge", "graph_query", "graph_traverse", "graph_neighbors",
@@ -1355,8 +1357,20 @@ impl TypeChecker {
                 } else if method_name == "json_get_array" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Array(Box::new(TypeNode::String)))
-                } else if method_name == "json_stringify" {
+                } else if method_name == "json_stringify" || method_name == "json_stringify_pretty" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (json)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "json_keys" || method_name == "json_values" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (json_string)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "json_has" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json_string, key)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "json_merge" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json_str1, json_str2)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "json_set" {
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (json_str, key, value)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
                 // ===== Wave 15: Test Framework — assert builtins =====
                 } else if method_name == "assert" {

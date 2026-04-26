@@ -1847,6 +1847,19 @@ impl RustGenerator {
                     format!("{}.pointer(&{}).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>()).unwrap_or_default()", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_stringify" {
                     format!("serde_json::to_string(&{}).unwrap_or_default()", arg_strs[0])
+                } else if method_name == "json_stringify_pretty" {
+                    format!("serde_json::to_string_pretty(&{}).unwrap_or_default()", arg_strs[0])
+                } else if method_name == "json_keys" {
+                    format!("serde_json::from_str::<serde_json::Value>(&{}).ok().and_then(|v| v.as_object().map(|o| o.keys().map(|k| k.to_string()).collect::<Vec<String>>())).unwrap_or_default()", arg_strs[0])
+                } else if method_name == "json_values" {
+                    format!("serde_json::from_str::<serde_json::Value>(&{}).ok().and_then(|v| v.as_object().map(|o| o.values().map(|v| serde_json::to_string(v).unwrap_or_default()).collect::<Vec<String>>())).unwrap_or_default()", arg_strs[0])
+                } else if method_name == "json_has" {
+                    format!("serde_json::from_str::<serde_json::Value>(&{}).ok().and_then(|v| v.as_object().map(|o| o.contains_key({}.as_str()))).unwrap_or(false)", arg_strs[0], arg_strs[1])
+                } else if method_name == "json_merge" {
+                    format!("{{ let mut __a = serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Object(serde_json::Map::new())); if let (Some(am), Ok(serde_json::Value::Object(bm))) = (__a.as_object_mut(), serde_json::from_str::<serde_json::Value>(&{})) {{ for (k,v) in bm {{ am.insert(k,v); }} }} serde_json::to_string(&__a).unwrap_or_default() }}", arg_strs[0], arg_strs[1])
+                } else if method_name == "json_set" {
+                    // json_set(json_str, key, value_str) → string
+                    format!("{{ let mut __j = serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Object(serde_json::Map::new())); if let Some(obj) = __j.as_object_mut() {{ obj.insert({}.clone(), serde_json::from_str(&{}).unwrap_or(serde_json::Value::String({}.clone()))); }} serde_json::to_string(&__j).unwrap_or_default() }}", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[2])
                 // ===== Wave 15: Test Framework — assert builtins =====
                 } else if method_name == "assert" {
                     format!("if !({}) {{ panic!(\"Assertion failed: {{}}\", {}); }}", arg_strs[0], arg_strs[1])
