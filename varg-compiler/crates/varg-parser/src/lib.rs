@@ -228,10 +228,15 @@ impl Parser {
 
     fn try_parse_identifier(&mut self) -> Option<String> {
         match self.peek() {
-            Some(Token::Identifier(_)) | Some(Token::Stream) => {
+            Some(Token::Identifier(_)) | Some(Token::Stream) | Some(Token::Query)
+            | Some(Token::Select) | Some(Token::From) | Some(Token::Where) => {
                 match self.advance() {
                     Some(Token::Identifier(name)) => Some(name),
                     Some(Token::Stream) => Some("stream".to_string()),
+                    Some(Token::Query) => Some("query".to_string()),
+                    Some(Token::Select) => Some("select".to_string()),
+                    Some(Token::From) => Some("from".to_string()),
+                    Some(Token::Where) => Some("where".to_string()),
                     _ => None,
                 }
             }
@@ -243,8 +248,12 @@ impl Parser {
         let span = self.current_span();
         match self.advance() {
             Some(Token::Identifier(name)) => Ok(name),
-            // Issue #4: 'stream' is a contextual keyword — allow as identifier
+            // Contextual keywords — valid as identifiers in name positions
             Some(Token::Stream) => Ok("stream".to_string()),
+            Some(Token::Query) => Ok("query".to_string()),
+            Some(Token::Select) => Ok("select".to_string()),
+            Some(Token::From) => Ok("from".to_string()),
+            Some(Token::Where) => Ok("where".to_string()),
             Some(t) => Err(ParseError::UnexpectedToken {
                 expected: "Identifier".to_string(),
                 found: Some(t),
@@ -461,16 +470,19 @@ impl Parser {
                 if tok == Token::MinusA { is_public = false; }
                 
                 let name = self.parse_identifier()?;
-                // Plan 29: Parse contract implementations: agent Foo : Bar, Baz { ... }
+                // Plan 29: Parse contract implementations:
+                //   agent Foo : Bar, Baz { ... }          — colon syntax
+                //   agent Foo implements Bar, Baz { ... } — implements keyword (contextual)
                 let mut implements = Vec::new();
-                if self.peek() == Some(&Token::Colon) {
-                    self.advance();
+                let uses_implements = matches!(self.peek(), Some(Token::Identifier(s)) if s == "implements");
+                if self.peek() == Some(&Token::Colon) || uses_implements {
+                    self.advance(); // consume `:` or `implements`
                     loop {
                         implements.push(self.parse_identifier()?);
                         if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
                     }
                 }
-                let (mut fields, methods) = self.parse_agent_body()?;
+                let (mut fields, methods) = self.parse_agent_body(Some(&name.clone()))?;
                 // Plan 17: @[WithContext] auto-injects context field
                 if annotations.iter().any(|a| a.name == "WithContext") {
                     if !fields.iter().any(|f| f.name == "context") {
@@ -928,7 +940,7 @@ impl Parser {
     }
 
     /// Parses an agent body: fields (type name;) and methods (type name(...) { ... })
-    fn parse_agent_body(&mut self) -> Result<(Vec<FieldDecl>, Vec<MethodDecl>), ParseError> {
+    fn parse_agent_body(&mut self, class_name: Option<&str>) -> Result<(Vec<FieldDecl>, Vec<MethodDecl>), ParseError> {
         self.consume(Token::LBrace)?;
         let mut fields = Vec::new();
         let mut methods = Vec::new();
@@ -972,7 +984,21 @@ impl Parser {
                 }
             }
 
-            let return_ty = if is_varg_min {
+            // Constructor detection: `public ClassName(args)` where ClassName == agent/struct name.
+            // Only fires when class_name is known AND the identifier matches it AND next token is `(`.
+            let is_constructor = !is_varg_min && (|| {
+                if let Some(class) = class_name {
+                    if let Some(Token::Identifier(id)) = self.peek() {
+                        if id == class {
+                            let next_after = if self.pos + 1 < self.tokens.len() { Some(&self.tokens[self.pos + 1].0) } else { None };
+                            return matches!(next_after, Some(Token::LParen) | Some(Token::LessThan));
+                        }
+                    }
+                }
+                false
+            })();
+
+            let return_ty = if is_varg_min || is_constructor {
                 TypeNode::Void
             } else {
                 self.parse_type()?
