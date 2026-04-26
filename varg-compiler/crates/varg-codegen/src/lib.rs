@@ -1618,6 +1618,11 @@ impl RustGenerator {
                 } else if method_name == "round" {
                     let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
                     format!("(({}) as f64).round()", val)
+                } else if method_name == "pow" {
+                    // pow(base, exp): base^exp as float. Standalone: pow(2, 10). Method: base.pow(exp).
+                    let (base, exp) = if args.len() >= 2 { (arg_strs[0].clone(), arg_strs[1].clone()) }
+                                      else { (self.gen_expression(caller), arg_strs[0].clone()) };
+                    format!("(({}) as f64).powi(({}) as i32)", base, exp)
                 } else if method_name == "to_fixed" {
                     let decimals = if arg_strs.is_empty() { "2".to_string() } else { arg_strs[0].clone() };
                     format!("format!(\"{{:.prec$}}\", {} as f64, prec = {} as usize)", self.gen_expression(caller), decimals)

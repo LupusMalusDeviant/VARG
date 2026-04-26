@@ -279,7 +279,7 @@ impl TypeChecker {
             "trim_start", "trim_end", "ltrim", "rtrim", "split_once", "count_occurrences",
             "uuid", "random_int", "random_float",
             "json_stringify_pretty", "json_keys", "json_values", "json_has", "json_merge", "json_set",
-            "abs", "sqrt", "floor", "ceil", "round", "to_fixed", "to_hex", "to_binary", "clamp",
+            "abs", "sqrt", "floor", "ceil", "round", "pow", "to_fixed", "to_hex", "to_binary", "clamp",
             "min", "max", "parse_int", "parse_float", "to_string",
             "contains_key", "send", "request", "env", "fetch", "http_request",
             "llm_infer", "llm_chat", "encrypt", "decrypt",
@@ -2144,6 +2144,9 @@ impl TypeChecker {
                     } else {
                         Ok(self.infer_expression_type(&args[0])?)
                     }
+                } else if method_name == "pow" {
+                    // pow(base, exp) or base.pow(exp) — returns float
+                    Ok(TypeNode::Float)
                 } else if method_name == "sqrt" || method_name == "floor" || method_name == "ceil" || method_name == "round" {
                     Ok(TypeNode::Float)
                 } else if method_name == "to_fixed" || method_name == "to_hex" || method_name == "to_binary" {
