@@ -1610,6 +1610,15 @@ impl RustGenerator {
                 } else if method_name == "sum" {
                     let caller_code = self.gen_expression(caller);
                     format!("{}.iter().sum::<i64>()", caller_code)
+                } else if method_name == "flatten" {
+                    let caller_code = self.gen_expression(caller);
+                    format!("{}.into_iter().flatten().collect::<Vec<_>>()", caller_code)
+                } else if method_name == "unique" || method_name == "dedup" || method_name == "distinct" {
+                    let caller_code = self.gen_expression(caller);
+                    format!("{{ let mut __v = {}; __v.dedup(); __v }}", caller_code)
+                } else if method_name == "lines" {
+                    // string.lines() → Vec<String>
+                    format!("{}.lines().map(|l| l.to_string()).collect::<Vec<_>>()", self.gen_expression(caller))
                 } else if method_name == "find" {
                     let lambda = self.gen_expression(&args[0]);
                     let caller_code = self.gen_expression(caller);

@@ -275,6 +275,7 @@ impl TypeChecker {
             "last", "reverse", "is_empty", "keys", "values", "remove", "get",
             "sort", "join", "count", "filter", "map", "flat_map", "find",
             "any", "all", "zip", "enumerate", "take", "skip", "reduce", "fold", "sum",
+            "flatten", "unique", "dedup", "distinct", "lines",
             "abs", "sqrt", "floor", "ceil", "round", "to_fixed", "to_hex", "to_binary", "clamp",
             "min", "max", "parse_int", "parse_float", "to_string",
             "contains_key", "send", "request", "env", "fetch", "http_request",
@@ -2168,6 +2169,20 @@ impl TypeChecker {
                     self.infer_expression_type(&args[0])
                 } else if method_name == "sum" {
                     Ok(TypeNode::Int)
+                } else if method_name == "flatten" {
+                    let caller_ty = self.infer_expression_type(caller)?;
+                    let inner = match caller_ty {
+                        TypeNode::Array(i) | TypeNode::List(i) => match *i {
+                            TypeNode::Array(ii) | TypeNode::List(ii) => *ii,
+                            other => other,
+                        },
+                        _ => TypeNode::Custom("Dynamic".to_string()),
+                    };
+                    Ok(TypeNode::Array(Box::new(inner)))
+                } else if method_name == "unique" || method_name == "dedup" || method_name == "distinct" {
+                    Ok(self.infer_expression_type(caller)?)
+                } else if method_name == "lines" {
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
                 // ===== F41-5: Result methods (map_err, map, and_then, unwrap, is_ok, is_err) =====
                 } else if method_name == "map_err" {
                     if args.len() != 1 {
