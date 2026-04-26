@@ -633,7 +633,11 @@ impl Parser {
                     loop {
                         let ty = self.parse_type()?;
                         let param_name = self.parse_identifier()?;
-                        params.push(FieldDecl { name: param_name, ty, default_value: None });
+                        let default_value = if self.peek() == Some(&Token::Assign) {
+                            self.advance();
+                            Some(self.parse_expression()?)
+                        } else { None };
+                        params.push(FieldDecl { name: param_name, ty, default_value });
                         if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
                     }
                 }
