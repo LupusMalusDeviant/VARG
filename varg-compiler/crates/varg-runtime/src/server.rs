@@ -85,6 +85,15 @@ impl VargHttpServer {
     }
 }
 
+// Construct a response from Varg code: http_response(200, "body")
+pub fn __varg_http_response(status: i64, body: &str) -> VargHttpResponse {
+    VargHttpResponse::new(status as u16, body)
+}
+
+pub fn __varg_http_response_json(status: i64, body: &str) -> VargHttpResponse {
+    VargHttpResponse::json(status as u16, body)
+}
+
 // Runtime constructors
 pub fn __varg_http_server() -> VargHttpServer {
     VargHttpServer::new(0)

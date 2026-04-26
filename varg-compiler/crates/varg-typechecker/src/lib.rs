@@ -288,7 +288,8 @@ impl TypeChecker {
             "memory_open", "memory_set", "memory_get", "memory_store", "memory_recall", "memory_add_fact", "memory_query_facts", "memory_episode_count", "memory_clear_working",
             "trace_start", "trace_span", "trace_end", "trace_error", "trace_event", "trace_set_attr", "trace_span_count", "trace_export",
             "mcp_server_new", "mcp_server_register", "mcp_server_tool_count", "mcp_server_handle_request", "mcp_server_run",
-            "event_bus_new", "event_emit", "event_count",
+            "event_bus_new", "event_emit", "event_count", "event_on",
+            "http_response", "http_response_json",
             "pipeline_new", "pipeline_run", "pipeline_step_count",
             "orchestrator_new", "orchestrator_add_task", "orchestrator_run_all", "orchestrator_results", "orchestrator_task_count", "orchestrator_completed_count",
             "self_improver_new", "self_improver_record_success", "self_improver_record_failure", "self_improver_recall", "self_improver_success_rate", "self_improver_iterations", "self_improver_stats",
@@ -1791,6 +1792,10 @@ impl TypeChecker {
                 } else if method_name == "http_listen" {
                     self.check_ocap(&CapabilityType::NetworkAccess, "http_listen")?;
                     Ok(TypeNode::Void)
+                } else if method_name == "http_response" {
+                    Ok(TypeNode::Custom("VargHttpResponse".to_string()))
+                } else if method_name == "http_response_json" {
+                    Ok(TypeNode::Custom("VargHttpResponse".to_string()))
                 // ===== F41-3: Database Builtins =====
                 } else if method_name == "db_open" {
                     self.check_ocap(&CapabilityType::DbAccess, "db_open")?;
@@ -1989,6 +1994,9 @@ impl TypeChecker {
                 } else if method_name == "event_count" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (bus)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Int)
+                } else if method_name == "event_on" {
+                    // event_on(bus, event_name, handler) → registers a handler closure
+                    Ok(TypeNode::Void)
                 } else if method_name == "pipeline_new" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Custom("PipelineHandle".to_string()))

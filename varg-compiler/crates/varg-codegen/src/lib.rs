@@ -1972,6 +1972,12 @@ impl RustGenerator {
                 } else if method_name == "http_listen" {
                     // http_listen(cap, server, addr) → async
                     format!("varg_runtime::server::__varg_http_listen({}, &{}).await", arg_strs[0], arg_strs[1])
+                } else if method_name == "http_response" {
+                    // http_response(status_code, body) → VargHttpResponse
+                    format!("varg_runtime::server::__varg_http_response({}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "http_response_json" {
+                    // http_response_json(status_code, json_body) → VargHttpResponse with JSON content-type
+                    format!("varg_runtime::server::__varg_http_response_json({}, &{})", arg_strs[0], arg_strs[1])
                 // ===== F41-3: Database Driver Builtins =====
                 } else if method_name == "db_open" {
                     // db_open(cap, path) → Result<DbConnection, string>
@@ -2111,6 +2117,9 @@ impl RustGenerator {
                     format!("varg_runtime::pipeline::__varg_event_emit(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "event_count" {
                     format!("varg_runtime::pipeline::__varg_event_count(&{})", arg_strs[0])
+                } else if method_name == "event_on" {
+                    // event_on(bus, event_name, handler) — register reactive handler on bus
+                    format!("varg_runtime::pipeline::__varg_event_on(&{}, &{}, Box::new({}))", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "pipeline_new" {
                     format!("varg_runtime::pipeline::__varg_pipeline_new(&{})", arg_strs[0])
                 } else if method_name == "pipeline_run" {
