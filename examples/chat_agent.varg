@@ -76,8 +76,8 @@ agent Coordinator {
         print "";
 
         // Spawn child agents
-        var worker = spawn TaskWorker {};
-        var logger = spawn LogCollector {};
+        var worker = spawn TaskWorker();
+        var logger = spawn LogCollector();
 
         // Send tasks to worker
         var tasks = ["parse-data", "validate-schema", "generate-report"];

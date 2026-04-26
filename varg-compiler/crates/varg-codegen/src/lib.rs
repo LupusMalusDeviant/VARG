@@ -1107,7 +1107,14 @@ impl RustGenerator {
                     }
                 },
                 Statement::Match { subject, arms } => {
-                    out.push_str(&format!("{}match {} {{\n", indent, self.gen_expression(subject)));
+                    let subject_str = self.gen_expression(subject);
+                    // Rust can't match String with string literal patterns; use .as_str()
+                    let subject_str = if Self::match_has_string_literal_arm(arms) {
+                        format!("{}.as_str()", subject_str)
+                    } else {
+                        subject_str
+                    };
+                    out.push_str(&format!("{}match {} {{\n", indent, subject_str));
                     for arm in arms {
                         let pattern_str = self.gen_pattern(&arm.pattern);
                         if let Some(guard_expr) = &arm.guard {
@@ -1187,6 +1194,8 @@ impl RustGenerator {
     fn gen_pattern(&mut self, pattern: &Pattern) -> String {
         match pattern {
             Pattern::Wildcard => "_".to_string(),
+            // String literals in match patterns must be &str — never ".to_string()"
+            Pattern::Literal(Expression::String(s)) => format!("{:?}", s),
             Pattern::Literal(expr) => self.gen_expression(expr),
             Pattern::Variant(name, bindings) => {
                 if bindings.is_empty() {
@@ -1196,6 +1205,10 @@ impl RustGenerator {
                 }
             },
         }
+    }
+
+    fn match_has_string_literal_arm(arms: &[MatchArm]) -> bool {
+        arms.iter().any(|arm| matches!(&arm.pattern, Pattern::Literal(Expression::String(_))))
     }
 
     fn gen_expression(&mut self, expr: &Expression) -> String {

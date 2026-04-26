@@ -27,11 +27,12 @@ fn priority_label(int level) -> string {
 
 fn priority_value(Priority p) -> int {
     match p {
-        Priority.Critical => { return 0; }
-        Priority.High => { return 1; }
-        Priority.Medium => { return 2; }
-        Priority.Low => { return 3; }
+        Critical => { return 0; }
+        High => { return 1; }
+        Medium => { return 2; }
+        Low => { return 3; }
     }
+    return -1;
 }
 
 agent DataPipeline {

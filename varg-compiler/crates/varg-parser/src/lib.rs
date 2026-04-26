@@ -751,6 +751,17 @@ impl Parser {
 
     pub fn parse_type(&mut self) -> Result<TypeNode, ParseError> {
         let base_type = self.parse_base_type()?;
+        // Check for array suffix: string[] → Array(String)
+        if self.peek() == Some(&Token::LBracket) && self.peek_at(1) == Some(&Token::RBracket) {
+            self.advance(); // [
+            self.advance(); // ]
+            let array_type = TypeNode::Array(Box::new(base_type));
+            if self.peek() == Some(&Token::QuestionMark) {
+                self.advance();
+                return Ok(TypeNode::Nullable(Box::new(array_type)));
+            }
+            return Ok(array_type);
+        }
         // Check for nullable suffix: string? → Nullable(String)
         if self.peek() == Some(&Token::QuestionMark) {
             self.advance();

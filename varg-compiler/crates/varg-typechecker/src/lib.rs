@@ -2321,7 +2321,14 @@ impl TypeChecker {
                 if let Some(fb) = fallback {
                     self.check_block(fb)?;
                 }
-                Ok(TypeNode::Void)
+                // Infer type from last statement of the body block
+                let body_ty = body.statements.last().map(|stmt| match stmt {
+                    Statement::Return(Some(e)) | Statement::Expr(e) => {
+                        self.infer_expression_type(e).unwrap_or(TypeNode::Void)
+                    }
+                    _ => TypeNode::Void,
+                }).unwrap_or(TypeNode::Void);
+                Ok(body_ty)
             },
             // Plan 16: spawn returns an AgentHandle type
             Expression::Spawn { agent_name, args } => {
