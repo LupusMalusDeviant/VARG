@@ -54,6 +54,8 @@ pub enum TypeError {
     WrongTypeArgumentCount { type_name: String, expected: usize, found: usize },
     // Plan 58: Missing return on non-void function
     MissingReturn { function_name: String },
+    // Trait-bound enforcement: T must implement contract
+    TraitBoundViolation { type_name: String, bound: String, type_param: String },
 }
 
 impl TypeError {
@@ -108,6 +110,9 @@ impl TypeError {
             TypeError::MissingReturn { function_name } => {
                 format!("function `{}` has non-void return type but not all code paths return a value", function_name)
             }
+            TypeError::TraitBoundViolation { type_name, bound, type_param } => {
+                format!("type `{}` does not implement contract `{}` required by bound `{}: {}`", type_name, bound, type_param, bound)
+            }
         }
     }
 
@@ -121,6 +126,7 @@ impl TypeError {
             TypeError::ContractNotDefined { contract_name, .. } => Some(contract_name),
             TypeError::MissingReturn { function_name } => Some(function_name),
             TypeError::MissingCapability { operation, .. } => Some(operation),
+            TypeError::TraitBoundViolation { type_name, .. } => Some(type_name),
             _ => None,
         }
     }
@@ -187,6 +193,9 @@ pub struct TypeChecker {
     // F41-6: Agent → contracts it implements (for DI type compatibility)
     agent_implements: HashMap<String, Vec<String>>,
 
+    // Trait-bound enforcement: agent_name → method_name → (type_params, constraints)
+    method_constraints: HashMap<String, HashMap<String, (Vec<String>, Vec<GenericConstraint>)>>,
+
     // Wave 12 Phase 5: Source text + current item span for error reporting
     source: Option<String>,
     current_item_span: Option<Range<usize>>,
@@ -225,6 +234,7 @@ impl TypeChecker {
             known_functions: HashMap::new(),
             imported_crates: std::collections::HashSet::new(),
             agent_implements: HashMap::new(),
+            method_constraints: HashMap::new(),
             source: None,
             current_item_span: None,
         }
@@ -464,13 +474,20 @@ impl TypeChecker {
                 self.agent_fields.insert(agent.name.clone(), agent.fields.clone());
                 // Plan 30: Register method signatures for return-type tracking
                 let mut methods = HashMap::new();
+                let mut constraints_map: HashMap<String, (Vec<String>, Vec<GenericConstraint>)> = HashMap::new();
                 for method in &agent.methods {
                     methods.insert(method.name.clone(), MethodSignature {
                         return_ty: method.return_ty.clone(),
                         args: method.args.clone(),
                     });
+                    if !method.constraints.is_empty() {
+                        constraints_map.insert(method.name.clone(), (method.type_params.clone(), method.constraints.clone()));
+                    }
                 }
                 self.method_signatures.insert(agent.name.clone(), methods);
+                if !constraints_map.is_empty() {
+                    self.method_constraints.insert(agent.name.clone(), constraints_map);
+                }
 
                 // Plan 29: Contract enforcement — check all implemented contracts
                 for contract_name in &agent.implements {
@@ -2181,16 +2198,64 @@ impl TypeChecker {
                     // Plan 30: Look up method signatures on known types
                     let caller_ty = self.infer_expression_type(caller)?;
                     if let TypeNode::Custom(ref type_name) = caller_ty {
-                        if let Some(methods) = self.method_signatures.get(type_name) {
-                            if let Some(sig) = methods.get(method_name) {
-                                return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
+                        // Clone all data we need before any mutable borrow (infer_expression_type)
+                        let sig_data = self.method_signatures.get(&type_name[..])
+                            .and_then(|m| m.get(&method_name[..]))
+                            .map(|sig| (sig.return_ty.clone(), sig.args.clone()));
+                        let has_type = self.method_signatures.contains_key(&type_name[..]);
+                        let constraints_data = self.method_constraints
+                            .get(&type_name[..])
+                            .and_then(|mc| mc.get(&method_name[..]))
+                            .cloned();
+
+                        if let Some((ret_ty, sig_args)) = sig_data {
+                            // Trait-bound enforcement: check generic constraints at call site
+                            if let Some((type_params, constraints)) = constraints_data {
+                                let actual_types: Vec<TypeNode> = args.iter()
+                                    .map(|a| self.infer_expression_type(a))
+                                    .collect::<Result<_, _>>()?;
+                                let mut bindings: HashMap<String, TypeNode> = HashMap::new();
+                                for (param, actual) in sig_args.iter().zip(actual_types.iter()) {
+                                    if let TypeNode::Custom(ref pname) = param.ty {
+                                        if type_params.contains(pname) {
+                                            bindings.insert(pname.clone(), actual.clone());
+                                        }
+                                    }
+                                }
+                                for constraint in &constraints {
+                                    if let Some(bound_ty) = bindings.get(&constraint.type_param) {
+                                        for bound in &constraint.bounds {
+                                            if self.known_contracts.contains_key(&bound[..]) {
+                                                let ok = if let TypeNode::Custom(ref aname) = bound_ty {
+                                                    self.agent_implements.get(&aname[..])
+                                                        .map(|v| v.contains(bound))
+                                                        .unwrap_or(false)
+                                                } else { false };
+                                                if !ok {
+                                                    let actual_name = match bound_ty {
+                                                        TypeNode::Custom(n) => n.clone(),
+                                                        _ => format!("{:?}", bound_ty),
+                                                    };
+                                                    return Err(TypeError::TraitBoundViolation {
+                                                        type_name: actual_name,
+                                                        bound: bound.clone(),
+                                                        type_param: constraint.type_param.clone(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
+                            return Ok(ret_ty.unwrap_or(TypeNode::Void));
+                        }
+                        if has_type {
                             // Known type but unknown method → check standalone fns before erroring
                             // (already checked above, so this is truly unknown)
                             return Err(self.unknown_method_error(type_name, method_name));
                         }
                         // F41-6: Contract-typed callers — look up method in contract definition
-                        if let Some(contract) = self.known_contracts.get(type_name) {
+                        if let Some(contract) = self.known_contracts.get(&type_name[..]) {
                             for m in &contract.methods {
                                 if m.name == *method_name {
                                     return Ok(m.return_ty.clone().unwrap_or(TypeNode::Void));
@@ -8571,5 +8636,147 @@ mod tests {
         let mut checker = TypeChecker::new();
         let result = checker.check_program(&program);
         assert!(result.is_ok(), "enum declaration + variant access must typecheck: {:?}", result);
+    }
+
+    // ===== Trait-Bound Enforcement =====
+
+    fn make_bound_program(agent_implements: Vec<String>, use_correct_agent: bool) -> Program {
+        // contract IProcessor { fn process(string s) -> string; }
+        // agent CorrectProcessor implements IProcessor { ... }
+        // agent WrongAgent { ... }
+        // agent Caller { public void run(T item) where T: IProcessor { item.process("x"); } }
+        let contract = Item::Contract(ContractDef {
+            name: "IProcessor".to_string(),
+            is_public: false,
+            target_annotation: None,
+            methods: vec![MethodDecl {
+                name: "process".to_string(), is_public: true, is_async: false,
+                annotations: vec![], type_params: vec![], constraints: vec![],
+                args: vec![FieldDecl { name: "s".to_string(), ty: TypeNode::String, default_value: None }],
+                return_ty: Some(TypeNode::String), body: None,
+            }],
+        });
+        let correct_processor = Item::Agent(AgentDef {
+            name: "CorrectProcessor".to_string(), is_system: false, is_public: false,
+            target_annotation: None, annotations: vec![],
+            implements: vec!["IProcessor".to_string()],
+            fields: vec![],
+            methods: vec![MethodDecl {
+                name: "process".to_string(), is_public: true, is_async: false,
+                annotations: vec![], type_params: vec![], constraints: vec![],
+                args: vec![FieldDecl { name: "s".to_string(), ty: TypeNode::String, default_value: None }],
+                return_ty: Some(TypeNode::String),
+                body: Some(Block { statements: vec![
+                    Statement::Return(Some(Expression::String("ok".to_string()))),
+                ]}),
+            }],
+        });
+        let wrong_agent = Item::Agent(AgentDef {
+            name: "WrongAgent".to_string(), is_system: false, is_public: false,
+            target_annotation: None, annotations: vec![], implements: vec![],
+            fields: vec![],
+            methods: vec![MethodDecl {
+                name: "foo".to_string(), is_public: true, is_async: false,
+                annotations: vec![], type_params: vec![], constraints: vec![],
+                args: vec![], return_ty: Some(TypeNode::Void),
+                body: Some(Block { statements: vec![] }),
+            }],
+        });
+        let arg_agent_name = if use_correct_agent { "CorrectProcessor" } else { "WrongAgent" };
+        let caller = Item::Agent(AgentDef {
+            name: "Caller".to_string(), is_system: false, is_public: false,
+            target_annotation: None, annotations: vec![], implements: vec![],
+            fields: vec![FieldDecl {
+                name: "item".to_string(),
+                ty: TypeNode::Custom(arg_agent_name.to_string()),
+                default_value: None,
+            }],
+            methods: vec![MethodDecl {
+                name: "run".to_string(), is_public: true, is_async: false,
+                annotations: vec![],
+                type_params: vec!["T".to_string()],
+                constraints: vec![GenericConstraint {
+                    type_param: "T".to_string(),
+                    bounds: vec!["IProcessor".to_string()],
+                }],
+                args: vec![FieldDecl {
+                    name: "item".to_string(),
+                    ty: TypeNode::Custom("T".to_string()),
+                    default_value: None,
+                }],
+                return_ty: Some(TypeNode::Void),
+                body: Some(Block { statements: vec![] }),
+            }],
+        });
+        // Build a call: caller_instance.run(arg_agent_instance)
+        // We can't easily build a full method-call program for testing without spawn,
+        // so we test using check_program with an agent that calls the method internally.
+        let _ = agent_implements; // unused in this helper
+        Program { no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![contract, correct_processor, wrong_agent, caller] }
+    }
+
+    #[test]
+    fn test_trait_bound_satisfied_passes() {
+        // CorrectProcessor implements IProcessor — calling run(CorrectProcessor) must pass
+        let prog = make_bound_program(vec!["IProcessor".to_string()], true);
+        let mut checker = TypeChecker::new();
+        // Manually register and check the program structure
+        let result = checker.check_program(&prog);
+        assert!(result.is_ok(), "bound satisfied should typecheck: {:?}", result);
+        // After check_program, agent_implements must be populated
+        assert!(checker.agent_implements.contains_key("CorrectProcessor"));
+        assert!(checker.method_constraints.contains_key("Caller"));
+    }
+
+    #[test]
+    fn test_trait_bound_violation_at_call_site() {
+        // Inline test: build a program where Caller.run() body calls itself with a WrongAgent
+        // We verify the bound is registered but rely on expression-level checking
+        // The easiest way: directly invoke infer_expression_type on a MethodCall
+        let mut checker = TypeChecker::new();
+        // Set up state manually
+        checker.known_contracts.insert("IProcessor".to_string(), ContractDef {
+            name: "IProcessor".to_string(), is_public: false, target_annotation: None,
+            methods: vec![],
+        });
+        checker.agent_implements.insert("GoodAgent".to_string(), vec!["IProcessor".to_string()]);
+        // Register Caller agent with a generic method that has an IProcessor bound
+        let mut caller_methods = std::collections::HashMap::new();
+        caller_methods.insert("run".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::Void),
+            args: vec![FieldDecl { name: "item".to_string(), ty: TypeNode::Custom("T".to_string()), default_value: None }],
+        });
+        checker.method_signatures.insert("Caller".to_string(), caller_methods);
+        let mut caller_mc = std::collections::HashMap::new();
+        caller_mc.insert("run".to_string(), (
+            vec!["T".to_string()],
+            vec![GenericConstraint { type_param: "T".to_string(), bounds: vec!["IProcessor".to_string()] }],
+        ));
+        checker.method_constraints.insert("Caller".to_string(), caller_mc);
+        checker.env.insert("caller".to_string(), TypeNode::Custom("Caller".to_string()));
+        checker.env.insert("bad_item".to_string(), TypeNode::Custom("BadAgent".to_string()));
+        checker.env.insert("good_item".to_string(), TypeNode::Custom("GoodAgent".to_string()));
+
+        // Good call: caller.run(good_item) — GoodAgent implements IProcessor
+        let good_call = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("caller".to_string())),
+            method_name: "run".to_string(),
+            args: vec![Expression::Identifier("good_item".to_string())],
+        };
+        assert!(checker.infer_expression_type(&good_call).is_ok(), "good call must pass");
+
+        // Bad call: caller.run(bad_item) — BadAgent does NOT implement IProcessor
+        let bad_call = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("caller".to_string())),
+            method_name: "run".to_string(),
+            args: vec![Expression::Identifier("bad_item".to_string())],
+        };
+        let err = checker.infer_expression_type(&bad_call);
+        assert!(
+            matches!(err, Err(TypeError::TraitBoundViolation { ref type_name, ref bound, .. })
+                if type_name == "BadAgent" && bound == "IProcessor"),
+            "bad call must produce TraitBoundViolation, got: {:?}", err
+        );
     }
 }
