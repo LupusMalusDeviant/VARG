@@ -132,6 +132,10 @@ pub struct RustGenerator {
     user_impl_methods: HashSet<String>,
     /// Whether we are currently generating the body of a TryCatch try block
     in_try_block: bool,
+    /// Wave 48: @[Trace] — method-level execution tracing
+    trace_method: bool,
+    trace_agent_name: String,
+    trace_method_name: String,
 }
 
 impl RustGenerator {
@@ -156,6 +160,9 @@ impl RustGenerator {
             known_function_params: HashMap::new(),
             user_impl_methods: HashSet::new(),
             in_try_block: false,
+            trace_method: false,
+            trace_agent_name: String::new(),
+            trace_method_name: String::new(),
         }
     }
 
@@ -404,6 +411,7 @@ impl RustGenerator {
                     out.push_str("}\n\n");
                 }
                 out.push_str(&format!("impl {} {{\n", a.name));
+                self.trace_agent_name = a.name.clone();
 
                 // Generate new() constructor if agent has fields
                 // F41-6: Skip auto-new() for agents with contract-typed fields (must use DI)
@@ -506,7 +514,11 @@ impl RustGenerator {
                                 method.name, method.name, method.name, runs
                             ));
                         }
+                        // @[Trace] is handled at body generation time (see below)
                     }
+
+                    // Wave 48: detect @[Trace] on this method
+                    let is_traced = method.annotations.iter().any(|a| a.name == "Trace");
 
                     // Wave 14: Auto-detect if method uses ? and needs Result wrapping
                     let uses_try = method.body.as_ref().map_or(false, |b| block_contains_try_propagate(b));
@@ -543,12 +555,43 @@ impl RustGenerator {
                         } else {
                             out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, false)));
                         }
+                        // Wave 48: @[Trace] — inject drop-guard for entry/exit timing
+                        let prev_trace = self.trace_method;
+                        let prev_method_name = self.trace_method_name.clone();
+                        if is_traced {
+                            self.trace_method = true;
+                            self.trace_method_name = method.name.clone();
+                            let qualified = format!("{}::{}", self.trace_agent_name, method.name);
+                            out.push_str(&format!(
+                                "        eprintln!(\"\\x1b[36m[TRACE]\\x1b[0m \\u{{2192}} {qualified}()\");\n"
+                            ));
+                            out.push_str(
+                                "        struct __TraceGuard__ { name: &'static str, t0: ::std::time::Instant }\n"
+                            );
+                            out.push_str(
+                                "        impl Drop for __TraceGuard__ {\n"
+                            );
+                            out.push_str(
+                                "            fn drop(&mut self) {\n"
+                            );
+                            out.push_str(
+                                "                eprintln!(\"\\x1b[36m[TRACE]\\x1b[0m \\u{2190} {} ({:.1}ms)\", self.name, self.t0.elapsed().as_secs_f64() * 1000.0);\n"
+                            );
+                            out.push_str(
+                                "            }\n        }\n"
+                            );
+                            out.push_str(&format!(
+                                "        let _tg = __TraceGuard__ {{ name: \"{qualified}\", t0: ::std::time::Instant::now() }};\n"
+                            ));
+                        }
                         let prev = self.in_result_function;
                         self.in_result_function = uses_try;
                         if let Some(body) = &method.body {
                             out.push_str(&self.gen_block(body, 2));
                         }
                         self.in_result_function = prev;
+                        self.trace_method = prev_trace;
+                        self.trace_method_name = prev_method_name;
                         if uses_try {
                             out.push_str("        Ok(())\n");
                         }
@@ -959,6 +1002,13 @@ impl RustGenerator {
                     let val_str = self.gen_expression(value);
                     let val_str = self.clone_self_field_if_needed(&val_str);
                     out.push_str(&format!("{}let mut {} = {};\n", indent, name, val_str));
+                    // Wave 48: @[Trace] — log variable creation
+                    if self.trace_method {
+                        out.push_str(&format!(
+                            "{}eprintln!(\"\\x1b[36m[TRACE]\\x1b[0m   let {name}\");\n",
+                            indent
+                        ));
+                    }
                 },
                 Statement::Assign { name, value } => {
                     // Plan 19: Resolve field name with self. prefix
@@ -998,6 +1048,13 @@ impl RustGenerator {
                         }
                     }
                     out.push_str(&format!("{}{} = {};\n", indent, &resolved_name, self.gen_expression(value)));
+                    // Wave 48: @[Trace] — log assignment
+                    if self.trace_method {
+                        out.push_str(&format!(
+                            "{}eprintln!(\"\\x1b[36m[TRACE]\\x1b[0m   {resolved_name} ← ...\");\n",
+                            indent
+                        ));
+                    }
                 },
                 Statement::IndexAssign { target, index, value } => {
                     let idx_str = self.gen_expression(index);
@@ -8544,5 +8601,99 @@ mod tests {
         let program = Program { no_std: false, docs: std::collections::HashMap::new(), items: vec![fn_item] };
         let code = RustGenerator::new().generate(&program);
         assert!(code.contains("a | b"), "BitOr must emit |: {code}");
+    }
+
+    // ===== Wave 48: @[Trace] annotation tests =====
+
+    fn make_agent_with_annotation(ann_name: &str, method_stmts: Vec<Statement>) -> Program {
+        Program {
+            no_std: false,
+            docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "Bot".to_string(),
+                is_system: false,
+                is_public: false,
+                target_annotation: None,
+                annotations: vec![],
+                implements: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true,
+                    is_async: false,
+                    annotations: vec![Annotation { name: ann_name.to_string(), values: vec![] }],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: None,
+                    body: Some(Block { statements: method_stmts }),
+                }],
+            })],
+        }
+    }
+
+    #[test]
+    fn test_trace_annotation_entry_log() {
+        let program = make_agent_with_annotation("Trace", vec![]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("TRACE"), "should emit TRACE marker: {code}");
+        assert!(code.contains("Bot::Run"), "should include agent::method name: {code}");
+    }
+
+    #[test]
+    fn test_trace_annotation_drop_guard() {
+        let program = make_agent_with_annotation("Trace", vec![]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("__TraceGuard__"), "should emit drop guard struct: {code}");
+        assert!(code.contains("_tg"), "should bind drop guard: {code}");
+        assert!(code.contains("elapsed"), "should measure elapsed time: {code}");
+    }
+
+    #[test]
+    fn test_trace_annotation_let_stmt() {
+        let stmts = vec![Statement::Let {
+            name: "x".to_string(),
+            ty: Some(TypeNode::Int),
+            value: Expression::Int(42),
+        }];
+        let program = make_agent_with_annotation("Trace", stmts);
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("let x"), "should emit let x: {code}");
+        assert!(code.contains("let mut x = 42"), "should emit variable: {code}");
+        // trace log should mention the variable name
+        let _trace_x = code.contains("let x\"") || code.contains("let x'") || code.contains("let x)");
+        // At minimum the TRACE eprintln for let must appear after the let statement
+        let let_pos = code.find("let mut x").unwrap_or(0);
+        let trace_pos = code[let_pos..].find("TRACE").unwrap_or(usize::MAX);
+        assert!(trace_pos < 200, "@[Trace] should log 'let x' soon after let statement: {code}");
+    }
+
+    #[test]
+    fn test_no_trace_without_annotation() {
+        let program = make_agent_with_annotation("Test", vec![]);
+        let code = RustGenerator::new().generate(&program);
+        assert!(!code.contains("__TraceGuard__"), "should NOT emit trace guard without @[Trace]: {code}");
+    }
+
+    #[test]
+    fn test_trace_assign_stmt() {
+        let stmts = vec![
+            Statement::Let {
+                name: "count".to_string(),
+                ty: Some(TypeNode::Int),
+                value: Expression::Int(0),
+            },
+            Statement::Assign {
+                name: "count".to_string(),
+                value: Expression::Int(1),
+            },
+        ];
+        let program = make_agent_with_annotation("Trace", stmts);
+        let code = RustGenerator::new().generate(&program);
+        // assignment trace should mention the variable name
+        assert!(code.contains("count"), "should reference count: {code}");
+        let assign_pos = code.find("count = 1").unwrap_or(0);
+        let trace_after = &code[assign_pos..];
+        assert!(trace_after.contains("TRACE"), "@[Trace] should log assignment: {code}");
     }
 }

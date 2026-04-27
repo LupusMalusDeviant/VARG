@@ -522,17 +522,19 @@ fn main() {
 
     // Wave 14: --debug flag for debug builds (faster compilation, debug symbols)
     let debug_mode = args.iter().any(|a| a == "--debug");
+    // Wave 48: --trace flag — inject @[Trace] on all agent methods
+    let trace_mode = args.iter().any(|a| a == "--trace");
 
     match command.as_str() {
         "build" => {
-            compile_varg_file(&input_file_str, false, debug_mode, wasm_target.as_deref());
+            compile_varg_file_traced(&input_file_str, false, debug_mode, wasm_target.as_deref(), trace_mode);
         },
         "run" => {
-            compile_varg_file(&input_file_str, true, debug_mode, wasm_target.as_deref());
+            compile_varg_file_traced(&input_file_str, true, debug_mode, wasm_target.as_deref(), trace_mode);
         },
         "emit-rs" => {
             // The old behavior (just spit out the .rs file)
-            let (rust_source, _) = parse_and_generate(&input_file_str);
+            let (rust_source, _) = parse_and_generate_traced(&input_file_str, trace_mode);
             let output_path = input_file_str.replace(".varg", ".rs");
             // Plan 44: Prepend #![allow(...)] and run rustfmt
             let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
@@ -773,7 +775,7 @@ fn watch_varg_file(input_file: &str) {
     println!("[watch] Press Ctrl+C to stop.");
 
     // Initial compile
-    compile_varg_file(input_file, false, false, None);
+    compile_varg_file(input_file, false, false, None, false);
 
     let mut last_modified = get_latest_varg_mtime(dir);
 
@@ -782,7 +784,7 @@ fn watch_varg_file(input_file: &str) {
         let current = get_latest_varg_mtime(dir);
         if current > last_modified {
             println!("\n[watch] Change detected, recompiling...");
-            compile_varg_file(input_file, false, false, None);
+            compile_varg_file(input_file, false, false, None, false);
             last_modified = current;
         }
     }
@@ -1122,6 +1124,48 @@ fn report_semantic_error(filename: &str, source: &str, err: &varg_typechecker::S
     });
 }
 
+/// Wave 48: Inject @[Trace] annotation on every agent method that doesn't already have it.
+fn inject_trace_annotations(program: &mut varg_ast::ast::Program) {
+    use varg_ast::ast::{Annotation, Item};
+    for item in &mut program.items {
+        if let Item::Agent(ref mut agent) = item {
+            for method in &mut agent.methods {
+                if !method.annotations.iter().any(|a| a.name == "Trace") {
+                    method.annotations.push(Annotation {
+                        name: "Trace".to_string(),
+                        values: vec![],
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Wave 48: parse_and_generate with optional global trace injection.
+fn parse_and_generate_traced(input_path: &str, trace: bool) -> (String, varg_ast::ast::Program) {
+    let mut loaded = std::collections::HashSet::new();
+    let mut merged_ast = varg_ast::ast::Program { no_std: false, items: Vec::new(), docs: std::collections::HashMap::new() };
+    parse_recursive(input_path, &mut merged_ast, &mut loaded);
+    if trace {
+        inject_trace_annotations(&mut merged_ast);
+    }
+    let source_for_errors = fs::read_to_string(input_path).unwrap_or_default();
+    let mut checker = TypeChecker::new();
+    checker.set_source(&source_for_errors);
+    if let Err(errors) = checker.check_program(&merged_ast) {
+        for err in &errors { report_semantic_error(input_path, &source_for_errors, err); }
+        exit(1);
+    }
+    let mut generator = RustGenerator::new();
+    let source = generator.generate_with_source_map(&merged_ast, &source_for_errors);
+    (source, merged_ast)
+}
+
+/// Wave 48: compile_varg_file wrapper that supports the --trace flag.
+fn compile_varg_file_traced(input_path: &str, run_immediately: bool, debug_mode: bool, wasm_target: Option<&str>, trace: bool) {
+    compile_varg_file(input_path, run_immediately, debug_mode, wasm_target, trace);
+}
+
 fn parse_and_generate(input_path: &str) -> (String, varg_ast::ast::Program) {
     let mut loaded = std::collections::HashSet::new();
     let mut merged_ast = varg_ast::ast::Program { no_std: false, items: Vec::new(), docs: std::collections::HashMap::new() };
@@ -1214,13 +1258,13 @@ fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mu
 
 }
 
-fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, wasm_target: Option<&str>) {
+fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, wasm_target: Option<&str>, trace: bool) {
     let varg_name = Path::new(input_path).file_stem().unwrap().to_str().unwrap();
 
     let is_wasm = wasm_target.map(|t| t.starts_with("wasm")).unwrap_or(false);
-    
-    println!("-> Transpiling {}...", input_path);
-    let (mut final_rust_source, ast) = parse_and_generate(input_path);
+
+    println!("-> Transpiling {}{}...", input_path, if trace { " (trace)" } else { "" });
+    let (mut final_rust_source, ast) = parse_and_generate_traced(input_path, trace);
 
     // Plan 27: Detect if program uses async methods
     let has_async = ast.items.iter().any(|item| {
