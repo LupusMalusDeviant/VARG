@@ -712,7 +712,7 @@ agent Worker {
 agent Manager {
     public void Run() {
         // Spawn a worker
-        var worker = spawn Worker {};
+        var worker = spawn Worker();
 
         // Fire-and-forget message
         worker.send("process", "task-1");
@@ -737,9 +737,15 @@ import math.{sqrt, abs};
 // Import single item
 import utils.helper;
 
-// External crate (from crates.io)
-crate serde = "1.0" ["derive"];
-crate reqwest = "0.11" ["json"];
+// External crate (from crates.io) — 'import crate' + name = "version"
+import crate serde_json;                              // simple, auto-added to Cargo.toml
+import crate serde = "1.0" features ["derive"];       // versioned with features
+import crate reqwest = "0.11" features ["json"];
+
+// Qualified Rust path imports
+import serde_json::Value;
+import axum::{Router, Json};
+import tokio::*;
 ```
 
 ---
@@ -1094,10 +1100,13 @@ public string Search(string query) {
 
 ### Rate Limiting
 
+Annotation parameters must be **string literals** (not named args):
+
 ```csharp
-@[RateLimit(calls: 10, window_ms: 60000)]
+// @[RateLimit("max_calls", "window_ms")]
+@[RateLimit("10", "60000")]
 public string CallApi(string prompt, LlmAccess llm) {
-    // Enforced: max 10 calls per minute per key
+    // Enforced: max 10 calls per 60 000 ms (1 minute), per key
     return llm_chat("gpt-4o", [{"role": "user", "content": prompt}], llm);
 }
 ```
@@ -1105,9 +1114,10 @@ public string CallApi(string prompt, LlmAccess llm) {
 ### LLM Budget Guards
 
 ```csharp
-@[Budget(tokens: 50000, usd: 5)]
+// @[Budget("max_tokens", "max_usd_cents")]
+@[Budget("50000", "500")]
 public string RunAgent(string task, LlmAccess llm) {
-    // Hard budget: 50k tokens or $5 — whichever hits first stops the agent
+    // Hard budget: 50 000 tokens or $5.00 — whichever hits first stops the agent
     return llm_chat("gpt-4o", [{"role": "user", "content": task}], llm);
 }
 ```
@@ -1125,7 +1135,8 @@ public void Process(string input) {
 ### Property-Based Testing
 
 ```csharp
-@[Property(runs: 100)]
+// @[Property("runs")]
+@[Property("100")]
 public void TestSortIsIdempotent() {
     var xs = prop_gen_int_list(0, 1000, 10);
     var sorted = xs.sort();

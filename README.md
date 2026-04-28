@@ -147,11 +147,11 @@ Varg compiles to native Rust binaries -- no interpreter, no garbage collector.
 - **Agent Orchestration** -- fan-out/fan-in parallel execution, task queues
 - **Self-Improving Loop** -- feedback tracking, success/failure recall via similarity search
 - **LLM Provider Abstraction** -- OpenAI, Anthropic, Ollama with unified API (`llm_chat`, `llm_structured`, `llm_stream`, `llm_embed_batch`)
-- **LLM Budget Guards** -- `@[Budget(tokens: N, usd: F)]` — hard token + USD limits enforced at runtime
-- **Rate Limiting** -- `@[RateLimit(calls: N, window_ms: M)]` — per-key token-bucket rate limiter
+- **LLM Budget Guards** -- `@[Budget("tokens", "usd_cents")]` — hard token + USD limits enforced at runtime
+- **Rate Limiting** -- `@[RateLimit("max_calls", "window_ms")]` — per-key token-bucket rate limiter
 - **Agent Checkpoint** -- `@[Checkpointed("path.db")]` — pause/resume agent state via SQLite
 - **Typed Channels** -- `channel_new`, `channel_send`, `channel_recv` — MPSC channels with timeout
-- **Property-Based Testing** -- `@[Property(runs: N)]` — random input generation + assertion
+- **Property-Based Testing** -- `@[Property("runs")]` — random input generation + assertion
 - **Multimodal** -- `image_load`, `audio_load`, `llm_vision` — image/audio analysis via LLM
 - **Workflow DAG** -- `workflow_new`, `workflow_add_step` — dependency-ordered step execution
 - **Package Registry** -- `registry_open`, `registry_install`, `registry_search` — local package management
@@ -376,7 +376,7 @@ Varg includes 35 runtime modules, all with real implementations (no stubs):
 | LLM Budget | Pure Rust | Token + USD budget guards, `@[Budget]` annotation |
 | Checkpoint | rusqlite | Pause/resume state persistence, `@[Checkpointed]` annotation |
 | Typed Channel | Pure Rust | MPSC send/recv with timeout and close semantics |
-| Property Testing | Pure Rust | Random input gen, `@[Property(runs: N)]` annotation |
+| Property Testing | Pure Rust | Random input gen, `@[Property("runs")]` annotation |
 | Multimodal | Pure Rust | Image/audio load, base64 encode, `llm_vision` |
 | Workflow DAG | Pure Rust | DAG step ordering, dependency resolution, status tracking |
 | Package Registry | Pure Rust + JSON | Install/uninstall/search local packages |
