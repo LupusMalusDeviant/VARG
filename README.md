@@ -4,7 +4,7 @@
   <img src="docs/varg_logo.png" alt="Varg Logo" width="300"/>
 
   [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-  [![Try Online](https://img.shields.io/badge/playground-live-brightgreen)](https://varg.serverwatch.de)
+  [![Try Online](https://img.shields.io/badge/playground-live-brightgreen)](https://varg.lupusmalus.dev)
   [![Tests](https://img.shields.io/badge/tests-953%20passing-success)](varg-compiler)
 </div>
 
