@@ -12,7 +12,7 @@ agent FileProcessor {
 
     /// Count words in a file — requires FileAccess capability.
     public int CountWords(string path, FileAccess cap) {
-        var content = fs_read(path)?;
+        var content = fs_read(path) or "";
         var words = content.split(" ");
         return words.len();
     }
@@ -23,13 +23,10 @@ agent FileProcessor {
 
         for file in files {
             if file.ends_with(".txt") {
-                try {
-                    var count = self.CountWords(file, cap);
-                    log_info($"{file}: {count} words");
-                    files_processed += 1;
-                } catch err {
-                    log_warn($"Skipping {file}: {err}");
-                }
+                log_info($"Processing: {file}");
+                var count = self.CountWords(file, cap);
+                log_info($"  -> {count} words");
+                files_processed += 1;
             }
         }
     }

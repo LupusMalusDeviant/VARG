@@ -15,7 +15,7 @@ agent ApiClient {
         var url = $"{base_url}/users/{id}";
 
         var body = retry(3) {
-            fetch(url, "GET")?
+            fetch(url, "GET")
         } fallback {
             "{\"name\": \"offline\", \"email\": \"n/a\"}"
         };

@@ -37,9 +37,9 @@ agent ClawLite {
         print "";
 
         // Check 1: HOME / USERPROFILE env
-        var home = env("HOME");
+        var home = env("HOME") or "";
         if home == "" {
-            home = env("USERPROFILE");
+            home = env("USERPROFILE") or "";
         }
         if home == "" {
             print $"  {red}FAIL{reset}  no HOME or USERPROFILE in environment";
@@ -57,7 +57,7 @@ agent ClawLite {
         }
 
         // Check 3: API key present?
-        var anthropic_key = env("ANTHROPIC_API_KEY");
+        var anthropic_key = env("ANTHROPIC_API_KEY") or "";
         if anthropic_key == "" {
             print $"  {yellow}WARN{reset}  ANTHROPIC_API_KEY not set (LLM features unavailable)";
         } else {

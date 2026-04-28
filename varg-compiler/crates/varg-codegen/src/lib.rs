@@ -335,8 +335,12 @@ impl RustGenerator {
                 let mut body = self.gen_block(&func_body, 1);
                 self.in_result_function = prev;
                 // Wave 14: If uses_try, wrap implicit return with Ok(())
+                // Skip if the body already ends with an explicit return statement
                 if uses_try {
-                    body.push_str("    Ok(())\n");
+                    let last_stmt = body.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+                    if !last_stmt.trim().starts_with("return") {
+                        body.push_str("    Ok(())\n");
+                    }
                 }
                 let type_param_str = if f.type_params.is_empty() { String::new() }
                     else { format!("<{}>", f.type_params.join(", ")) };
@@ -347,7 +351,7 @@ impl RustGenerator {
             },
             Item::Enum(e) => {
                 let vis = if e.is_public { "pub " } else { "" };
-                let mut out = format!("#[derive(Debug, Clone, PartialEq)]\n{}enum {} {{\n", vis, e.name);
+                let mut out = format!("#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]\n{}enum {} {{\n", vis, e.name);
                 for variant in &e.variants {
                     if variant.fields.is_empty() {
                         out.push_str(&format!("    {},\n", variant.name));
@@ -537,7 +541,13 @@ impl RustGenerator {
                             out.push_str(&self.gen_block(body, 2));
                         }
                         self.in_result_function = prev;
-                        out.push_str("        Ok(())\n");
+                        // Only add Ok(()) if body doesn't already end with explicit return
+                        {
+                            let last_stmt = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+                            if !last_stmt.trim().starts_with("return") {
+                                out.push_str("        Ok(())\n");
+                            }
+                        }
                         out.push_str("    }\n");
                         // Public wrapper calls _impl and routes Err to on_error
                         out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, false)));
@@ -593,7 +603,10 @@ impl RustGenerator {
                         self.trace_method = prev_trace;
                         self.trace_method_name = prev_method_name;
                         if uses_try {
-                            out.push_str("        Ok(())\n");
+                            let last_stmt = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+                            if !last_stmt.trim().starts_with("return") {
+                                out.push_str("        Ok(())\n");
+                            }
                         }
                         out.push_str("    }\n");
                     }
@@ -1001,7 +1014,17 @@ impl RustGenerator {
                     }
                     let val_str = self.gen_expression(value);
                     let val_str = self.clone_self_field_if_needed(&val_str);
-                    out.push_str(&format!("{}let mut {} = {};\n", indent, name, val_str));
+                    // Emit type annotation for Map/List when declared — fixes Rust type inference on empty collections
+                    let type_annotation = match ty {
+                        Some(TypeNode::Map(k_ty, v_ty)) => {
+                            format!(": std::collections::HashMap<{}, {}>", self.gen_type(k_ty), self.gen_type(v_ty))
+                        },
+                        Some(TypeNode::List(elem_ty)) => {
+                            format!(": Vec<{}>", self.gen_type(elem_ty))
+                        },
+                        _ => String::new(),
+                    };
+                    out.push_str(&format!("{}let mut {}{} = {};\n", indent, name, type_annotation, val_str));
                     // Wave 48: @[Trace] — log variable creation
                     if self.trace_method {
                         out.push_str(&format!(
@@ -1162,11 +1185,14 @@ impl RustGenerator {
                     out.push_str(&format!("{}}}\n", indent));
                 },
                 Statement::Foreach { item_name, value_name, collection, body } => {
+                    let coll_code = self.gen_expression(collection);
+                    // Can't move out of self-fields behind &mut self — clone them
+                    let coll_code = self.clone_self_field_if_needed(&coll_code);
                     if let Some(val_name) = value_name {
                         // Wave 16: Map iteration — for (k, v) in map
-                        out.push_str(&format!("{}for (mut {}, mut {}) in {} {{\n", indent, item_name, val_name, self.gen_expression(collection)));
+                        out.push_str(&format!("{}for (mut {}, mut {}) in {} {{\n", indent, item_name, val_name, coll_code));
                     } else {
-                        out.push_str(&format!("{}for mut {} in {} {{\n", indent, item_name, self.gen_expression(collection)));
+                        out.push_str(&format!("{}for mut {} in {} {{\n", indent, item_name, coll_code));
                     }
                     out.push_str(&self.gen_block(body, indent_level + 1));
                     out.push_str(&format!("{}}}\n", indent));
@@ -1741,9 +1767,21 @@ impl RustGenerator {
                     format!("({}).clamp({}, {})", self.gen_expression(caller), lo, hi)
                 // ===== Plan 43: Iterator Chains =====
                 } else if method_name == "filter" {
-                    let lambda = self.gen_expression(&args[0]);
                     let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().filter({}).collect::<Vec<_>>()", caller_code, lambda)
+                    // filter() closure receives &Item; wrap lambda to clone/deref to owned value
+                    let filter_closure = match &args[0] {
+                        Expression::Lambda { params, body, .. } => {
+                            let param_name = params.first().map(|p| p.name.as_str()).unwrap_or("__x").to_string();
+                            let body_str = match body.as_ref() {
+                                LambdaBody::Expression(expr) => self.gen_expression(expr),
+                                LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
+                            };
+                            format!("|__varg_ref| {{ let {} = (*__varg_ref).clone(); {} }}", param_name, body_str)
+                        },
+                        other => self.gen_expression(other),
+                    };
+                    // Use iter().cloned() so the original collection is not moved/consumed
+                    format!("{}.iter().cloned().filter({}).collect::<Vec<_>>()", caller_code, filter_closure)
                 } else if method_name == "map" {
                     let lambda = self.gen_expression(&args[0]);
                     let caller_code = self.gen_expression(caller);
@@ -1804,7 +1842,8 @@ impl RustGenerator {
                     format!("{}.into_iter().find({})", caller_code, lambda)
                 // ===== Plan 52: Environment Variables =====
                 } else if method_name == "env" {
-                    format!("std::env::var({}).unwrap_or_default()", arg_strs[0])
+                    // env() returns Result<String, VarError> so `or` fallback works correctly
+                    format!("std::env::var({})", arg_strs[0])
                 // ===== Wave 13/14: Stdlib Expansion — fs (Result-based) =====
                 // Wave 29: Borrow path arguments (`&{}`) so String variables
                 // aren't consumed by the first fs_* call.
@@ -2108,15 +2147,17 @@ impl RustGenerator {
                     format!("std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", &{}] }} else {{ vec![\"-c\", &{}] }}).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[0])
                 // ===== Wave 15: Typed JSON =====
                 } else if method_name == "json_parse" {
-                    format!("serde_json::from_str::<serde_json::Value>(&{}).map_err(|e| e.to_string())", arg_strs[0])
+                    // Return Value directly (null on parse error) so json_get/pointer work without unwrap
+                    format!("serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Null)", arg_strs[0])
                 } else if method_name == "json_get" {
-                    format!("{}.pointer(&{}).and_then(|v| v.as_str()).unwrap_or_default().to_string()", arg_strs[0], arg_strs[1])
+                    // Use .get() for single-key access — simpler than .pointer() and no path prefix needed
+                    format!("{}.get(&*{}).and_then(|v| v.as_str()).unwrap_or_default().to_string()", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_int" {
-                    format!("{}.pointer(&{}).and_then(|v| v.as_i64()).unwrap_or(0)", arg_strs[0], arg_strs[1])
+                    format!("{}.get(&*{}).and_then(|v| v.as_i64()).unwrap_or(0)", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_bool" {
-                    format!("{}.pointer(&{}).and_then(|v| v.as_bool()).unwrap_or(false)", arg_strs[0], arg_strs[1])
+                    format!("{}.get(&*{}).and_then(|v| v.as_bool()).unwrap_or(false)", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_array" {
-                    format!("{}.pointer(&{}).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>()).unwrap_or_default()", arg_strs[0], arg_strs[1])
+                    format!("{}.get(&*{}).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>()).unwrap_or_default()", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_stringify" {
                     format!("serde_json::to_string(&{}).unwrap_or_default()", arg_strs[0])
                 } else if method_name == "json_stringify_pretty" {
@@ -2554,8 +2595,13 @@ impl RustGenerator {
                 format!("vec![{}]", elems.join(", "))
             },
             Expression::MapLiteral(entries) => {
-                let pairs: Vec<String> = entries.iter().map(|(k, v)| format!("({}, {})", self.gen_expression(k), self.gen_expression(v))).collect();
-                format!("std::collections::HashMap::from([{}])", pairs.join(", "))
+                if entries.is_empty() {
+                    // Empty map literal: HashMap::new() has better type inference than from([])
+                    "std::collections::HashMap::new()".to_string()
+                } else {
+                    let pairs: Vec<String> = entries.iter().map(|(k, v)| format!("({}, {})", self.gen_expression(k), self.gen_expression(v))).collect();
+                    format!("std::collections::HashMap::from([{}])", pairs.join(", "))
+                }
             },
             Expression::Linq(q) => {
                 // LINQ transpiles into a highly efficient Rust Iterator chain
@@ -5206,7 +5252,7 @@ mod tests {
             }],
         };
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("into_iter().filter("), "Expected filter chain, got: {}", code);
+        assert!(code.contains("iter().cloned().filter("), "Expected filter chain, got: {}", code);
         assert!(code.contains("collect::<Vec<_>>()"), "Expected collect, got: {}", code);
     }
 
@@ -5627,7 +5673,7 @@ mod tests {
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
         assert!(code.contains("std::env::var"), "Expected std::env::var, got: {}", code);
-        assert!(code.contains("unwrap_or_default()"), "Expected unwrap_or_default, got: {}", code);
+        // env() returns Result<String,VarError> so 'or' fallback works; unwrap_or_default removed
         assert!(code.contains("API_KEY"), "Expected API_KEY, got: {}", code);
     }
 
@@ -7218,7 +7264,8 @@ mod tests {
         let code = gen.gen_expression(&expr);
         assert!(code.contains("serde_json::from_str"), "json_parse should use serde_json::from_str: {}", code);
         assert!(code.contains("serde_json::Value"), "json_parse should parse to serde_json::Value: {}", code);
-        assert!(code.contains("map_err"), "json_parse should return Result: {}", code);
+        // json_parse now returns Value directly (null on error) for easy chaining with json_get
+        assert!(code.contains("unwrap_or"), "json_parse should return Value with fallback: {}", code);
     }
 
     #[test]
@@ -7230,7 +7277,7 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("pointer"), "json_get should use JSON Pointer: {}", code);
+        assert!(code.contains("get"), "json_get should use .get(): {}", code);
         assert!(code.contains("as_str"), "json_get should extract as string: {}", code);
     }
 
@@ -7243,7 +7290,7 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("pointer"), "json_get_int should use JSON Pointer: {}", code);
+        assert!(code.contains("get"), "json_get_int should use .get(): {}", code);
         assert!(code.contains("as_i64"), "json_get_int should extract as i64: {}", code);
     }
 
@@ -7256,7 +7303,7 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("pointer"), "json_get_array should use JSON Pointer: {}", code);
+        assert!(code.contains("get"), "json_get_array should use .get(): {}", code);
         assert!(code.contains("as_array"), "json_get_array should extract as array: {}", code);
         assert!(code.contains("Vec<String>"), "json_get_array should produce Vec<String>: {}", code);
     }

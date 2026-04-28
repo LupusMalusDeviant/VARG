@@ -414,6 +414,13 @@ const FEATURE_MAP: &[(&str, &str)] = &[
     ("varg_runtime::duckdb_rt::",  "duckdb"),
     ("varg_runtime::fts::",        "fts"),
     ("__varg_rag_hybrid_search",   "fts"),
+    // Direct __varg_* calls that need feature gates
+    ("__varg_fetch",               "net"),
+    ("__varg_encrypt",             "crypto"),
+    ("__varg_decrypt",             "crypto"),
+    ("__varg_llm_chat",            "llm"),
+    ("__varg_llm_infer",           "llm"),
+    ("__varg_llm_vision",          "llm"),
 ];
 
 fn detect_runtime_features(rust_src: &str) -> String {
@@ -1532,8 +1539,17 @@ fn {handler_name}(body: String) -> String {{
 
     // Determine absolute paths to varg crates so the generated cargo project can find them
     let current_dir = env::current_dir().unwrap();
-    let varg_os_types_path = current_dir.join("crates").join("varg-os-types");
-    let varg_runtime_path = current_dir.join("crates").join("varg-runtime");
+    let crates_dir = if current_dir.join("crates").join("varg-os-types").exists() {
+        current_dir.join("crates")
+    } else if current_dir.join("varg-compiler").join("crates").join("varg-os-types").exists() {
+        current_dir.join("varg-compiler").join("crates")
+    } else {
+        // Fallback: derive from executable location (e.g. target/release/vargc -> crates/)
+        let exe = env::current_exe().unwrap();
+        exe.parent().unwrap().parent().unwrap().parent().unwrap().join("crates")
+    };
+    let varg_os_types_path = crates_dir.join("varg-os-types");
+    let varg_runtime_path = crates_dir.join("varg-runtime");
 
     // Plan 27: Add tokio dependency if program uses async
     let tokio_dep = if has_async {
@@ -1570,6 +1586,11 @@ fn {handler_name}(body: String) -> String {{
         ""
     };
 
+    // Auto-inject chrono if timestamp()/time_format()/time_parse() builtins are used
+    let chrono_dep = if final_rust_source.contains("chrono::") {
+        "chrono = { version = \"0.4\", features = [\"clock\"] }\n"
+    } else { "" };
+
     let cargo_toml = format!(r#"
 [package]
 name = "{}"
@@ -1581,12 +1602,13 @@ varg-os-types = {{ path = "{}" }}
 varg-runtime  = {{ path = "{}"{} }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
-{}{}"#, varg_name,
+{}{}{}"#, varg_name,
         lib_section,
         varg_os_types_path.display().to_string().replace("\\", "/"),
         varg_runtime_path.display().to_string().replace("\\", "/"),
         runtime_features,
         tokio_dep_str,
+        chrono_dep,
         extra_deps);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
@@ -1818,10 +1840,21 @@ fn test_varg_file(input_path: &str, debug_mode: bool, coverage: bool) {
     }
 
     let current_dir = env::current_dir().unwrap();
-    let varg_os_types_path = current_dir.join("crates").join("varg-os-types");
-    let varg_runtime_path = current_dir.join("crates").join("varg-runtime");
+    let crates_dir = if current_dir.join("crates").join("varg-os-types").exists() {
+        current_dir.join("crates")
+    } else if current_dir.join("varg-compiler").join("crates").join("varg-os-types").exists() {
+        current_dir.join("varg-compiler").join("crates")
+    } else {
+        let exe = env::current_exe().unwrap();
+        exe.parent().unwrap().parent().unwrap().parent().unwrap().join("crates")
+    };
+    let varg_os_types_path = crates_dir.join("varg-os-types");
+    let varg_runtime_path = crates_dir.join("varg-runtime");
 
     let runtime_features = detect_runtime_features(&final_rust_source);
+    let chrono_dep = if final_rust_source.contains("chrono::") {
+        "chrono = { version = \"0.4\", features = [\"clock\"] }\n"
+    } else { "" };
     let cargo_toml = format!(r#"
 [package]
 name = "{}"
@@ -1833,10 +1866,11 @@ varg-os-types = {{ path = "{}" }}
 varg-runtime  = {{ path = "{}"{} }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
-"#, varg_name,
+{}"#, varg_name,
     varg_os_types_path.display().to_string().replace("\\", "/"),
     varg_runtime_path.display().to_string().replace("\\", "/"),
-    runtime_features);
+    runtime_features,
+    chrono_dep);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml).unwrap();

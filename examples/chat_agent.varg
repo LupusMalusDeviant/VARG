@@ -1,5 +1,5 @@
 /// Multi-agent chat system with message passing.
-/// Demonstrates: spawn, send, request, on_message, agent lifecycle,
+/// Demonstrates: spawn, send, request, agent lifecycle,
 ///               async patterns, logging, time builtins.
 ///
 /// Usage: vargc run chat_agent.varg
@@ -15,16 +15,13 @@ agent TaskWorker {
         log_debug("TaskWorker started");
     }
 
-    public void on_message(string method, string[] args) {
+    public void on_message(string method, string arg) {
         match method {
             "process" => {
-                last_task = args[0];
+                last_task = arg;
                 tasks_completed += 1;
                 var start = time_millis();
-
-                // Simulate work
                 sleep(100);
-
                 var elapsed = time_diff(time_millis(), start);
                 log_info($"Processed '{last_task}' in {elapsed}ms");
             }
@@ -44,17 +41,17 @@ agent TaskWorker {
 
 /// A logger that collects and formats log entries.
 agent LogCollector {
-    string[] entries;
+    List<string> entries;
 
     public void on_start() {
         entries = [];
     }
 
-    public void on_message(string method, string[] args) {
+    public void on_message(string method, string arg) {
         match method {
             "log" => {
                 var ts = time_format(time_millis(), "%H:%M:%S");
-                var entry = $"[{ts}] {args[0]}";
+                var entry = $"[{ts}] {arg}";
                 entries.push(entry);
             }
             "dump" => {
