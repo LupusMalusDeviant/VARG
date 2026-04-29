@@ -540,10 +540,23 @@ fn main() {
             compile_varg_file_traced(&input_file_str, true, debug_mode, wasm_target.as_deref(), trace_mode);
         },
         "emit-rs" => {
-            // The old behavior (just spit out the .rs file)
-            let (rust_source, _) = parse_and_generate_traced(&input_file_str, trace_mode);
+            // Skip typechecking — always emit Rust even when the source has type
+            // errors.  This is intentional: the playground "emit rust" button must
+            // show generated code for incomplete / work-in-progress programs.
+            let mut loaded = std::collections::HashSet::new();
+            let mut merged_ast = varg_ast::ast::Program {
+                no_std: false,
+                items: Vec::new(),
+                docs: std::collections::HashMap::new(),
+            };
+            parse_recursive(&input_file_str, &mut merged_ast, &mut loaded);
+            if trace_mode {
+                inject_trace_annotations(&mut merged_ast);
+            }
+            let source_for_errors = fs::read_to_string(&input_file_str).unwrap_or_default();
+            let mut generator = RustGenerator::new();
+            let rust_source = generator.generate_with_source_map(&merged_ast, &source_for_errors);
             let output_path = input_file_str.replace(".varg", ".rs");
-            // Plan 44: Prepend #![allow(...)] and run rustfmt
             let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
             let formatted = format!("{}{}", allow_header, rust_source);
             fs::write(&output_path, &formatted).unwrap();
