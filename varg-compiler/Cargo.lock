@@ -4906,14 +4906,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "varg-playground"
-version = "0.1.0"
-dependencies = [
- "varg-os-types",
- "varg-runtime",
-]
-
-[[package]]
 name = "varg-runtime"
 version = "0.1.0"
 dependencies = [

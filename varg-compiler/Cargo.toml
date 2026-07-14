@@ -8,11 +8,14 @@ members = [
     "crates/vargc",
     "crates/varg-os-types",
     "crates/varg-runtime",
-    "crates/varg-lsp",
-    "crates/varg-playground"
+    "crates/varg-lsp"
 ]
 exclude = [
-    ".vargc_cache"
+    ".vargc_cache",
+    # Experimental scratch crate: it `include!`s a generated, uncommitted
+    # `main.rs`, so it cannot build from a fresh checkout. Kept in the repo but
+    # out of the normal workspace build/CI.
+    "crates/varg-playground"
 ]
 resolver = "2"
 
