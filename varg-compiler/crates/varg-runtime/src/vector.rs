@@ -197,27 +197,115 @@ pub fn __varg_vector_store_count(store: &VectorStoreHandle) -> i64 {
     store.lock().unwrap_or_else(|e| e.into_inner()).entries.len() as i64
 }
 
-/// Create an embedding from text.
-/// Uses Gemini embedding-001 API if GEMINI_API_KEY is set AND the `llm` feature is enabled,
-/// otherwise falls back to a deterministic local hash.
+/// Create an embedding from `text`.
+///
+/// Provider resolution (predictable — no network probing on the hot path):
+///   1. `VARG_EMBED_PROVIDER` = `openai` | `gemini` | `ollama` | `local` (explicit)
+///   2. `OPENAI_API_KEY` set → openai (`text-embedding-3-small`)
+///   3. `GEMINI_API_KEY` set → gemini (`gemini-embedding-001`)
+///   4. otherwise → local lexical embedding (n-gram hash, NOT semantic)
+///
+/// The model can be overridden with `VARG_EMBED_MODEL`. Real (semantic) providers require the
+/// `net` feature; on any failure we warn once and fall back to the local embedding so a caller
+/// (e.g. vector search / RAG) never panics. Ollama (`VARG_EMBED_PROVIDER=ollama`) gives free,
+/// local, real embeddings for self-hosted setups.
 pub fn __varg_embed(text: &str) -> Vec<f32> {
-    #[cfg(feature = "llm")]
+    #[cfg(feature = "net")]
     {
-        if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
-            if !api_key.is_empty() {
-                if let Some(embedding) = gemini_embed(text, &api_key) {
-                    return embedding;
+        match resolve_embed_provider().as_str() {
+            "openai" => {
+                if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+                    if let Some(v) = openai_embed(text, &key, &embed_model("text-embedding-3-small")) { return v; }
                 }
-                eprintln!("[EMBED] Gemini API call failed, falling back to local hash");
+                warn_embed_fallback("openai");
             }
+            "gemini" => {
+                if let Ok(key) = std::env::var("GEMINI_API_KEY") {
+                    if let Some(v) = gemini_embed(text, &key) { return v; }
+                }
+                warn_embed_fallback("gemini");
+            }
+            "ollama" => {
+                if let Some(v) = ollama_embed(text, &embed_model("nomic-embed-text")) { return v; }
+                warn_embed_fallback("ollama");
+            }
+            _ => {} // "local" / unknown → local embedding below
         }
     }
-    // Fallback: deterministic bag-of-characters hash (64-dim)
-    local_embed_fallback(text)
+    // Local lexical embedding (384-dim word + character n-gram hash). Not semantic, but a
+    // strictly better default than the old 64-dim bag-of-characters hash.
+    crate::localembed::__varg_embed_local(text)
 }
 
-/// Call Gemini embedding-001 API for real semantic embeddings (requires `llm` feature)
-#[cfg(feature = "llm")]
+#[cfg(feature = "net")]
+fn resolve_embed_provider() -> String {
+    if let Ok(p) = std::env::var("VARG_EMBED_PROVIDER") {
+        if !p.trim().is_empty() { return p.trim().to_lowercase(); }
+    }
+    if std::env::var("OPENAI_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) { return "openai".to_string(); }
+    if std::env::var("GEMINI_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) { return "gemini".to_string(); }
+    "local".to_string()
+}
+
+#[cfg(feature = "net")]
+fn embed_model(default: &str) -> String {
+    std::env::var("VARG_EMBED_MODEL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| default.to_string())
+}
+
+#[cfg(feature = "net")]
+fn warn_embed_fallback(provider: &str) {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.set(()).is_ok() {
+        eprintln!("[EMBED] provider '{}' unavailable — falling back to local (non-semantic) embeddings", provider);
+    }
+}
+
+/// OpenAI embeddings API (`/v1/embeddings`).
+#[cfg(feature = "net")]
+fn openai_embed(text: &str, api_key: &str, model: &str) -> Option<Vec<f32>> {
+    let body = serde_json::json!({ "input": text, "model": model }).to_string();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15)).build().ok()?;
+    let resp = client.post("https://api.openai.com/v1/embeddings")
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .body(body).send().ok()?;
+    if !resp.status().is_success() {
+        eprintln!("[EMBED] OpenAI API returned status: {}", resp.status());
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_str(&resp.text().ok()?).ok()?;
+    let values = json.get("data")?.get(0)?.get("embedding")?.as_array()?;
+    let embedding: Vec<f32> = values.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
+    if embedding.is_empty() { None } else { Some(embedding) }
+}
+
+/// Ollama embeddings API (`/api/embeddings`). Local, no API key. Host via `OLLAMA_HOST`.
+#[cfg(feature = "net")]
+fn ollama_embed(text: &str, model: &str) -> Option<Vec<f32>> {
+    let host = std::env::var("OLLAMA_HOST").ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let url = format!("{}/api/embeddings", host.trim_end_matches('/'));
+    let body = serde_json::json!({ "model": model, "prompt": text }).to_string();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30)).build().ok()?;
+    let resp = client.post(&url)
+        .header("Content-Type", "application/json")
+        .body(body).send().ok()?;
+    if !resp.status().is_success() {
+        eprintln!("[EMBED] Ollama returned status: {}", resp.status());
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_str(&resp.text().ok()?).ok()?;
+    let values = json.get("embedding")?.as_array()?;
+    let embedding: Vec<f32> = values.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
+    if embedding.is_empty() { None } else { Some(embedding) }
+}
+
+/// Call Gemini embedding-001 API for real semantic embeddings (requires `net` feature)
+#[cfg(feature = "net")]
 fn gemini_embed(text: &str, api_key: &str) -> Option<Vec<f32>> {
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={}",
@@ -257,23 +345,6 @@ fn gemini_embed(text: &str, api_key: &str) -> Option<Vec<f32>> {
         return None;
     }
     Some(embedding)
-}
-
-/// Local fallback: simple bag-of-characters hash (64-dim, not semantic)
-fn local_embed_fallback(text: &str) -> Vec<f32> {
-    let dim = 64;
-    let mut vec = vec![0.0f32; dim];
-    for (i, ch) in text.chars().enumerate() {
-        let idx = (ch as usize + i * 7) % dim;
-        vec[idx] += 1.0;
-    }
-    let mag: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
-    if mag > 0.0 {
-        for v in &mut vec {
-            *v /= mag;
-        }
-    }
-    vec
 }
 
 /// Search by text: embeds the query then performs cosine similarity search.
@@ -513,6 +584,14 @@ mod tests {
         let e = __varg_embed("test text");
         let mag: f32 = e.iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!((mag - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_embed_uses_384dim_local_fallback_c1() {
+        // C1: the keyless/local path is now the 384-dim word+n-gram embedder, not the old
+        // 64-dim bag-of-characters hash. (Real semantic providers are opt-in via env.)
+        let e = __varg_embed("some representative text");
+        assert_eq!(e.len(), 384, "local embedding should be 384-dim, got {}", e.len());
     }
 
     #[test]

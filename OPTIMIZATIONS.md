@@ -107,7 +107,7 @@ Die teuerste Arbeit (die Runtime) existiert bereits — es fehlt nur die Verdrah
 | **Package Registry** (`registry_install/search`) | schreibt nur name→version, lädt nichts; `search` filtert hartcodierte Liste | Echten HTTP-Download + **Checksum-Prüfung** (das `checksum`-Feld existiert, wird nie genutzt) |
 | **MCP-Server-Tools** | Tool-Handler ist Echo-Stub | Varg-Lambda als echten Tool-Handler verdrahten (analog `orchestrator_run_all`); `@[McpTool]` sollte `inputSchema` erzeugen |
 | **Workflow-DAG** | reiner Status-Tracker, kein Runner, keine Zyklenerkennung | Runner + Zyklenerkennung ergänzen, sonst als „Tracker" (nicht „Engine") dokumentieren |
-| **Embeddings** (`embed`, `llm_embed_batch`) | ohne `GEMINI_API_KEY` nur Zeichen-Hash | Klar dokumentieren; optional echten lokalen Embedder (z. B. `fastembed`) einbinden |
+| **Embeddings** (`embed`, `llm_embed_batch`) | ✅ provider-agnostisch: OpenAI / Gemini / Ollama (echt, semantisch) via `VARG_EMBED_PROVIDER`/`VARG_EMBED_MODEL`; 384-dim lexikaler Fallback (statt 64-dim Zeichen-Hash). vargc zieht `net` automatisch. Offen: optional lokaler ONNX-Embedder (`fastembed`) für echt-semantisch ohne Ollama/Key |
 
 ### 1.3 OCAP zur Laufzeit härten oder Grenzen klar dokumentieren
 **Problem:** OCAP ist ein **reines Compile-Zeit-Gate**. `exec` läuft über `cmd /C`/`sh -c`

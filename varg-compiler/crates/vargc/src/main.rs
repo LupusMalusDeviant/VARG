@@ -416,6 +416,10 @@ const FEATURE_MAP: &[(&str, &str)] = &[
     ("__varg_rag_hybrid_search",   "fts"),
     // Direct __varg_* calls that need feature gates
     ("__varg_fetch",               "net"),
+    // Real (semantic) embeddings call OpenAI/Gemini/Ollama over HTTP → need reqwest (`net`).
+    // Without net the runtime still works, using the local lexical fallback.
+    ("__varg_embed",               "net"),
+    ("__varg_vector_search_text",  "net"),
     ("__varg_encrypt",             "crypto"),
     ("__varg_decrypt",             "crypto"),
     ("__varg_llm_chat",            "llm"),
