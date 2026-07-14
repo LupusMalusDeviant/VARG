@@ -1,0 +1,67 @@
+// ── Layer-1/2 Skill-Spike (Proof-of-Concept zu ADR-0001) ────────────────────────
+//
+// Zeigt, dass ein KOMPILIERTER Varg-Agent zur LAUFZEIT ein neues Tool erzeugen,
+// delegiert ausführen und als Wissen ablegen/abrufen kann — ohne sich selbst neu
+// zu kompilieren. Das ist die in ADR-0001 gewählte Architektur:
+//
+//   Layer 2 (delegierte Tools): der Agent schreibt die Tool-Logik als Skript auf
+//     Disk und führt sie über `exec` aus. Die Logik existierte zur Compile-Zeit
+//     des Agenten NICHT — sie entsteht zur Laufzeit (im echten System vom LLM).
+//   Layer 1 (Skill-Dokumente): der Agent legt das Wissen "wie/wann nutze ich den
+//     Skill" im Agent-Memory ab und ruft es später wieder ab.
+//   Feedback-Loop: `self_improve` hält den Erfolg des Skills fest.
+//
+// Laufzeit-Voraussetzung: `python` im PATH (das delegierte Tool ist ein .py-Skript).
+
+agent SkillAgent {
+
+    // Layer 2 — CREATE: schreibt ein neues delegiertes Tool (Skript) zur Laufzeit.
+    // Der FileAccess-Token macht `fs_write` unter OCAP erlaubt.
+    public string CreateSkill(string name, string script_body, FileAccess files) {
+        var path = $"skill_{name}.py";
+        fs_write(path, script_body)?;
+        return path;
+    }
+
+    // Layer 2 — RUN: führt einen zur Laufzeit erzeugten Skill delegiert aus.
+    // Kein Recompile des Agenten; die Logik lebt im Skript, nicht im Binary.
+    public string RunSkill(string path, string input, SystemAccess sys) {
+        return exec($"python {path} {input}")?;
+    }
+
+    public void Run() {
+        unsafe {
+            var files = FileAccess {};
+            var sys = SystemAccess {};
+
+            print "=== Varg Skill-Agent (ADR-0001 Layer 1 + 2) ===";
+
+            // ── LAYER 2: der Agent "lernt" zur Laufzeit einen neuen Skill 'shout' ──
+            // (im echten System kämen script_body + doc vom LLM)
+            var body = """import sys
+print(sys.argv[1].upper() + "!")
+""";
+            var path = self.CreateSkill("shout", body, files)?;
+            print $"[create] neues Tool zur Laufzeit geschrieben -> {path}";
+
+            // ── LAYER 1: Skill-Dokument (Wissen) im Agent-Memory ablegen ──
+            var mem = memory_open(":memory:");
+            memory_set(mem, "skill:shout", "shout(text): schreibt GROSS und haengt '!' an. Nutze es fuer Betonung.");
+
+            // ── LAYER 2: den neuen Skill NUTZEN (delegierte Ausfuehrung) ──
+            var result = self.RunSkill(path, "hello agent", sys)?;
+            print $"[run]    shout('hello agent') -> {result.trim()}";
+
+            // ── LAYER 1: Skill-Wissen spaeter wieder abrufen ──
+            var recalled = memory_get(mem, "skill:shout", "unbekannt");
+            print $"[recall] {recalled}";
+
+            // ── Feedback-Loop: Erfolg des Skills festhalten ──
+            var improver = self_improver_new("skill_agent", 3);
+            self_improver_record_success(improver, "shout", result.trim());
+            print $"[learn]  success_rate={self_improver_success_rate(improver)}%";
+
+            print "=== fertig: Tool zur Laufzeit erzeugt, delegiert ausgefuehrt, gelernt ===";
+        }
+    }
+}

@@ -2286,7 +2286,10 @@ impl RustGenerator {
                     format!("std::fs::read_to_string(&{}).map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>()).map_err(|e| e.to_string())", arg_strs[0])
                 // ===== Wave 15: Shell Command Execution =====
                 } else if method_name == "exec" {
-                    format!("std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", &{}] }} else {{ vec![\"-c\", &{}] }}).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[0])
+                    // Bind the command to a local first: passing `&"literal".to_string()` directly
+                    // into the args vec borrows a temporary that is dropped before `.output()`
+                    // runs (E0716). A `let` keeps the String alive for the whole statement.
+                    format!("{{ let __cmd: String = {}; std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", __cmd.as_str()] }} else {{ vec![\"-c\", __cmd.as_str()] }}).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).map_err(|e| e.to_string()) }}", arg_strs[0])
                 // ===== Wave 15: Typed JSON =====
                 } else if method_name == "json_parse" {
                     // Return Value directly (null on parse error) so json_get/pointer work without unwrap
@@ -2342,7 +2345,7 @@ impl RustGenerator {
                     // HashSet.add(x) → .insert(x) in Rust
                     format!("{}.insert({})", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "exec_status" {
-                    format!("std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", &{}] }} else {{ vec![\"-c\", &{}] }}).status().map(|s| s.code().unwrap_or(-1) as i64).map_err(|e| e.to_string())", arg_strs[0], arg_strs[0])
+                    format!("{{ let __cmd: String = {}; std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", __cmd.as_str()] }} else {{ vec![\"-c\", __cmd.as_str()] }}).status().map(|s| s.code().unwrap_or(-1) as i64).map_err(|e| e.to_string()) }}", arg_strs[0])
                 // ===== Wave 13: Stdlib Expansion — path =====
                 } else if method_name == "path_exists" {
                     format!("std::path::Path::new(&{}).exists()", arg_strs[0])
@@ -8980,6 +8983,24 @@ mod tests {
         assert_eq!(gen.gen_expression(&Expression::Int(9_999_999_999)), "9999999999i64");
         // small literals stay unsuffixed so they still coerce into usize/index contexts.
         assert_eq!(gen.gen_expression(&Expression::Int(3)), "3");
+    }
+
+    #[test]
+    fn test_codegen_exec_binds_command_to_local() {
+        // Regression: exec("literal") used to emit `&"literal".to_string()` inside the args
+        // vec — a borrow of a temporary dropped before .output() runs (E0716). The command
+        // must be bound to a local first.
+        let mut gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "exec".to_string(),
+            args: vec![Expression::String("echo hi".to_string())],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("let __cmd"), "exec must bind command to a local: {code}");
+        assert!(code.contains("__cmd.as_str()"), "exec must pass the local by &str: {code}");
+        assert!(!code.contains("&\"echo hi\".to_string()"),
+            "exec must not borrow a temporary String: {code}");
     }
 
     #[test]

@@ -1,0 +1,5 @@
+# Vom Compiler / zur Laufzeit erzeugte Artefakte
+*.rs
+*.exe
+skill_*.py
+.vargc_cache/
