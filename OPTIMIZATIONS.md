@@ -43,6 +43,20 @@ Diese Bugs wurden in diesem Durchgang behoben und mit Regressionstests abgesiche
 
 ---
 
+## Bei der Validierung neu gefundene, teils vorbestehende Bugs
+
+- ✅ **`crypto`-Feature ohne base64** (behoben): `crypto.rs` nutzt `base64`, aber das Feature
+  `crypto = [aes-gcm, pbkdf2, sha2]` zog es nicht ein → **jedes encrypt/decrypt-Programm baute
+  nicht**. Fix: `dep:base64` ins `crypto`-Feature. End-to-end verifiziert (Roundtrip + Fehlerpfad).
+- ⬜ **`--features full` kompiliert nicht**: `rag.rs` (`store.conn` existiert nicht auf
+  `VectorStore`), `fts.rs`, `tensor.rs` referenzieren nicht existierende Felder/APIs. Diese
+  Module sind Dead-on-Arrival.
+- ⬜ **Default-Testsuite verdeckt das**: `cargo test --workspace` nutzt `default = []`, also
+  werden die feature-gegateten Module (crypto, rag, fts, tensor, dataframe, duckdb) **gar nicht
+  kompiliert** — die „1144 Tests" decken sie nicht ab. **Maßnahme:** CI-Job mit
+  `--features full` (nach Reparatur der obigen Module) oder pro-Feature-Matrix, damit solche
+  Brüche nicht unbemerkt bleiben. Gehört zu Priorität 0.1 (Test-Abdeckung).
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests

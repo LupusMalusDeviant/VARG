@@ -82,4 +82,29 @@ mod tests {
         let key2 = __varg_derive_key("password", &salt);
         assert_eq!(key1, key2);
     }
+
+    #[test]
+    fn test_decrypt_wrong_password_returns_error_not_panic_b7() {
+        // B7 regression: a wrong password must yield an error string, never a panic.
+        let encrypted = __varg_encrypt("secret data", "correct-password");
+        let result = __varg_decrypt(&encrypted, "wrong-password");
+        assert!(result.starts_with("[VargOS] decrypt error:"),
+            "wrong password must return an error marker, got: {result}");
+    }
+
+    #[test]
+    fn test_decrypt_invalid_base64_returns_error_not_panic_b7() {
+        // B7 regression: malformed (non-Base64) input must not panic.
+        let result = __varg_decrypt("!!!not base64!!!", "any-key");
+        assert!(result.starts_with("[VargOS] decrypt error:"),
+            "invalid payload must return an error marker, got: {result}");
+    }
+
+    #[test]
+    fn test_decrypt_truncated_payload_returns_error_not_panic_b7() {
+        // B7 regression: a valid-Base64 but too-short payload must not panic.
+        let result = __varg_decrypt("YWJj", "any-key"); // "abc" — under the 28-byte minimum
+        assert!(result.starts_with("[VargOS] decrypt error:"),
+            "truncated payload must return an error marker, got: {result}");
+    }
 }
