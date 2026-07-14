@@ -48,18 +48,19 @@ Diese Bugs wurden in diesem Durchgang behoben und mit Regressionstests abgesiche
 - ✅ **`crypto`-Feature ohne base64** (behoben): `crypto.rs` nutzt `base64`, aber das Feature
   `crypto = [aes-gcm, pbkdf2, sha2]` zog es nicht ein → **jedes encrypt/decrypt-Programm baute
   nicht**. Fix: `dep:base64` ins `crypto`-Feature. End-to-end verifiziert (Roundtrip + Fehlerpfad).
-- ⬜ **Feature-Definitionen deklarieren ihre Abhängigkeiten unvollständig** — viele Einzel-
-  Features kompilieren nicht (per `cargo build -p varg-runtime --features X` geprüft):
-  - `crypto` fehlte `base64` (✅ behoben).
-  - `pdf` fehlt `base64` (`pdf_to_base64`).
-  - `encoding` fehlt `reqwest` (`http_download_base64`, `encoding.rs:33`).
-  - `llm` (5 Fehler), `tensor` (2, „cannot move out of Arc"), `fts`, `rag` (`store.conn`
-    existiert nicht auf `VectorStore`) haben echte Code-Brüche, nicht nur fehlende Deps.
-  - OK: `crypto` (nach Fix), `net`, `ws`, `db`, `dataframe`.
-  Damit bauen **base64-, pdf-, llm-, tensor-, fts-Programme aktuell gar nicht**. Die
-  fehlenden-Dep-Fälle sind Einzeiler; `rag`/`tensor`/`fts`/`llm` brauchen Code-Reparatur.
-  Nachweis, dass dies vorbestehend ist: `encoding` (nie angefasst) scheitert ebenfalls, und
-  kein Build-Fehler betrifft das R2-`into_inner`-Muster.
+- ✅ **Feature-Builds vollständig repariert** (waren vorbestehend defekt): alle Features
+  (`crypto`, `encoding`, `pdf`, `net`, `llm`, `ws`, `db`, `tensor`, `dataframe`, `fts`,
+  `duckdb`) **und `full`** kompilieren und ihre Tests laufen grün (`--features full`: 402/0).
+  - Fehlende Feature-Deps ergänzt: `crypto`→base64, `pdf`→base64, `encoding`→reqwest,
+    `llm`→net+base64.
+  - Echte Code-Brüche behoben: `tensor.rs` (`(**t).clone()` statt Move aus Arc),
+    `rag.rs` (Vektor-Ranking über `store.entries` statt nicht existierendem `store.conn`),
+    `fts.rs` (tantivy-0.22-Doc-Typ annotiert; ID-Feld `STRING` statt `TEXT`, damit
+    `delete_term` exakt matcht), `duckdb_rt.rs` (`column_count()` erst nach `query()`, sonst
+    Panic „statement not executed").
+  - **Verbleibend (Priorität 0.1):** CI-Job mit `--features full`, damit die feature-gegateten
+    Module nicht wieder unbemerkt brechen (die Default-`cargo test`-Läufe kompilieren sie mit
+    `default = []` nicht).
 - ⬜ **Default-Testsuite verdeckt das**: `cargo test --workspace` nutzt `default = []`, also
   werden die feature-gegateten Module (crypto, rag, fts, tensor, dataframe, duckdb) **gar nicht
   kompiliert** — die „1144 Tests" decken sie nicht ab. **Maßnahme:** CI-Job mit

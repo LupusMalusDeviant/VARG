@@ -8,8 +8,8 @@ use tantivy::{
     doc,
     collector::TopDocs,
     query::QueryParser,
-    schema::{Schema, STORED, TEXT, Field},
-    Index, IndexWriter, ReloadPolicy,
+    schema::{Schema, STORED, STRING, TEXT, Field, Value},
+    Index, IndexWriter, ReloadPolicy, TantivyDocument,
 };
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +24,9 @@ pub type FtsHandle = Arc<Mutex<FtsIndex>>;
 
 fn build_schema() -> (Schema, Field, Field) {
     let mut builder = Schema::builder();
-    let id_field   = builder.add_text_field("id",   TEXT | STORED);
+    // id must be STRING (raw, untokenised) not TEXT, so `delete_term` matches the whole id
+    // exactly. TEXT would tokenise e.g. "doc_to_delete" into separate terms and delete nothing.
+    let id_field   = builder.add_text_field("id",   STRING | STORED);
     let body_field = builder.add_text_field("body", TEXT | STORED);
     (builder.build(), id_field, body_field)
 }
@@ -79,7 +81,8 @@ pub fn __varg_fts_search(handle: &FtsHandle, query: &str, limit: i64) -> Vec<Str
     let top_docs = searcher.search(&parsed, &TopDocs::with_limit(limit.max(1) as usize))
         .expect("Varg runtime error: fts_search() failed — the search query could not be executed against the index (the index may be corrupted)");
     top_docs.into_iter().filter_map(|(_score, addr)| {
-        let doc = searcher.doc(addr).ok()?;
+        // tantivy 0.22: Searcher::doc is generic over the document type — annotate it.
+        let doc: TantivyDocument = searcher.doc(addr).ok()?;
         doc.get_first(id_field).and_then(|v| v.as_str().map(|s| s.to_string()))
     }).collect()
 }

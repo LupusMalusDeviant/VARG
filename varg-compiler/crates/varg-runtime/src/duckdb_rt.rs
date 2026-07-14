@@ -36,11 +36,13 @@ pub fn __varg_duckdb_query(db: &DuckDbHandle, sql: &str, params: &[String]) -> V
     let inner = db.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = inner.conn.prepare(sql)
         .expect("Varg runtime error: duckdb_query() failed — the SQL query could not be prepared (check for syntax errors in your SQL)");
-    let col_count = stmt.column_count();
     let mut rows_out: Vec<Vec<String>> = Vec::new();
     let mut rows = stmt.query(params_from_iter(params.iter().map(|s| s.as_str())))
         .expect("Varg runtime error: duckdb_query() failed — the query could not be executed (check parameter count and types match the query placeholders)");
     while let Some(row) = rows.next().expect("Varg runtime error: duckdb_query() failed — an error occurred while reading query results (the database may have been modified concurrently)") {
+        // duckdb's `column_count()` panics unless the statement has been executed, so read it
+        // from the (now executed) statement via the row, not from `stmt` before `query()`.
+        let col_count = row.as_ref().column_count();
         let mut row_vec = Vec::with_capacity(col_count);
         for i in 0..col_count {
             let val: duckdb::types::Value = row.get(i).unwrap_or(duckdb::types::Value::Null);

@@ -62,34 +62,18 @@ pub fn __varg_rag_hybrid_search(
     // BM25 ranked list
     let bm25_results = crate::fts::__varg_fts_search(fts_handle, query_text, fetch);
 
-    // Vector ranked list — search by pre-computed embedding
+    // Vector ranked list — cosine similarity against the store's in-memory embeddings.
+    // (The previous code queried a non-existent `store.conn` field; VectorStore keeps the
+    // embeddings in `entries`, already loaded from SQLite on open.)
     let vec_results: Vec<String> = {
         let store = vector_store.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = &store.conn;
-        let mut stmt = conn.prepare(
-            "SELECT id, metadata FROM embeddings"
-        ).unwrap_or_else(|_| panic!("rag_hybrid_search: db error"));
-        let mut rows = stmt.query([]).unwrap();
-        let mut scored: Vec<(String, f32)> = Vec::new();
-        while let Some(row) = rows.next().unwrap() {
-            let id: String = row.get(0).unwrap();
-            let meta_json: String = row.get(1).unwrap();
-            // Retrieve embedding from store for cosine comparison
-            let emb_json: String = conn.query_row(
-                "SELECT embedding FROM embeddings WHERE id = ?1",
-                [&id],
-                |r| r.get(0),
-            ).unwrap_or_default();
-            if let Ok(emb_vec) = serde_json::from_str::<Vec<f32>>(&emb_json) {
-                let dot: f32 = query_embedding.iter().zip(emb_vec.iter()).map(|(a, b)| a * b).sum();
-                let norm_q: f32 = query_embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_e: f32 = emb_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let sim = if norm_q > 1e-9 && norm_e > 1e-9 { dot / (norm_q * norm_e) } else { 0.0 };
-                scored.push((id, sim));
-            } else {
-                let _ = meta_json;
-            }
-        }
+        let norm_q: f32 = query_embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let mut scored: Vec<(String, f32)> = store.entries.iter().map(|entry| {
+            let dot: f32 = query_embedding.iter().zip(entry.embedding.iter()).map(|(a, b)| a * b).sum();
+            let norm_e: f32 = entry.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let sim = if norm_q > 1e-9 && norm_e > 1e-9 { dot / (norm_q * norm_e) } else { 0.0 };
+            (entry.id.clone(), sim)
+        }).collect();
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.into_iter().map(|(id, _)| id).collect()
     };

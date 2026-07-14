@@ -2,7 +2,7 @@
 // TensorHandle = Arc<ArrayD<f32>> — immutable, cheap to clone.
 // All mutating ops return a new Arc rather than mutating in place.
 
-use ndarray::{ArrayD, IxDyn, Axis, s};
+use ndarray::{ArrayD, IxDyn, Axis};
 use std::sync::Arc;
 
 pub type TensorHandle = Arc<ArrayD<f32>>;
@@ -42,7 +42,9 @@ pub fn __varg_tensor_shape(t: &TensorHandle) -> Vec<i64> {
 
 pub fn __varg_tensor_reshape(t: &TensorHandle, shape: &[i64]) -> TensorHandle {
     let s: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-    Arc::new(t.clone().into_shape_with_order(IxDyn(&s))
+    // `into_shape_with_order` consumes an owned array; clone the inner ArrayD out of the Arc
+    // (not the Arc itself — that can't be moved out of).
+    Arc::new((**t).clone().into_shape_with_order(IxDyn(&s))
         .expect("tensor_reshape: new shape must have the same total element count"))
 }
 
