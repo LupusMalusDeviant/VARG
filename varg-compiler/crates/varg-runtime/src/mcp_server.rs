@@ -61,7 +61,7 @@ pub fn __varg_mcp_server_add_tool(
     params: Vec<McpParamInfo>,
     handler: Arc<dyn Fn(&str) -> String + Send + Sync>,
 ) {
-    let mut s = server.lock().unwrap();
+    let mut s = server.lock().unwrap_or_else(|e| e.into_inner());
     s.tools.push(McpServerTool {
         name: name.to_string(),
         description: description.to_string(),
@@ -82,7 +82,7 @@ pub fn __varg_mcp_server_register(
 
 /// Get tool count
 pub fn __varg_mcp_server_tool_count(server: &McpServerHandle) -> i64 {
-    server.lock().unwrap().tools.len() as i64
+    server.lock().unwrap_or_else(|e| e.into_inner()).tools.len() as i64
 }
 
 /// Generate the JSON schema for tools/list response
@@ -109,7 +109,7 @@ fn generate_tools_list(server: &McpServer) -> String {
 
 /// Handle a single JSON-RPC request, return response string
 pub fn __varg_mcp_server_handle_request(server: &McpServerHandle, request: &str) -> String {
-    let s = server.lock().unwrap();
+    let s = server.lock().unwrap_or_else(|e| e.into_inner());
 
     // Minimal JSON parsing (no serde dependency needed)
     let id = extract_json_field(request, "id").unwrap_or("null".to_string());
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn test_mcp_server_new() {
         let server = __varg_mcp_server_new("test_agent", "1.0.0");
-        let s = server.lock().unwrap();
+        let s = server.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.name, "test_agent");
         assert_eq!(s.version, "1.0.0");
         assert!(s.tools.is_empty());

@@ -244,7 +244,7 @@ mod tests {
         let call_count = std::sync::Arc::new(std::sync::Mutex::new(0i64));
         let cc = call_count.clone();
         let r = __varg_prop_check(move || {
-            let mut n = cc.lock().unwrap();
+            let mut n = cc.lock().unwrap_or_else(|e| e.into_inner());
             *n += 1;
             *n % 2 == 0 // fails on odd calls
         }, 10);

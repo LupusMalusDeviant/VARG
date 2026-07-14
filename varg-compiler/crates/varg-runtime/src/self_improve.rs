@@ -54,7 +54,7 @@ pub fn __varg_self_improver_record_success(
     task: &str,
     solution: &str,
 ) {
-    let mut si = improver.lock().unwrap();
+    let mut si = improver.lock().unwrap_or_else(|e| e.into_inner());
     si.iterations += 1;
     si.successes += 1;
     let meta = HashMap::from([
@@ -70,7 +70,7 @@ pub fn __varg_self_improver_record_failure(
     task: &str,
     error: &str,
 ) {
-    let mut si = improver.lock().unwrap();
+    let mut si = improver.lock().unwrap_or_else(|e| e.into_inner());
     si.iterations += 1;
     si.failures += 1;
     let meta = HashMap::from([
@@ -86,25 +86,25 @@ pub fn __varg_self_improver_recall(
     task: &str,
     top_k: i64,
 ) -> Vec<HashMap<String, String>> {
-    let si = improver.lock().unwrap();
+    let si = improver.lock().unwrap_or_else(|e| e.into_inner());
     __varg_memory_recall(&si.memory, task, top_k)
 }
 
 /// Get success rate as percentage
 pub fn __varg_self_improver_success_rate(improver: &SelfImproverHandle) -> i64 {
-    let si = improver.lock().unwrap();
+    let si = improver.lock().unwrap_or_else(|e| e.into_inner());
     if si.iterations == 0 { return 0; }
     ((si.successes as f64 / si.iterations as f64) * 100.0) as i64
 }
 
 /// Get iteration count
 pub fn __varg_self_improver_iterations(improver: &SelfImproverHandle) -> i64 {
-    improver.lock().unwrap().iterations as i64
+    improver.lock().unwrap_or_else(|e| e.into_inner()).iterations as i64
 }
 
 /// Get stats as a map
 pub fn __varg_self_improver_stats(improver: &SelfImproverHandle) -> HashMap<String, String> {
-    let si = improver.lock().unwrap();
+    let si = improver.lock().unwrap_or_else(|e| e.into_inner());
     HashMap::from([
         ("name".to_string(), si.name.clone()),
         ("iterations".to_string(), si.iterations.to_string()),
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn test_self_improver_new() {
         let si = __varg_self_improver_new("test_agent", 3);
-        let s = si.lock().unwrap();
+        let s = si.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.name, "test_agent");
         assert_eq!(s.iterations, 0);
         assert_eq!(s.max_retries, 3);
@@ -214,7 +214,7 @@ mod tests {
         __varg_self_improver_record_success(&si, "t1", "ok");
         __varg_self_improver_record_failure(&si, "t2", "err");
         __varg_self_improver_record_success(&si, "t3", "ok");
-        let s = si.lock().unwrap();
+        let s = si.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.iterations, s.successes + s.failures,
             "iterations must always equal successes + failures");
     }
@@ -243,7 +243,7 @@ mod tests {
         // -1i64 as u64 = u64::MAX; the struct accepts it without panic
         let si = __varg_self_improver_new(
             &format!("si_neg_{}", std::process::id()), -1);
-        let s = si.lock().unwrap();
+        let s = si.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.max_retries, u64::MAX, "-1 max_retries must wrap to u64::MAX");
         // stats must still work (no division by max_retries)
         drop(s);

@@ -1033,7 +1033,7 @@ workflow_set_failed(wf, "parse", "err msg");  // mark step failed
 
 var done = workflow_is_complete(wf);          // bool
 var out = workflow_get_output(wf, "store");   // string
-var status = workflow_status(wf, "fetch");    // "Pending" | "Done" | "Failed"
+var status = workflow_status(wf);             // summary report string for the whole workflow
 var n = workflow_step_count(wf);              // int
 ```
 
@@ -1046,7 +1046,7 @@ registry_uninstall(reg, "varg-http");        // bool
 var installed = registry_is_installed(reg, "varg-http"); // bool
 var ver = registry_version(reg, "varg-http");            // string
 var all = registry_list(reg);                            // string[]
-var found = registry_search(reg, "http");                // string[]
+var found = registry_search("http");                     // string[] — query only (1 arg)
 ```
 
 ### Extended LLM
@@ -1054,15 +1054,15 @@ var found = registry_search(reg, "http");                // string[]
 ```csharp
 // Structured output (JSON schema enforcement)
 var schema = "{\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}}}";
-var json_out = llm_structured("gpt-4o", messages, schema, llm_cap); // string (JSON)
+var json_out = llm_structured(prompt, schema, 3);      // (prompt, schema_json, retries) → string (JSON)
 
 // Streaming (SSE chunks)
-var stream = llm_stream("gpt-4o", messages, llm_cap); // SseHandle
+var stream = llm_stream(prompt, "gpt-4o");             // (prompt, model) → SseHandle
 var chunk = sse_read(stream);                          // string chunk
 
 // Batch embeddings
 var texts = ["hello", "world", "varg"];
-var embeddings = llm_embed_batch(texts, llm_cap);      // float[][] (one vec per text)
+var embeddings = llm_embed_batch(texts);               // (texts) → float[][] (one vec per text)
 ```
 
 ---

@@ -318,7 +318,7 @@ impl TypeChecker {
             "mcp_server_new", "mcp_server_register", "mcp_server_tool_count", "mcp_server_handle_request", "mcp_server_run",
             "event_bus_new", "event_emit", "event_count", "event_on",
             "http_response", "http_response_json",
-            "pipeline_new", "pipeline_run", "pipeline_step_count",
+            "pipeline_new", "pipeline_add_step", "pipeline_run", "pipeline_step_count",
             "orchestrator_new", "orchestrator_add_task", "orchestrator_run_all", "orchestrator_results", "orchestrator_task_count", "orchestrator_completed_count",
             "self_improver_new", "self_improver_record_success", "self_improver_record_failure", "self_improver_recall", "self_improver_success_rate", "self_improver_iterations", "self_improver_stats",
             // Wave 28: System Primitives
@@ -1288,6 +1288,21 @@ impl TypeChecker {
             },
             Expression::MethodCall { caller, method_name, args } => {
                 let method_name = method_name.trim_start_matches("__varg_").trim_start_matches("__varg_min_");
+                // B2: close the OCAP-nesting bypass. Each builtin branch below early-returns
+                // after only an arity check, so a capability-gated builtin used as an ARGUMENT
+                // of another call (e.g. `str_trim(fs_read(path))`, `exec(x) |> f`, or
+                // `list.map((x) => fs_read(x))`) never reached `check_ocap`. Walk the caller and
+                // every argument through full inference, but surface ONLY capability violations —
+                // other inference errors are left to the existing per-builtin checks so programs
+                // that type-checked before continue to do so.
+                if let Err(e @ TypeError::MissingCapability { .. }) = self.infer_expression_type(caller) {
+                    return Err(e);
+                }
+                for arg in args.iter() {
+                    if let Err(e @ TypeError::MissingCapability { .. }) = self.infer_expression_type(arg) {
+                        return Err(e);
+                    }
+                }
                 if method_name == "fetch" {
                     self.check_ocap(&CapabilityType::NetworkAccess, "fetch")?;
                     if args.len() < 1 || args.len() > 4 {
@@ -2168,6 +2183,9 @@ impl TypeChecker {
                     Ok(TypeNode::Void)
                 } else if method_name == "sse_stream" {
                     self.check_ocap(&CapabilityType::NetworkAccess, "sse_stream")?;
+                    // B11: runtime signature is `__varg_sse_stream()` — enforce 0 args so the
+                    // codegen never indexes a missing argument.
+                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Custom("SseWriter".to_string()))
                 } else if method_name == "sse_send" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (writer, event, data)".to_string(), found: format!("{} arguments", args.len()) }); }
@@ -2345,6 +2363,11 @@ impl TypeChecker {
                 } else if method_name == "pipeline_new" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Custom("PipelineHandle".to_string()))
+                } else if method_name == "pipeline_add_step" {
+                    // R5: (pipeline, name, handler-lambda (input) => output). Runtime existed but
+                    // was never wired into typechecker/codegen — the documented example did not compile.
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (pipeline, name, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
                 } else if method_name == "pipeline_run" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (pipeline, input)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
@@ -2357,6 +2380,12 @@ impl TypeChecker {
                     Ok(TypeNode::Custom("OrchestratorHandle".to_string()))
                 } else if method_name == "orchestrator_add_task" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (orch, id, input)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "orchestrator_run_all" {
+                    // B11: previously only whitelisted, with no explicit arm and no codegen —
+                    // it type-checked but emitted a call to a non-existent method. Wire it:
+                    // (orchestrator, handler-lambda (input) => result).
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (orch, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
                 } else if method_name == "orchestrator_results" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (orch)".to_string(), found: format!("{} arguments", args.len()) }); }
@@ -8866,6 +8895,42 @@ mod tests {
             str_lit("./ckpt.db"), str_lit("agent1")
         ])).unwrap_err();
         assert!(matches!(err, TypeError::MissingCapability { .. }));
+    }
+
+    #[test]
+    fn test_tc_ocap_not_bypassed_by_nesting_b2() {
+        // B2 regression: a capability-gated builtin nested inside another call must still
+        // trigger the OCAP check, not slip through the early-returning builtin branch.
+        let mut c = TypeChecker::new();
+        // str_trim(fs_read("secret.txt")) — outer builtin needs no capability, inner does.
+        let nested = call("str_trim", vec![call("fs_read", vec![str_lit("secret.txt")])]);
+        let err = c.infer_expression_type(&nested).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }),
+            "nested fs_read must require FileAccess, got: {:?}", err);
+    }
+
+    #[test]
+    fn test_tc_pipeline_add_step_arity_r5() {
+        // R5: pipeline_add_step is now a wired builtin (was unknown before).
+        let mut c = TypeChecker::new();
+        let ok = c.infer_expression_type(&call("pipeline_add_step", vec![
+            ident("pipe"), str_lit("step"), ident("handler")
+        ]));
+        assert!(ok.is_ok(), "pipeline_add_step with 3 args must type-check: {:?}", ok);
+        let bad = c.infer_expression_type(&call("pipeline_add_step", vec![ident("pipe")]));
+        assert!(bad.is_err(), "pipeline_add_step with wrong arity must fail");
+    }
+
+    #[test]
+    fn test_tc_ocap_not_bypassed_by_deep_nesting_b2() {
+        let mut c = TypeChecker::new();
+        // json_stringify(str_split(exec("whoami"), ",")) — exec buried two levels deep.
+        let deep = call("json_stringify", vec![
+            call("str_split", vec![call("exec", vec![str_lit("whoami")]), str_lit(",")])
+        ]);
+        let err = c.infer_expression_type(&deep).unwrap_err();
+        assert!(matches!(err, TypeError::MissingCapability { .. }),
+            "deeply nested exec must require SystemAccess, got: {:?}", err);
     }
 
     // ── Return type verification ─────────────────────────────────────────────

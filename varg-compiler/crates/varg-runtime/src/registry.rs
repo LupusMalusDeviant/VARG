@@ -60,23 +60,23 @@ pub fn __varg_registry_open(cache_path: &str) -> RegistryHandle {
 }
 
 pub fn __varg_registry_install(h: &RegistryHandle, name: &str, version: &str) -> bool {
-    h.lock().unwrap().install(name, version)
+    h.lock().unwrap_or_else(|e| e.into_inner()).install(name, version)
 }
 
 pub fn __varg_registry_uninstall(h: &RegistryHandle, name: &str) -> bool {
-    h.lock().unwrap().uninstall(name)
+    h.lock().unwrap_or_else(|e| e.into_inner()).uninstall(name)
 }
 
 pub fn __varg_registry_is_installed(h: &RegistryHandle, name: &str) -> bool {
-    h.lock().unwrap().is_installed(name)
+    h.lock().unwrap_or_else(|e| e.into_inner()).is_installed(name)
 }
 
 pub fn __varg_registry_version(h: &RegistryHandle, name: &str) -> String {
-    h.lock().unwrap().version(name)
+    h.lock().unwrap_or_else(|e| e.into_inner()).version(name)
 }
 
 pub fn __varg_registry_list(h: &RegistryHandle) -> Vec<String> {
-    h.lock().unwrap().list()
+    h.lock().unwrap_or_else(|e| e.into_inner()).list()
 }
 
 /// Search the known package catalog (stub — real registry would HTTP-query an index).

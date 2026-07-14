@@ -68,12 +68,12 @@ pub fn __varg_memory_open(name: &str) -> MemoryHandle {
 
 /// Store a key-value pair in working memory
 pub fn __varg_memory_set(mem: &MemoryHandle, key: &str, value: &str) {
-    mem.lock().unwrap().working.insert(key.to_string(), value.to_string());
+    mem.lock().unwrap_or_else(|e| e.into_inner()).working.insert(key.to_string(), value.to_string());
 }
 
 /// Get a value from working memory
 pub fn __varg_memory_get(mem: &MemoryHandle, key: &str, default: &str) -> String {
-    mem.lock().unwrap().working.get(key).cloned().unwrap_or_else(|| default.to_string())
+    mem.lock().unwrap_or_else(|e| e.into_inner()).working.get(key).cloned().unwrap_or_else(|| default.to_string())
 }
 
 /// Store an interaction in episodic memory (auto-embedded)
@@ -84,7 +84,7 @@ pub fn __varg_memory_store(mem: &MemoryHandle, content: &str, metadata: &HashMap
     meta.insert("_content".to_string(), content.to_string());
     meta.insert("_timestamp".to_string(), format!("{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()));
-    let m = mem.lock().unwrap();
+    let m = mem.lock().unwrap_or_else(|e| e.into_inner());
     __varg_vector_store_upsert(&m.episodic, &id, &embedding, &meta);
 }
 
@@ -95,7 +95,7 @@ pub fn __varg_memory_recall(
     top_k: i64,
 ) -> Vec<HashMap<String, String>> {
     let query_embedding = __varg_embed(query_text);
-    let m = mem.lock().unwrap();
+    let m = mem.lock().unwrap_or_else(|e| e.into_inner());
     __varg_vector_store_search(&m.episodic, &query_embedding, top_k)
 }
 
@@ -105,7 +105,7 @@ pub fn __varg_memory_add_fact(
     label: &str,
     props: &HashMap<String, String>,
 ) -> i64 {
-    let m = mem.lock().unwrap();
+    let m = mem.lock().unwrap_or_else(|e| e.into_inner());
     __varg_graph_add_node(&m.semantic, label, props)
 }
 
@@ -114,19 +114,19 @@ pub fn __varg_memory_query_facts(
     mem: &MemoryHandle,
     label: &str,
 ) -> Vec<HashMap<String, String>> {
-    let m = mem.lock().unwrap();
+    let m = mem.lock().unwrap_or_else(|e| e.into_inner());
     __varg_graph_query(&m.semantic, label)
 }
 
 /// Get episodic memory count
 pub fn __varg_memory_episode_count(mem: &MemoryHandle) -> i64 {
-    let m = mem.lock().unwrap();
+    let m = mem.lock().unwrap_or_else(|e| e.into_inner());
     __varg_vector_store_count(&m.episodic)
 }
 
 /// Clear working memory
 pub fn __varg_memory_clear_working(mem: &MemoryHandle) {
-    mem.lock().unwrap().working.clear();
+    mem.lock().unwrap_or_else(|e| e.into_inner()).working.clear();
 }
 
 #[cfg(test)]
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn test_memory_open_memory() {
         let mem = __varg_memory_open(":memory:");
-        let m = mem.lock().unwrap();
+        let m = mem.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(m.name, ":memory:");
         assert!(m.working.is_empty());
     }

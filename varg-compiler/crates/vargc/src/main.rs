@@ -447,6 +447,23 @@ use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 
 fn main() {
+    // B6: run the whole compiler on a worker thread with a large stack. The parser,
+    // typechecker and codegen are all recursive over expression depth; on platforms with a
+    // small default main-thread stack (Windows defaults to ~1 MB) even moderately nested
+    // input could overflow before the parser's depth guard (MAX_EXPR_DEPTH) rejected it.
+    // A 256 MB stack gives every pass ample headroom; the depth guard still bounds truly
+    // pathological input to a clean ParseError.
+    let child = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(run_cli)
+        .expect("failed to spawn compiler thread");
+    match child.join() {
+        Ok(()) => {}
+        Err(_) => exit(101), // a pass panicked; the message was already printed
+    }
+}
+
+fn run_cli() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         print_usage();
@@ -554,8 +571,29 @@ fn main() {
                 inject_trace_annotations(&mut merged_ast);
             }
             let source_for_errors = fs::read_to_string(&input_file_str).unwrap_or_default();
-            let mut generator = RustGenerator::new();
-            let rust_source = generator.generate_with_source_map(&merged_ast, &source_for_errors);
+            // B9: emit-rs deliberately skips typechecking, so the codegen can be handed an
+            // AST that a valid program would never produce (e.g. `encrypt()` with no args).
+            // Some builtin handlers index their argument list directly and would panic with a
+            // stack trace. Contain that here so the playground "emit rust" button reports a
+            // clean error instead of crashing the compiler process.
+            let src_clone = source_for_errors.clone();
+            let ast_clone = merged_ast.clone();
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {})); // suppress default stack-trace print
+            let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let mut generator = RustGenerator::new();
+                generator.generate_with_source_map(&ast_clone, &src_clone)
+            }));
+            std::panic::set_hook(prev_hook);
+            let rust_source = match gen_result {
+                Ok(src) => src,
+                Err(_) => {
+                    eprintln!("Error: code generation failed for '{}'.", input_file_str);
+                    eprintln!("  The source has errors that `emit-rs` cannot recover from");
+                    eprintln!("  (it skips typechecking). Run `vargc build {}` for a full diagnostic.", input_file_str);
+                    exit(1);
+                }
+            };
             let output_path = input_file_str.replace(".varg", ".rs");
             let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
             let formatted = format!("{}{}", allow_header, rust_source);

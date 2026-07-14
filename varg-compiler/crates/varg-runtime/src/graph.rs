@@ -6,11 +6,8 @@
 // Falls back to pure in-memory if name is ":memory:".
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
-
-static NODE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 pub struct GraphNode {
@@ -31,6 +28,10 @@ pub struct GraphDb {
     pub name: String,
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
+    /// R1: next node ID for THIS graph. Was a global `static NODE_COUNTER`, which meant two
+    /// graph instances shared one ID sequence (IDs from one graph leaked into another and
+    /// interacted badly with reload). Per-instance counting keeps each graph self-contained.
+    next_id: u64,
     /// SQLite connection for persistence (None = pure in-memory)
     db: Option<Connection>,
 }
@@ -52,7 +53,7 @@ pub type GraphHandle = Arc<Mutex<GraphDb>>;
 
 /// Initialize SQLite schema for graph persistence
 fn init_graph_schema(conn: &Connection) {
-    conn.execute_batch(
+    if let Err(e) = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS graph_nodes (
             id INTEGER PRIMARY KEY,
             label TEXT NOT NULL,
@@ -65,45 +66,56 @@ fn init_graph_schema(conn: &Connection) {
             relation TEXT NOT NULL,
             properties TEXT NOT NULL
         );"
-    ).expect("Failed to initialize graph schema");
+    ) {
+        // R4: don't abort the process on schema init failure — report and continue (the graph
+        // will operate in-memory-only if the tables are unavailable).
+        eprintln!("[VargOS] graph schema init failed: {}", e);
+    }
 }
 
-/// Load existing nodes and edges from SQLite into memory
+/// Load existing nodes and edges from SQLite into memory.
+/// R4: previously every DB read used `unwrap()`, so a corrupt or partially-written database
+/// aborted the whole process. Now a failed query returns empty (fresh graph) and individual
+/// malformed rows are skipped rather than crashing.
 fn load_graph_from_db(conn: &Connection) -> (Vec<GraphNode>, Vec<GraphEdge>, u64) {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut max_id: u64 = 0;
 
-    // Load nodes
-    let mut stmt = conn.prepare("SELECT id, label, properties FROM graph_nodes").unwrap();
-    let node_rows = stmt.query_map([], |row| {
-        let id: u64 = row.get::<_, i64>(0).unwrap() as u64;
-        let label: String = row.get(1).unwrap();
-        let props_json: String = row.get(2).unwrap();
-        let properties: HashMap<String, String> = serde_json::from_str(&props_json).unwrap_or_default();
-        Ok((id, label, properties))
-    }).unwrap();
-
-    for row in node_rows {
-        let (id, label, properties) = row.unwrap();
-        if id > max_id { max_id = id; }
-        nodes.push(GraphNode { id, label, properties });
+    // Load nodes — tolerate query/row failures.
+    if let Ok(mut stmt) = conn.prepare("SELECT id, label, properties FROM graph_nodes") {
+        let node_rows = stmt.query_map([], |row| {
+            let id: u64 = row.get::<_, i64>(0)? as u64;
+            let label: String = row.get(1)?;
+            let props_json: String = row.get(2)?;
+            let properties: HashMap<String, String> = serde_json::from_str(&props_json).unwrap_or_default();
+            Ok((id, label, properties))
+        });
+        if let Ok(rows) = node_rows {
+            for row in rows.flatten() {
+                let (id, label, properties) = row;
+                if id > max_id { max_id = id; }
+                nodes.push(GraphNode { id, label, properties });
+            }
+        }
     }
 
-    // Load edges
-    let mut stmt = conn.prepare("SELECT from_id, to_id, relation, properties FROM graph_edges").unwrap();
-    let edge_rows = stmt.query_map([], |row| {
-        let from: u64 = row.get::<_, i64>(0).unwrap() as u64;
-        let to: u64 = row.get::<_, i64>(1).unwrap() as u64;
-        let relation: String = row.get(2).unwrap();
-        let props_json: String = row.get(3).unwrap();
-        let properties: HashMap<String, String> = serde_json::from_str(&props_json).unwrap_or_default();
-        Ok((from, to, relation, properties))
-    }).unwrap();
-
-    for row in edge_rows {
-        let (from, to, relation, properties) = row.unwrap();
-        edges.push(GraphEdge { from, to, relation, properties });
+    // Load edges — tolerate query/row failures.
+    if let Ok(mut stmt) = conn.prepare("SELECT from_id, to_id, relation, properties FROM graph_edges") {
+        let edge_rows = stmt.query_map([], |row| {
+            let from: u64 = row.get::<_, i64>(0)? as u64;
+            let to: u64 = row.get::<_, i64>(1)? as u64;
+            let relation: String = row.get(2)?;
+            let props_json: String = row.get(3)?;
+            let properties: HashMap<String, String> = serde_json::from_str(&props_json).unwrap_or_default();
+            Ok((from, to, relation, properties))
+        });
+        if let Ok(rows) = edge_rows {
+            for row in rows.flatten() {
+                let (from, to, relation, properties) = row;
+                edges.push(GraphEdge { from, to, relation, properties });
+            }
+        }
     }
 
     (nodes, edges, max_id)
@@ -118,26 +130,30 @@ pub fn __varg_graph_open(name: &str) -> GraphHandle {
             name: name.to_string(),
             nodes: Vec::new(),
             edges: Vec::new(),
+            next_id: 1,
             db: None,
         }));
     }
 
     let db_path = format!("{}.graph.db", name);
-    let conn = Connection::open(&db_path)
-        .unwrap_or_else(|e| panic!("Failed to open graph database '{}': {}", db_path, e));
+    // R4: fall back to an in-memory graph instead of aborting if the file can't be opened.
+    let conn = match Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[VargOS] graph_open('{}') failed: {} — falling back to in-memory", db_path, e);
+            return Arc::new(Mutex::new(GraphDb {
+                name: name.to_string(), nodes: Vec::new(), edges: Vec::new(), next_id: 1, db: None,
+            }));
+        }
+    };
     init_graph_schema(&conn);
     let (nodes, edges, max_id) = load_graph_from_db(&conn);
-
-    // Ensure NODE_COUNTER is above all loaded IDs
-    let current = NODE_COUNTER.load(Ordering::SeqCst);
-    if max_id >= current {
-        NODE_COUNTER.store(max_id + 1, Ordering::SeqCst);
-    }
 
     Arc::new(Mutex::new(GraphDb {
         name: name.to_string(),
         nodes,
         edges,
+        next_id: max_id + 1, // R1: per-instance counter starts above all loaded IDs
         db: Some(conn),
     }))
 }
@@ -148,22 +164,29 @@ pub fn __varg_graph_add_node(
     label: &str,
     props: &HashMap<String, String>,
 ) -> i64 {
-    let id = NODE_COUNTER.fetch_add(1, Ordering::SeqCst);
+    // R1/R2: take the lock first, draw the ID from this graph's own counter, and recover from
+    // a poisoned lock instead of cascading panics.
+    let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
+    let id = g.next_id;
+    g.next_id += 1;
     let node = GraphNode {
         id,
         label: label.to_string(),
         properties: props.clone(),
     };
 
-    let mut g = graph.lock().unwrap();
-
     // Write-through to SQLite if persisted
     if let Some(ref conn) = g.db {
         let props_json = serde_json::to_string(props).unwrap_or_else(|_| "{}".to_string());
-        conn.execute(
+        // B10: surface write-through failures instead of silently dropping them (`.ok()`),
+        // which previously caused the in-memory graph and its SQLite backing to diverge
+        // without any signal.
+        if let Err(e) = conn.execute(
             "INSERT INTO graph_nodes (id, label, properties) VALUES (?1, ?2, ?3)",
             rusqlite::params![id as i64, label, props_json],
-        ).ok();
+        ) {
+            eprintln!("[VargOS] graph node write-through failed: {}", e);
+        }
     }
 
     g.nodes.push(node);
@@ -185,15 +208,18 @@ pub fn __varg_graph_add_edge(
         properties: props.clone(),
     };
 
-    let mut g = graph.lock().unwrap();
+    let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
 
     // Write-through to SQLite if persisted
     if let Some(ref conn) = g.db {
         let props_json = serde_json::to_string(props).unwrap_or_else(|_| "{}".to_string());
-        conn.execute(
+        // B10: surface write-through failures instead of silently dropping them.
+        if let Err(e) = conn.execute(
             "INSERT INTO graph_edges (from_id, to_id, relation, properties) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![from_id, to_id, relation, props_json],
-        ).ok();
+        ) {
+            eprintln!("[VargOS] graph edge write-through failed: {}", e);
+        }
     }
 
     g.edges.push(edge);
@@ -204,7 +230,7 @@ pub fn __varg_graph_query(
     graph: &GraphHandle,
     label: &str,
 ) -> Vec<HashMap<String, String>> {
-    let g = graph.lock().unwrap();
+    let g = graph.lock().unwrap_or_else(|e| e.into_inner());
     g.nodes
         .iter()
         .filter(|n| n.label == label)
@@ -227,7 +253,7 @@ pub fn __varg_graph_traverse(
     if depth <= 0 {
         return Vec::new();
     }
-    let g = graph.lock().unwrap();
+    let g = graph.lock().unwrap_or_else(|e| e.into_inner());
     let mut visited = std::collections::HashSet::new();
     let mut results = Vec::new();
     let mut frontier = vec![start_id as u64];
@@ -269,7 +295,7 @@ pub fn __varg_graph_neighbors(
     graph: &GraphHandle,
     node_id: i64,
 ) -> Vec<HashMap<String, String>> {
-    let g = graph.lock().unwrap();
+    let g = graph.lock().unwrap_or_else(|e| e.into_inner());
     let nid = node_id as u64;
     let mut results = Vec::new();
 
@@ -302,7 +328,7 @@ mod tests {
     #[test]
     fn test_graph_open_memory() {
         let g = __varg_graph_open(":memory:");
-        let db = g.lock().unwrap();
+        let db = g.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(db.name, ":memory:");
         assert!(db.nodes.is_empty());
         assert!(db.db.is_none());
@@ -314,7 +340,7 @@ mod tests {
         let props = HashMap::from([("name".to_string(), "Alice".to_string())]);
         let id = __varg_graph_add_node(&g, "Person", &props);
         assert!(id > 0);
-        let db = g.lock().unwrap();
+        let db = g.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(db.nodes.len(), 1);
         assert_eq!(db.nodes[0].label, "Person");
     }
@@ -327,7 +353,7 @@ mod tests {
         let id1 = __varg_graph_add_node(&g, "Person", &p1);
         let id2 = __varg_graph_add_node(&g, "Project", &p2);
         __varg_graph_add_edge(&g, id1, "works_on", id2, &HashMap::new());
-        let db = g.lock().unwrap();
+        let db = g.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(db.edges.len(), 1);
         assert_eq!(db.edges[0].relation, "works_on");
     }
@@ -459,7 +485,7 @@ mod tests {
         // No validation — edges can reference node IDs that do not exist
         let g = __varg_graph_open(":memory:");
         __varg_graph_add_edge(&g, 9999, "phantom", 8888, &HashMap::new());
-        let db = g.lock().unwrap();
+        let db = g.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(db.edges.len(), 1, "edge with nonexistent node IDs must still be stored");
         // neighbors and traverse for these IDs just return empty (find returns None)
         drop(db);
@@ -511,7 +537,7 @@ mod tests {
         // Reopen and verify data persisted
         {
             let g = __varg_graph_open(&db_name);
-            let db = g.lock().unwrap();
+            let db = g.lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(db.nodes.len(), 2);
             assert_eq!(db.edges.len(), 1);
             assert_eq!(db.nodes[0].label, "Person");

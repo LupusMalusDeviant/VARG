@@ -928,10 +928,10 @@ http_route(server, "GET", "/hello", (req) => {
 });
 
 // Pipeline step
-__varg_pipeline_add_step(pipe, "upper", (input) => input.to_upper());
+pipeline_add_step(pipe, "upper", (input) => input.to_upper());
 
 // Event handler
-__varg_event_on(bus, "joined", (data) => {
+event_on(bus, "joined", (data) => {
     print $"Welcome {data["name"]}";
     return "ok";
 });
@@ -1728,23 +1728,23 @@ Provider/model defaults from env: `VARG_LLM_PROVIDER`, `VARG_LLM_MODEL`.
 ```csharp
 agent VectorApp {
     public void Run() {
-        var store = __varg_vector_store_open("my_store");
+        var store = vector_store_open("my_store");
 
         // Embed text (requires LLM API — use embed_local for no-API-key)
-        var emb = __varg_embed("This is my document text");
+        var emb = embed("This is my document text");
         // OR: local embedding (384-dim, no network)
         var emb = embed_local("This is my document text");
 
         // Upsert
-        __varg_vector_store_upsert(store, "doc1", emb, {"source": "manual"});
+        vector_store_upsert(store, "doc1", emb, {"source": "manual"});
 
         // Search
         var query_emb = embed_local("search query");
-        var results   = __varg_vector_store_search(store, query_emb, 5);
+        var results   = vector_store_search(store, query_emb, 5);
         // results: List<map<string, string>>
 
-        var count = __varg_vector_store_count(store);
-        __varg_vector_store_delete(store, "doc1");
+        var count = vector_store_count(store);
+        vector_store_delete(store, "doc1");
     }
 }
 ```
@@ -1760,17 +1760,17 @@ var embeddings = embed_local_batch(texts);    // List of embedding vectors
 ## 30. Knowledge Graph
 
 ```csharp
-var g  = __varg_graph_open("my_graph");
-var p1 = __varg_graph_add_node(g, "Person", {"name": "Alice", "age": "30"});
-var p2 = __varg_graph_add_node(g, "Person", {"name": "Bob",   "age": "25"});
-var c1 = __varg_graph_add_node(g, "Company", {"name": "Acme"});
+var g  = graph_open("my_graph");
+var p1 = graph_add_node(g, "Person", {"name": "Alice", "age": "30"});
+var p2 = graph_add_node(g, "Person", {"name": "Bob",   "age": "25"});
+var c1 = graph_add_node(g, "Company", {"name": "Acme"});
 
-__varg_graph_add_edge(g, p1, "knows", p2, {});
-__varg_graph_add_edge(g, p1, "works_at", c1, {"since": "2020"});
+graph_add_edge(g, p1, "knows", p2, {});
+graph_add_edge(g, p1, "works_at", c1, {"since": "2020"});
 
-var persons    = __varg_graph_query(g, "Person");
-var network    = __varg_graph_traverse(g, p1, 2, "knows");
-var neighbors  = __varg_graph_neighbors(g, p1);
+var persons    = graph_query(g, "Person");
+var network    = graph_traverse(g, p1, 2, "knows");
+var neighbors  = graph_neighbors(g, p1);
 ```
 
 ---
@@ -1778,20 +1778,20 @@ var neighbors  = __varg_graph_neighbors(g, p1);
 ## 31. Agent Memory (3-Layer)
 
 ```csharp
-var mem = __varg_memory_open("bot_memory");
+var mem = memory_open("bot_memory");
 
 // Working memory (ephemeral KV)
-__varg_memory_set(mem, "current_task", "analysis");
-var task = __varg_memory_get(mem, "current_task", "none");
-__varg_memory_clear_working(mem);
+memory_set(mem, "current_task", "analysis");
+var task = memory_get(mem, "current_task", "none");
+memory_clear_working(mem);
 
 // Episodic memory (vector-based, persisted)
-__varg_memory_store(mem, "User asked about Rust", {"topic": "programming"});
-var episodes = __varg_memory_recall(mem, "Rust programming", 5);
+memory_store(mem, "User asked about Rust", {"topic": "programming"});
+var episodes = memory_recall(mem, "Rust programming", 5);
 
 // Semantic memory (graph-based facts, persisted)
-var fact_id = __varg_memory_add_fact(mem, "User", {"name": "Alice", "lang": "English"});
-var facts   = __varg_memory_query_facts(mem, "User");
+var fact_id = memory_add_fact(mem, "User", {"name": "Alice", "lang": "English"});
+var facts   = memory_query_facts(mem, "User");
 ```
 
 ---
@@ -1799,13 +1799,13 @@ var facts   = __varg_memory_query_facts(mem, "User");
 ## 32. Observability & Tracing
 
 ```csharp
-var tracer = __varg_trace_start("my_agent");
-var span   = __varg_trace_span(tracer, "process_order");
-__varg_trace_set_attr(tracer, "order_id", "1234");
-__varg_trace_event(tracer, "payment_received", {"amount": "50.00"});
-__varg_trace_end(tracer, span);
+var tracer = trace_start("my_agent");
+var span   = trace_span(tracer, "process_order");
+trace_set_attr(tracer, "order_id", "1234");
+trace_event(tracer, "payment_received", {"amount": "50.00"});
+trace_end(tracer, span);
 
-var json_export = __varg_trace_export(tracer);
+var json_export = trace_export(tracer);
 fs_write("trace.json", json_export, files);
 ```
 
@@ -1815,20 +1815,20 @@ fs_write("trace.json", json_export, files);
 
 ```csharp
 // Event Bus
-var bus = __varg_event_bus_new("system");
-__varg_event_on(bus, "user_joined", (data) => {
+var bus = event_bus_new("system");
+event_on(bus, "user_joined", (data) => {
     print $"Welcome {data["name"]}";
     return "ok";
 });
-__varg_event_emit(bus, "user_joined", {"name": "Alice"});
-var count = __varg_event_count(bus, "user_joined");
+event_emit(bus, "user_joined", {"name": "Alice"});
+var count = event_count(bus, "user_joined");
 
 // Pipeline (sequential transforms)
-var pipe = __varg_pipeline_new("data_pipe");
-__varg_pipeline_add_step(pipe, "clean",   (input) => trim(input));
-__varg_pipeline_add_step(pipe, "upper",   (input) => to_upper(input));
-__varg_pipeline_add_step(pipe, "bracket", (input) => $"[{input}]");
-var result = __varg_pipeline_run(pipe, "  hello world  ");
+var pipe = pipeline_new("data_pipe");
+pipeline_add_step(pipe, "clean",   (input) => trim(input));
+pipeline_add_step(pipe, "upper",   (input) => to_upper(input));
+pipeline_add_step(pipe, "bracket", (input) => $"[{input}]");
+var result = pipeline_run(pipe, "  hello world  ");
 ```
 
 ---
@@ -1836,18 +1836,18 @@ var result = __varg_pipeline_run(pipe, "  hello world  ");
 ## 34. Agent Orchestration
 
 ```csharp
-var orch = __varg_orchestrator_new("workers");
-__varg_orchestrator_add_task(orch, "task1", "input_one");
-__varg_orchestrator_add_task(orch, "task2", "input_two");
-__varg_orchestrator_add_task(orch, "task3", "input_three");
+var orch = orchestrator_new("workers");
+orchestrator_add_task(orch, "task1", "input_one");
+orchestrator_add_task(orch, "task2", "input_two");
+orchestrator_add_task(orch, "task3", "input_three");
 
 // Run all tasks with a handler function
-__varg_orchestrator_run_all(orch, (input) => {
+orchestrator_run_all(orch, (input) => {
     return to_upper(input);
 });
 
 // Get results — List<map<string, string>>
-var results = __varg_orchestrator_results(orch);
+var results = orchestrator_results(orch);
 for r in results {
     print $"Task {r["id"]}: {r["result"]}";
 }
@@ -1858,13 +1858,13 @@ for r in results {
 ## 35. Self-Improving Agents
 
 ```csharp
-var si = __varg_self_improver_new("coder_agent", 5);
+var si = self_improver_new("coder_agent", 5);
 
-__varg_self_improver_record_success(si, "Fix null pointer", "Added null check before access");
-__varg_self_improver_record_failure(si, "Parse JSON", "Forgot to handle empty string");
+self_improver_record_success(si, "Fix null pointer", "Added null check before access");
+self_improver_record_failure(si, "Parse JSON", "Forgot to handle empty string");
 
-var lessons = __varg_self_improver_recall(si, "null pointer", 3);
-var stats   = __varg_self_improver_stats(si);
+var lessons = self_improver_recall(si, "null pointer", 3);
+var stats   = self_improver_stats(si);
 print $"Success rate: {stats["success_rate"]}";
 ```
 

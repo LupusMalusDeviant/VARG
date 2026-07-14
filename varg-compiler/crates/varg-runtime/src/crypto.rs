@@ -30,19 +30,36 @@ pub fn __varg_encrypt(data: &str, key: &str) -> String {
     STANDARD.encode(packed)
 }
 
+/// B10: decrypt is fed attacker/user-controlled input (the ciphertext string and the key).
+/// It used to `expect`/`unwrap` on every failure mode — invalid Base64, truncated payload,
+/// wrong password, non-UTF-8 plaintext — which aborted the whole process. That is a trivial
+/// denial-of-service. Return a clear error-marker string instead so the caller stays alive
+/// and can branch on the result (consistent with other string-returning runtime builtins).
 pub fn __varg_decrypt(data: &str, key: &str) -> String {
-    let packed = STANDARD.decode(data).expect("[VargOS] Invalid Base64 Encryption Payload");
+    let packed = match STANDARD.decode(data) {
+        Ok(p) => p,
+        Err(_) => return "[VargOS] decrypt error: invalid Base64 payload".to_string(),
+    };
     if packed.len() < 16 + 12 {
-        panic!("[VargOS] Payload too short for AES-GCM.");
+        return "[VargOS] decrypt error: payload too short for AES-GCM".to_string();
     }
     let salt = &packed[0..16];
     let nonce_bytes = &packed[16..28];
     let ciphertext = &packed[28..];
     let derived_key = __varg_derive_key(key, salt);
-    let cipher = Aes256Gcm::new_from_slice(&derived_key).unwrap();
+    let cipher = match Aes256Gcm::new_from_slice(&derived_key) {
+        Ok(c) => c,
+        Err(_) => return "[VargOS] decrypt error: key setup failed".to_string(),
+    };
     let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher.decrypt(nonce, ciphertext).expect("[VargOS] Decryption failed or wrong password");
-    String::from_utf8(plaintext).unwrap()
+    let plaintext = match cipher.decrypt(nonce, ciphertext) {
+        Ok(p) => p,
+        Err(_) => return "[VargOS] decrypt error: wrong password or corrupted data".to_string(),
+    };
+    match String::from_utf8(plaintext) {
+        Ok(s) => s,
+        Err(_) => "[VargOS] decrypt error: decrypted bytes are not valid UTF-8".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -64,5 +81,30 @@ mod tests {
         let key1 = __varg_derive_key("password", &salt);
         let key2 = __varg_derive_key("password", &salt);
         assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_decrypt_wrong_password_returns_error_not_panic_b7() {
+        // B7 regression: a wrong password must yield an error string, never a panic.
+        let encrypted = __varg_encrypt("secret data", "correct-password");
+        let result = __varg_decrypt(&encrypted, "wrong-password");
+        assert!(result.starts_with("[VargOS] decrypt error:"),
+            "wrong password must return an error marker, got: {result}");
+    }
+
+    #[test]
+    fn test_decrypt_invalid_base64_returns_error_not_panic_b7() {
+        // B7 regression: malformed (non-Base64) input must not panic.
+        let result = __varg_decrypt("!!!not base64!!!", "any-key");
+        assert!(result.starts_with("[VargOS] decrypt error:"),
+            "invalid payload must return an error marker, got: {result}");
+    }
+
+    #[test]
+    fn test_decrypt_truncated_payload_returns_error_not_panic_b7() {
+        // B7 regression: a valid-Base64 but too-short payload must not panic.
+        let result = __varg_decrypt("YWJj", "any-key"); // "abc" — under the 28-byte minimum
+        assert!(result.starts_with("[VargOS] decrypt error:"),
+            "truncated payload must return an error marker, got: {result}");
     }
 }

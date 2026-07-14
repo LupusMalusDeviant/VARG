@@ -98,23 +98,23 @@ pub fn __varg_checkpoint_open(path: &str, agent_id: &str) -> CheckpointHandle {
 }
 
 pub fn __varg_checkpoint_save(h: &CheckpointHandle, state_json: &str) -> bool {
-    h.lock().unwrap().save(state_json).is_ok()
+    h.lock().unwrap_or_else(|e| e.into_inner()).save(state_json).is_ok()
 }
 
 pub fn __varg_checkpoint_load(h: &CheckpointHandle) -> String {
-    h.lock().unwrap().load().unwrap_or_default()
+    h.lock().unwrap_or_else(|e| e.into_inner()).load().unwrap_or_default()
 }
 
 pub fn __varg_checkpoint_clear(h: &CheckpointHandle) -> bool {
-    h.lock().unwrap().clear().is_ok()
+    h.lock().unwrap_or_else(|e| e.into_inner()).clear().is_ok()
 }
 
 pub fn __varg_checkpoint_exists(h: &CheckpointHandle) -> bool {
-    h.lock().unwrap().load().is_some()
+    h.lock().unwrap_or_else(|e| e.into_inner()).load().is_some()
 }
 
 pub fn __varg_checkpoint_age(h: &CheckpointHandle) -> i64 {
-    h.lock().unwrap().age_seconds()
+    h.lock().unwrap_or_else(|e| e.into_inner()).age_seconds()
 }
 
 #[cfg(test)]

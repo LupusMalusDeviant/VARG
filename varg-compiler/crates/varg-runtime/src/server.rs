@@ -155,7 +155,14 @@ pub async fn __varg_http_listen(server: VargHttpServer, addr: &str) -> Result<()
                 let h = h.clone();
                 async move {
                     let varg_req = axum_request_to_varg(req).await;
-                    let varg_resp = h(varg_req);
+                    // B7: Varg route handlers are synchronous and commonly perform blocking I/O
+                    // (db_query, reqwest::blocking fetch). Running them inline on the async
+                    // worker stalled the whole executor and could trip reqwest's "blocking call
+                    // inside a runtime" guard. Offload to a blocking thread pool instead.
+                    let varg_resp = match tokio::task::spawn_blocking(move || h(varg_req)).await {
+                        Ok(resp) => resp,
+                        Err(_) => VargHttpResponse::new(500, "Internal Server Error: handler panicked"),
+                    };
                     varg_response_to_axum(varg_resp)
                 }
             }
@@ -326,7 +333,14 @@ pub async fn __varg_http_listen_sse(server: VargHttpServerHandle, addr: &str) ->
                 let h = h.clone();
                 async move {
                     let varg_req = axum_request_to_varg(req).await;
-                    let varg_resp = h(varg_req);
+                    // B7: Varg route handlers are synchronous and commonly perform blocking I/O
+                    // (db_query, reqwest::blocking fetch). Running them inline on the async
+                    // worker stalled the whole executor and could trip reqwest's "blocking call
+                    // inside a runtime" guard. Offload to a blocking thread pool instead.
+                    let varg_resp = match tokio::task::spawn_blocking(move || h(varg_req)).await {
+                        Ok(resp) => resp,
+                        Err(_) => VargHttpResponse::new(500, "Internal Server Error: handler panicked"),
+                    };
                     varg_response_to_axum(varg_resp)
                 }
             }

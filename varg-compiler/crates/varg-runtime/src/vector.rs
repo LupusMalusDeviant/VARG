@@ -126,7 +126,7 @@ pub fn __varg_vector_store_upsert(
     embedding: &[f32],
     metadata: &HashMap<String, String>,
 ) {
-    let mut s = store.lock().unwrap();
+    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
 
     // Write-through to SQLite if persisted
     if let Some(ref conn) = s.db {
@@ -158,7 +158,7 @@ pub fn __varg_vector_store_search(
     query: &[f32],
     top_k: i64,
 ) -> Vec<HashMap<String, String>> {
-    let s = store.lock().unwrap();
+    let s = store.lock().unwrap_or_else(|e| e.into_inner());
     let mut scored: Vec<(&VectorEntry, f32)> = s.entries
         .iter()
         .map(|e| (e, cosine_similarity(query, &e.embedding)))
@@ -180,7 +180,7 @@ pub fn __varg_vector_store_search(
 
 /// Delete a vector by ID
 pub fn __varg_vector_store_delete(store: &VectorStoreHandle, id: &str) -> bool {
-    let mut s = store.lock().unwrap();
+    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
 
     // Write-through to SQLite if persisted
     if let Some(ref conn) = s.db {
@@ -194,7 +194,7 @@ pub fn __varg_vector_store_delete(store: &VectorStoreHandle, id: &str) -> bool {
 
 /// Count entries in the store
 pub fn __varg_vector_store_count(store: &VectorStoreHandle) -> i64 {
-    store.lock().unwrap().entries.len() as i64
+    store.lock().unwrap_or_else(|e| e.into_inner()).entries.len() as i64
 }
 
 /// Create an embedding from text.
@@ -366,7 +366,7 @@ impl LshIndex {
 /// Build an in-memory LSH index for fast approximate search.
 /// Returns an opaque JSON-encoded index handle (serialized to string for simplicity).
 pub fn __varg_vector_build_index(store: &VectorStoreHandle) -> String {
-    let s = store.lock().unwrap();
+    let s = store.lock().unwrap_or_else(|e| e.into_inner());
     let idx = LshIndex::build(&s);
     let bucket_counts: Vec<(String, usize)> = idx.buckets.iter()
         .map(|(k, v)| (k.to_string(), v.len()))
@@ -384,7 +384,7 @@ pub fn __varg_vector_search_fast(
     query: &[f32],
     top_k: i64,
 ) -> Vec<String> {
-    let s = store.lock().unwrap();
+    let s = store.lock().unwrap_or_else(|e| e.into_inner());
     let idx = LshIndex::build(&s);
     idx.search(query, &s, top_k as usize)
         .into_iter()
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn test_vector_store_open_memory() {
         let store = __varg_vector_store_open(":memory:");
-        let s = store.lock().unwrap();
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.name, ":memory:");
         assert!(s.entries.is_empty());
         assert!(s.db.is_none());
@@ -456,7 +456,7 @@ mod tests {
         __varg_vector_store_upsert(&store, "doc1", &[1.0, 0.0], &meta1);
         __varg_vector_store_upsert(&store, "doc1", &[0.0, 1.0], &meta2);
         assert_eq!(__varg_vector_store_count(&store), 1);
-        let s = store.lock().unwrap();
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.entries[0].metadata.get("v").unwrap(), "2");
     }
 
@@ -563,7 +563,7 @@ mod tests {
         {
             let store = __varg_vector_store_open(&store_name);
             assert_eq!(__varg_vector_store_count(&store), 1);
-            let s = store.lock().unwrap();
+            let s = store.lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(s.entries[0].id, "b");
         }
 

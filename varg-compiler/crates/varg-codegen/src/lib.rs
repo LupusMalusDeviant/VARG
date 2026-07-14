@@ -1,6 +1,32 @@
 use varg_ast::ast::*;
 use std::collections::{HashSet, HashMap};
 
+/// B3: Rust keywords that are NOT reserved in Varg. If a Varg identifier collides with one,
+/// the emitted Rust would fail to parse. Most can be escaped with a raw-identifier prefix
+/// (`r#loop`); a handful (`crate`, `self`, `Self`, `super`) are not valid raw identifiers and
+/// must be renamed instead.
+fn esc_ident(name: &str) -> String {
+    // `self`, `Self`, `super`, `crate` are emitted intentionally by the codegen (the agent
+    // instance reference and path roots) and are NOT valid raw identifiers — leave them
+    // untouched. Varg's own lexer keeps users from declaring them as variables.
+    const LEAVE: &[&str] = &["self", "Self", "super", "crate"];
+    // Reserved Rust keywords (strict + reserved) that are legal as `r#` raw identifiers.
+    const RAWABLE: &[&str] = &[
+        "as", "break", "const", "continue", "dyn", "else", "enum", "extern", "false", "fn",
+        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+        "return", "static", "struct", "trait", "true", "type", "unsafe", "use", "where", "while",
+        "async", "await", "abstract", "become", "box", "do", "final", "macro", "override",
+        "priv", "typeof", "unsized", "virtual", "yield", "try", "gen",
+    ];
+    if LEAVE.contains(&name) {
+        name.to_string()
+    } else if RAWABLE.contains(&name) {
+        format!("r#{}", name)
+    } else {
+        name.to_string()
+    }
+}
+
 /// Plan 46: Convert byte offset in source to 1-based line number
 pub fn byte_offset_to_line(source: &str, offset: usize) -> usize {
     source[..offset.min(source.len())].matches('\n').count() + 1
@@ -305,7 +331,7 @@ impl RustGenerator {
             // Plan 25: Standalone top-level functions
             Item::Function(f) => {
                 let params: Vec<String> = f.params.iter()
-                    .map(|p| format!("{}: {}", p.name, self.gen_type(&p.ty)))
+                    .map(|p| format!("{}: {}", esc_ident(&p.name), self.gen_type(&p.ty)))
                     .collect();
                 // Wave 14: Auto-wrap return type in Result if body uses ?
                 let uses_try = block_contains_try_propagate(&f.body);
@@ -322,6 +348,7 @@ impl RustGenerator {
                 // Wave 14: Set flag so return statements get Ok()-wrapped
                 let prev = self.in_result_function;
                 self.in_result_function = uses_try;
+                self.register_string_params(&f.params);
                 // Wave 19: Implicit return — if function has return type and last statement is Expr,
                 // convert it to Return for codegen
                 let mut func_body = f.body.clone();
@@ -453,6 +480,8 @@ impl RustGenerator {
                 let has_on_error = a.methods.iter().any(|m| m.name == "on_error");
 
                 for method in &a.methods {
+                    // B5: string-typed params of this method become string vars in its body.
+                    self.register_string_params(&method.args);
                     // on_error method: private handler — use declared parameter names
                     if method.name == "on_error" && has_on_error {
                         let sig = self.gen_method_signature(method, true); // force_no_vis=true
@@ -471,12 +500,23 @@ impl RustGenerator {
                             out.push_str(&format!("    pub fn {}_mcp_schema() -> String {{\n        r#\"{{ \"name\": \"{}\", \"description\": \"{}\" }}\"#.to_string()\n    }}\n",
                                 method.name, method.name, desc));
                         } else if ann.name == "RateLimit" {
-                            // @[RateLimit(calls=10, window=1000)] — generates a rate-checked wrapper
-                            let max_calls = ann.values.iter().find(|v| v.starts_with("calls="))
-                                .and_then(|v| v.strip_prefix("calls="))
+                            // Accepts BOTH the named form `@[RateLimit(calls=10, window=1000)]` and
+                            // the positional form `@[RateLimit("10", "60000")]` documented in
+                            // REFERENCE.md. Previously only the named form was recognised, so the
+                            // documented positional form silently fell back to the 10/1000 defaults.
+                            let positional: Vec<&str> = ann.values.iter()
+                                .filter(|v| !v.contains('='))
+                                .map(|v| v.trim_matches('"'))
+                                .collect();
+                            let max_calls = ann.values.iter()
+                                .find_map(|v| v.strip_prefix("calls="))
+                                .map(|v| v.trim_matches('"'))
+                                .or_else(|| positional.get(0).copied())
                                 .unwrap_or("10");
-                            let window_ms = ann.values.iter().find(|v| v.starts_with("window="))
-                                .and_then(|v| v.strip_prefix("window="))
+                            let window_ms = ann.values.iter()
+                                .find_map(|v| v.strip_prefix("window="))
+                                .map(|v| v.trim_matches('"'))
+                                .or_else(|| positional.get(1).copied())
                                 .unwrap_or("1000");
                             out.push_str(&format!(
                                 "    pub fn {}_rate_key() -> String {{ format!(\"rl_{}_{{}}\", std::thread::current().id().as_u64()) }}\n",
@@ -716,7 +756,7 @@ impl RustGenerator {
     fn gen_method_signature(&self, method: &MethodDecl, force_no_vis: bool) -> String {
         let vis = if method.is_public && !force_no_vis { "pub " } else { "" };
         let args: Vec<String> = method.args.iter()
-            .map(|a| format!("{}: {}", a.name, self.gen_type(&a.ty)))
+            .map(|a| format!("{}: {}", esc_ident(&a.name), self.gen_type(&a.ty)))
             .collect();
         let arg_str = if args.is_empty() { "&mut self".to_string() } else { format!("&mut self, {}", args.join(", ")) };
         
@@ -751,7 +791,7 @@ impl RustGenerator {
     fn gen_method_signature_result_wrapped(&self, method: &MethodDecl, force_no_vis: bool) -> String {
         let vis = if method.is_public && !force_no_vis { "pub " } else { "" };
         let args: Vec<String> = method.args.iter()
-            .map(|a| format!("{}: {}", a.name, self.gen_type(&a.ty)))
+            .map(|a| format!("{}: {}", esc_ident(&a.name), self.gen_type(&a.ty)))
             .collect();
         let arg_str = if args.is_empty() { "&mut self".to_string() } else { format!("&mut self, {}", args.join(", ")) };
 
@@ -785,11 +825,17 @@ impl RustGenerator {
         matches!(expr, Expression::String(_) | Expression::PromptLiteral(_) | Expression::InterpolatedString(_))
             || matches!(expr, Expression::MethodCall { method_name, .. }
                 if ["to_upper", "to_lower", "trim", "replace", "substring", "char_at", "join"].contains(&method_name.as_str()))
-            || matches!(expr, Expression::Identifier(name) if {
-                // Heuristic: if the variable name suggests string type
-                // This is imperfect but covers common patterns
-                false // Can't determine type at codegen level without type info
-            })
+            // B5: identifiers whose declared type is string are tracked in `string_vars`
+            // (agent fields, string-typed params, and `string`/inferred locals). Consulting
+            // it lets `a + b` lower to a `format!` concat and `print s` use Display instead
+            // of Debug (no surrounding quotes).
+            || matches!(expr, Expression::Identifier(name) if self.string_vars.contains(name))
+            // Self-prefixed string fields access the same set.
+            || matches!(expr, Expression::PropertyAccess { property_name, .. } if self.string_vars.contains(property_name))
+            // B5: string concatenation (`a + b` with a string operand) yields a String too,
+            // so a var bound to it is tracked and printed via Display.
+            || matches!(expr, Expression::BinaryOp { operator: BinaryOperator::Add, left, right }
+                if self.is_string_expr(left) || self.is_string_expr(right))
     }
 
     fn gen_type(&self, ty: &TypeNode) -> String {
@@ -1024,7 +1070,7 @@ impl RustGenerator {
                         },
                         _ => String::new(),
                     };
-                    out.push_str(&format!("{}let mut {}{} = {};\n", indent, name, type_annotation, val_str));
+                    out.push_str(&format!("{}let mut {}{} = {};\n", indent, esc_ident(name), type_annotation, val_str));
                     // Wave 48: @[Trace] — log variable creation
                     if self.trace_method {
                         out.push_str(&format!(
@@ -1036,9 +1082,9 @@ impl RustGenerator {
                 Statement::Assign { name, value } => {
                     // Plan 19: Resolve field name with self. prefix
                     let resolved_name = if self.agent_field_names.contains(name) {
-                        format!("self.{}", name)
+                        format!("self.{}", esc_ident(name))
                     } else {
-                        name.clone()
+                        esc_ident(name)  // B3
                     };
                     // Optimization: detect `name = name op expr` → compound assignment
                     if let Expression::BinaryOp { left, operator, right } = value {
@@ -1422,10 +1468,102 @@ impl RustGenerator {
         arms.iter().any(|arm| has_string(&arm.pattern))
     }
 
+    /// B1: generate an expression that will appear as an operand of a binary/unary op,
+    /// wrapping it in parentheses when it is itself a compound expression whose precedence
+    /// could otherwise be lost during flattening. String-concat `Add` is emitted as a
+    /// `format!(...)` call and needs no wrapping.
+    fn gen_operand(&mut self, expr: &Expression) -> String {
+        let needs_parens = match expr {
+            Expression::BinaryOp { operator, left, right } => {
+                // String concatenation lowers to a format!() call — already atomic.
+                let is_concat = matches!(operator, BinaryOperator::Add)
+                    && (self.is_string_expr(left) || self.is_string_expr(right));
+                !is_concat
+            }
+            Expression::UnaryOp { .. } | Expression::Cast { .. }
+            | Expression::Range { .. } | Expression::OrDefault { .. }
+            | Expression::IfExpr { .. } | Expression::MatchExpr { .. } => true,
+            _ => false,
+        };
+        let s = self.gen_expression(expr);
+        if needs_parens { format!("({})", s) } else { s }
+    }
+
+    /// R5: generate a `String -> String` handler closure for builtins like `pipeline_add_step`
+    /// and `orchestrator_run_all`. When the argument is a lambda, its parameter is given an
+    /// explicit `String` type so the body (e.g. `input.to_upper()`) type-checks — an untyped
+    /// param wrapped in an opaque shim could not be inferred. Otherwise wrap whatever callable
+    /// the expression yields in an owned-string shim.
+    fn gen_str_handler(&mut self, arg: &Expression) -> String {
+        if let Expression::Lambda { params, body, .. } = arg {
+            if params.len() == 1 {
+                let pname = esc_ident(&params[0].name);
+                // Register as a string var so string builtins in the body lower correctly.
+                self.string_vars.insert(params[0].name.clone());
+                let body_str = match body.as_ref() {
+                    LambdaBody::Expression(e) => self.gen_expression(e),
+                    LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
+                };
+                // The runtime handler type is `Fn(&str) -> String`; bind an owned `String` copy
+                // inside so the body's string builtins operate on an owned value.
+                return format!(
+                    "std::sync::Arc::new(move |__inp: &str| -> String {{ let {p}: String = __inp.to_string(); {b} }})",
+                    p = pname, b = body_str
+                );
+            }
+        }
+        // Fallback: wrap an arbitrary callable expression.
+        let gen = self.gen_expression(arg);
+        format!(
+            "std::sync::Arc::new({{ let __h = {}; move |__inp: &str| -> String {{ __h(__inp.to_string()) }} }})",
+            gen
+        )
+    }
+
+    /// R5: generate the `&HashMap<String,String> -> String` event handler closure that
+    /// `event_on` expects. Like gen_str_handler, the lambda param is given a concrete type
+    /// (an owned map copy) so the body type-checks.
+    fn gen_event_handler(&mut self, arg: &Expression) -> String {
+        if let Expression::Lambda { params, body, .. } = arg {
+            if params.len() == 1 {
+                let pname = esc_ident(&params[0].name);
+                self.map_vars.insert(params[0].name.clone());
+                let body_str = match body.as_ref() {
+                    LambdaBody::Expression(e) => self.gen_expression(e),
+                    LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
+                };
+                return format!(
+                    "std::sync::Arc::new(move |__data: &std::collections::HashMap<String, String>| -> String {{ let {p} = __data.clone(); {b} }})",
+                    p = pname, b = body_str
+                );
+            }
+        }
+        format!("std::sync::Arc::new({})", self.gen_expression(arg))
+    }
+
+    /// B5: register string-typed parameters so `is_string_expr` recognises them inside the
+    /// body (enables `format!` concat and Display-based `print`).
+    fn register_string_params(&mut self, params: &[FieldDecl]) {
+        for p in params {
+            if matches!(p.ty, TypeNode::String) {
+                self.string_vars.insert(p.name.clone());
+            }
+        }
+    }
+
     fn gen_expression(&mut self, expr: &Expression) -> String {
         match expr {
             Expression::Null => "None".to_string(),
-            Expression::Int(i) => i.to_string(),
+            // B8: literals outside i32 range need an explicit i64 suffix, otherwise Rust's
+            // default i32 inference overflows (Varg `int` is i64). Small literals stay
+            // unsuffixed so they still coerce freely into usize/index contexts.
+            Expression::Int(i) => {
+                if *i > i32::MAX as i64 || *i < i32::MIN as i64 {
+                    format!("{}i64", i)
+                } else {
+                    i.to_string()
+                }
+            },
             Expression::Float(f) => format!("{}_f64", f),  // Plan 42
             Expression::String(s) => format!("{:?}.to_string()", s),
             // Plan 35: String interpolation → format!() with __VargFmt for universal Display
@@ -1502,9 +1640,9 @@ impl RustGenerator {
             Expression::Identifier(name) => {
                 // Plan 19: Agent fields are accessed via self.
                 if self.agent_field_names.contains(name) {
-                    format!("self.{}", name)
+                    format!("self.{}", esc_ident(name))
                 } else {
-                    name.clone()
+                    esc_ident(name)  // B3: escape Rust-keyword identifiers
                 }
             },
             Expression::BinaryOp { left, operator, right } => {
@@ -1536,13 +1674,17 @@ impl RustGenerator {
                     BinaryOperator::BitOr => "|",
                     BinaryOperator::CosineSim => unreachable!(),
                 };
-                format!("{} {} {}", self.gen_expression(left), op, self.gen_expression(right))
+                // B1: the AST already encodes grouping via tree shape, but flattening it back
+                // to `left op right` silently drops precedence. Wrap any operand that is itself
+                // a binary/unary/cast expression in parens. Over-parenthesizing is always
+                // semantically safe and immune to Varg-vs-Rust precedence-table differences.
+                format!("{} {} {}", self.gen_operand(left), op, self.gen_operand(right))
             },
             Expression::Await(inner) => {
                 format!("{}.await", self.gen_expression(inner))
             },
             Expression::UnaryOp { operator, operand } => {
-                let expr = self.gen_expression(operand);
+                let expr = self.gen_operand(operand);
                 match operator {
                     UnaryOperator::Negate => format!("-{}", expr),
                     UnaryOperator::Not => format!("!{}", expr),
@@ -2380,7 +2522,9 @@ impl RustGenerator {
                     format!("varg_runtime::websocket::__varg_ws_close(&mut {})", arg_strs[0])
                 // ===== F41-4: SSE Builtins =====
                 } else if method_name == "sse_stream" {
-                    format!("varg_runtime::websocket::__varg_sse_stream(&{})", arg_strs[0])
+                    // B11: the runtime writer takes no arguments. Emitting `(&arg0)` produced
+                    // non-compiling Rust (or an index panic when correctly called with none).
+                    format!("varg_runtime::websocket::__varg_sse_stream()")
                 } else if method_name == "sse_send" {
                     format!("varg_runtime::websocket::__varg_sse_send(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "sse_close" {
@@ -2499,10 +2643,20 @@ impl RustGenerator {
                 } else if method_name == "event_count" {
                     format!("varg_runtime::pipeline::__varg_event_count(&{})", arg_strs[0])
                 } else if method_name == "event_on" {
-                    // event_on(bus, event_name, handler) — register reactive handler on bus
-                    format!("varg_runtime::pipeline::__varg_event_on(&{}, &{}, Box::new({}))", arg_strs[0], arg_strs[1], arg_strs[2])
+                    // R5: runtime wants Arc<dyn Fn(&HashMap)->String>, not Box, and the handler
+                    // lambda needs a typed param (see gen_event_handler). The old `Box::new`
+                    // form never compiled.
+                    let handler = self.gen_event_handler(&args[2]);
+                    format!("varg_runtime::pipeline::__varg_event_on(&{}, &{}, {})", arg_strs[0], arg_strs[1], handler)
                 } else if method_name == "pipeline_new" {
                     format!("varg_runtime::pipeline::__varg_pipeline_new(&{})", arg_strs[0])
+                } else if method_name == "pipeline_add_step" {
+                    // R5: give the handler lambda a typed String param (see gen_str_handler).
+                    let handler = self.gen_str_handler(&args[2]);
+                    format!(
+                        "varg_runtime::pipeline::__varg_pipeline_add_step(&{}, &{}, {})",
+                        arg_strs[0], arg_strs[1], handler
+                    )
                 } else if method_name == "pipeline_run" {
                     format!("varg_runtime::pipeline::__varg_pipeline_run(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "pipeline_step_count" {
@@ -2512,6 +2666,14 @@ impl RustGenerator {
                     format!("varg_runtime::orchestration::__varg_orchestrator_new(&{})", arg_strs[0])
                 } else if method_name == "orchestrator_add_task" {
                     format!("varg_runtime::orchestration::__varg_orchestrator_add_task(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "orchestrator_run_all" {
+                    // B11/R5: wrap the Varg handler lambda into Arc<dyn Fn(&str)->String + Send + Sync>
+                    // with a typed String param (see gen_str_handler).
+                    let handler = self.gen_str_handler(&args[1]);
+                    format!(
+                        "varg_runtime::orchestration::__varg_orchestrator_run_all(&{}, {})",
+                        arg_strs[0], handler
+                    )
                 } else if method_name == "orchestrator_results" {
                     format!("varg_runtime::orchestration::__varg_orchestrator_results(&{})", arg_strs[0])
                 } else if method_name == "orchestrator_task_count" {
@@ -8742,5 +8904,101 @@ mod tests {
         let assign_pos = code.find("count = 1").unwrap_or(0);
         let trace_after = &code[assign_pos..];
         assert!(trace_after.contains("TRACE"), "@[Trace] should log assignment: {code}");
+    }
+
+    #[test]
+    fn test_codegen_preserves_parentheses_b1() {
+        // B1 regression: (1 + 2) * 3 must not flatten to `1 + 2 * 3`.
+        let mut gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::BinaryOp {
+                left: Box::new(Expression::Int(1)),
+                operator: BinaryOperator::Add,
+                right: Box::new(Expression::Int(2)),
+            }),
+            operator: BinaryOperator::Mul,
+            right: Box::new(Expression::Int(3)),
+        };
+        assert_eq!(gen.gen_expression(&expr), "(1 + 2) * 3");
+    }
+
+    #[test]
+    fn test_codegen_preserves_parentheses_right_assoc_b1() {
+        // B1 regression: 10 - (3 - 2) must keep the right operand grouped.
+        let mut gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::Int(10)),
+            operator: BinaryOperator::Sub,
+            right: Box::new(Expression::BinaryOp {
+                left: Box::new(Expression::Int(3)),
+                operator: BinaryOperator::Sub,
+                right: Box::new(Expression::Int(2)),
+            }),
+        };
+        assert_eq!(gen.gen_expression(&expr), "10 - (3 - 2)");
+    }
+
+    #[test]
+    fn test_codegen_negate_of_group_b1() {
+        // B1 regression: -(1 - 5) must not become -1 - 5.
+        let mut gen = RustGenerator::new();
+        let expr = Expression::UnaryOp {
+            operator: UnaryOperator::Negate,
+            operand: Box::new(Expression::BinaryOp {
+                left: Box::new(Expression::Int(1)),
+                operator: BinaryOperator::Sub,
+                right: Box::new(Expression::Int(5)),
+            }),
+        };
+        assert_eq!(gen.gen_expression(&expr), "-(1 - 5)");
+    }
+
+    #[test]
+    fn test_codegen_escapes_rust_keyword_ident_b3() {
+        // B3 regression: a Varg variable named `loop` must be raw-escaped.
+        let mut gen = RustGenerator::new();
+        assert_eq!(gen.gen_expression(&Expression::Identifier("loop".to_string())), "r#loop");
+        // but `self` must be left untouched (codegen uses it for the agent instance).
+        assert_eq!(gen.gen_expression(&Expression::Identifier("self".to_string())), "self");
+    }
+
+    #[test]
+    fn test_codegen_large_int_gets_i64_suffix_b8() {
+        // B8 regression: a literal beyond i32 range needs an i64 suffix.
+        let mut gen = RustGenerator::new();
+        assert_eq!(gen.gen_expression(&Expression::Int(9_999_999_999)), "9999999999i64");
+        // small literals stay unsuffixed so they still coerce into usize/index contexts.
+        assert_eq!(gen.gen_expression(&Expression::Int(3)), "3");
+    }
+
+    #[test]
+    fn test_codegen_str_handler_types_param_r5() {
+        // R5 regression: a handler lambda for pipeline_add_step / orchestrator_run_all must
+        // become an Arc<Fn(&str)->String> whose body sees an owned String param.
+        let mut gen = RustGenerator::new();
+        let lambda = Expression::Lambda {
+            params: vec![FieldDecl { name: "input".to_string(), ty: TypeNode::Custom("Dynamic".to_string()), default_value: None }],
+            return_ty: None,
+            body: Box::new(LambdaBody::Expression(Expression::Identifier("input".to_string()))),
+        };
+        let out = gen.gen_str_handler(&lambda);
+        assert!(out.starts_with("std::sync::Arc::new(move |__inp: &str| -> String"),
+            "handler must be an Arc<Fn(&str)->String>: {out}");
+        assert!(out.contains("let input: String = __inp.to_string();"),
+            "handler must bind an owned String param: {out}");
+    }
+
+    #[test]
+    fn test_codegen_event_handler_types_param_r5() {
+        // R5 regression: event_on handler must be Arc<Fn(&HashMap)->String>, not Box.
+        let mut gen = RustGenerator::new();
+        let lambda = Expression::Lambda {
+            params: vec![FieldDecl { name: "data".to_string(), ty: TypeNode::Custom("Dynamic".to_string()), default_value: None }],
+            return_ty: None,
+            body: Box::new(LambdaBody::Expression(Expression::String("ok".to_string()))),
+        };
+        let out = gen.gen_event_handler(&lambda);
+        assert!(out.contains("Arc::new(move |__data: &std::collections::HashMap<String, String>| -> String"),
+            "event handler must be Arc<Fn(&HashMap)->String>: {out}");
     }
 }

@@ -98,23 +98,23 @@ pub fn __varg_budget_new(max_tokens: i64, max_usd_cents: i64) -> BudgetHandle {
 }
 
 pub fn __varg_budget_track(h: &BudgetHandle, prompt: &str, response: &str) -> bool {
-    h.lock().unwrap().track(prompt, response).is_ok()
+    h.lock().unwrap_or_else(|e| e.into_inner()).track(prompt, response).is_ok()
 }
 
 pub fn __varg_budget_check(h: &BudgetHandle) -> bool {
-    h.lock().unwrap().check().is_ok()
+    h.lock().unwrap_or_else(|e| e.into_inner()).check().is_ok()
 }
 
 pub fn __varg_budget_remaining_tokens(h: &BudgetHandle) -> i64 {
-    h.lock().unwrap().remaining_tokens() as i64
+    h.lock().unwrap_or_else(|e| e.into_inner()).remaining_tokens() as i64
 }
 
 pub fn __varg_budget_remaining_usd_cents(h: &BudgetHandle) -> i64 {
-    (h.lock().unwrap().remaining_usd() * 100.0) as i64
+    (h.lock().unwrap_or_else(|e| e.into_inner()).remaining_usd() * 100.0) as i64
 }
 
 pub fn __varg_budget_report(h: &BudgetHandle) -> String {
-    h.lock().unwrap().report()
+    h.lock().unwrap_or_else(|e| e.into_inner()).report()
 }
 
 pub fn __varg_estimate_tokens(text: &str) -> i64 {
