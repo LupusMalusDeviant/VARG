@@ -41,6 +41,35 @@ impl Drop for McpConnection {
     }
 }
 
+/// R3: read from a JSON-RPC stream until the message whose `id` matches `expected_id` arrives.
+/// MCP servers may interleave notifications (no `id`), log lines, or responses to earlier
+/// requests on stdout; blindly taking the first line desynchronised the client. Skips
+/// non-matching / non-JSON lines, stops on EOF, and is bounded so a server that never answers
+/// our id cannot spin forever. (A server that emits nothing at all can still block on read; a
+/// wall-clock timeout would require a dedicated reader thread.) Extracted from `send_request`
+/// so the framing logic is unit-testable against a synthetic stream.
+fn read_matching_response<R: BufRead>(reader: &mut R, expected_id: u64) -> Result<serde_json::Value, String> {
+    for _ in 0..1000 {
+        let mut response_line = String::new();
+        let n = reader.read_line(&mut response_line)
+            .map_err(|e| format!("Failed to read MCP response: {}", e))?;
+        if n == 0 {
+            return Err("MCP server closed the connection before responding".to_string());
+        }
+        let trimmed = response_line.trim();
+        if trimmed.is_empty() { continue; }
+        let msg: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue, // non-JSON noise on stdout (e.g. server logging) — skip
+        };
+        match msg.get("id").and_then(|v| v.as_u64()) {
+            Some(id) if id == expected_id => return Ok(msg),
+            _ => continue, // notification or response to a different request — skip
+        }
+    }
+    Err("MCP server produced too many non-matching messages without answering the request".to_string())
+}
+
 /// Send a JSON-RPC request and read the response
 fn send_request(conn: &mut McpConnection, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
     conn.next_id += 1;
@@ -58,34 +87,8 @@ fn send_request(conn: &mut McpConnection, method: &str, params: serde_json::Valu
     stdin.flush().map_err(|e| format!("Failed to flush MCP stdin: {}", e))?;
 
     let reader = conn.reader.as_mut().ok_or("MCP stdout not available")?;
-    // R3: read until the message whose `id` matches THIS request arrives. MCP servers may
-    // interleave notifications (no `id`), log lines, or responses to earlier requests on
-    // stdout; blindly taking the first line desynchronised the client from the server. We
-    // skip non-matching / non-JSON lines, stop on EOF, and bound the loop so a server that
-    // never answers our id cannot spin forever. (A server that emits nothing at all can still
-    // block on read; a wall-clock timeout would require a dedicated reader thread.)
     let expected_id = conn.next_id;
-    let mut response: Option<serde_json::Value> = None;
-    for _ in 0..1000 {
-        let mut response_line = String::new();
-        let n = reader.read_line(&mut response_line)
-            .map_err(|e| format!("Failed to read MCP response: {}", e))?;
-        if n == 0 {
-            return Err("MCP server closed the connection before responding".to_string());
-        }
-        let trimmed = response_line.trim();
-        if trimmed.is_empty() { continue; }
-        let msg: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(_) => continue, // non-JSON noise on stdout (e.g. server logging) — skip
-        };
-        match msg.get("id").and_then(|v| v.as_u64()) {
-            Some(id) if id == expected_id => { response = Some(msg); break; }
-            _ => continue, // notification or response to a different request — skip
-        }
-    }
-    let response = response
-        .ok_or("MCP server produced too many non-matching messages without answering the request")?;
+    let response = read_matching_response(reader, expected_id)?;
 
     if let Some(error) = response.get("error") {
         let msg = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
@@ -220,6 +223,47 @@ pub fn __varg_mcp_disconnect(conn: &mut McpConnection) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_r3_skips_notification_then_matches_response() {
+        // A notification (no id) precedes the real response — must be skipped, not returned.
+        let stream = "{\"jsonrpc\":\"2.0\",\"method\":\"log\",\"params\":{}}\n\
+                      {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n";
+        let mut r = Cursor::new(stream);
+        let resp = read_matching_response(&mut r, 7).expect("should find id 7");
+        assert_eq!(resp["result"]["ok"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_r3_skips_non_json_log_lines() {
+        // Plain log noise on stdout must not derail framing.
+        let stream = "starting server...\n\
+                      [info] ready\n\
+                      {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":\"done\"}\n";
+        let mut r = Cursor::new(stream);
+        let resp = read_matching_response(&mut r, 3).expect("should find id 3");
+        assert_eq!(resp["result"], serde_json::json!("done"));
+    }
+
+    #[test]
+    fn test_r3_skips_response_for_different_id() {
+        // A stale response to an earlier request (id 1) must be skipped when awaiting id 2.
+        let stream = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"stale\"}\n\
+                      {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\"fresh\"}\n";
+        let mut r = Cursor::new(stream);
+        let resp = read_matching_response(&mut r, 2).expect("should find id 2");
+        assert_eq!(resp["result"], serde_json::json!("fresh"));
+    }
+
+    #[test]
+    fn test_r3_eof_before_response_errors() {
+        // Server closes without ever answering — must error, not hang or panic.
+        let stream = "{\"jsonrpc\":\"2.0\",\"method\":\"note\",\"params\":{}}\n";
+        let mut r = Cursor::new(stream);
+        let err = read_matching_response(&mut r, 9).unwrap_err();
+        assert!(err.contains("closed the connection"), "got: {err}");
+    }
 
     #[test]
     fn test_mcp_connect_nonexistent_command() {

@@ -48,9 +48,18 @@ Diese Bugs wurden in diesem Durchgang behoben und mit Regressionstests abgesiche
 - ✅ **`crypto`-Feature ohne base64** (behoben): `crypto.rs` nutzt `base64`, aber das Feature
   `crypto = [aes-gcm, pbkdf2, sha2]` zog es nicht ein → **jedes encrypt/decrypt-Programm baute
   nicht**. Fix: `dep:base64` ins `crypto`-Feature. End-to-end verifiziert (Roundtrip + Fehlerpfad).
-- ⬜ **`--features full` kompiliert nicht**: `rag.rs` (`store.conn` existiert nicht auf
-  `VectorStore`), `fts.rs`, `tensor.rs` referenzieren nicht existierende Felder/APIs. Diese
-  Module sind Dead-on-Arrival.
+- ⬜ **Feature-Definitionen deklarieren ihre Abhängigkeiten unvollständig** — viele Einzel-
+  Features kompilieren nicht (per `cargo build -p varg-runtime --features X` geprüft):
+  - `crypto` fehlte `base64` (✅ behoben).
+  - `pdf` fehlt `base64` (`pdf_to_base64`).
+  - `encoding` fehlt `reqwest` (`http_download_base64`, `encoding.rs:33`).
+  - `llm` (5 Fehler), `tensor` (2, „cannot move out of Arc"), `fts`, `rag` (`store.conn`
+    existiert nicht auf `VectorStore`) haben echte Code-Brüche, nicht nur fehlende Deps.
+  - OK: `crypto` (nach Fix), `net`, `ws`, `db`, `dataframe`.
+  Damit bauen **base64-, pdf-, llm-, tensor-, fts-Programme aktuell gar nicht**. Die
+  fehlenden-Dep-Fälle sind Einzeiler; `rag`/`tensor`/`fts`/`llm` brauchen Code-Reparatur.
+  Nachweis, dass dies vorbestehend ist: `encoding` (nie angefasst) scheitert ebenfalls, und
+  kein Build-Fehler betrifft das R2-`into_inner`-Muster.
 - ⬜ **Default-Testsuite verdeckt das**: `cargo test --workspace` nutzt `default = []`, also
   werden die feature-gegateten Module (crypto, rag, fts, tensor, dataframe, duckdb) **gar nicht
   kompiliert** — die „1144 Tests" decken sie nicht ab. **Maßnahme:** CI-Job mit

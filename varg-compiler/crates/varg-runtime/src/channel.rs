@@ -91,6 +91,25 @@ mod tests {
     }
 
     #[test]
+    fn test_r2_channel_survives_poisoned_lock() {
+        // R2 regression: after a thread panics while holding the lock, the mutex is poisoned.
+        // The old `lock().unwrap()` would then panic on every subsequent access (cascade);
+        // `lock().unwrap_or_else(|e| e.into_inner())` must recover and keep the data intact.
+        let ch = __varg_channel_new(4);
+        assert!(__varg_channel_send(&ch, "a"));
+        let ch2 = ch.clone();
+        let joined = std::thread::spawn(move || {
+            let _guard = ch2.lock().unwrap();
+            panic!("intentional poison");
+        }).join();
+        assert!(joined.is_err(), "helper thread should have panicked and poisoned the lock");
+        // These must NOT panic and must see the pre-poison state.
+        assert_eq!(__varg_channel_len(&ch), 1);
+        assert!(__varg_channel_send(&ch, "b"));
+        assert_eq!(__varg_channel_len(&ch), 2);
+    }
+
+    #[test]
     fn test_channel_fifo_order() {
         let ch = __varg_channel_new(10);
         for msg in ["first", "second", "third"] {

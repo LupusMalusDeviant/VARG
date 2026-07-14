@@ -335,6 +335,30 @@ mod tests {
     }
 
     #[test]
+    fn test_r4_graph_open_corrupt_db_does_not_panic() {
+        // R4 regression: a file that is not a valid SQLite database used to abort the process
+        // (unwrap/expect on schema init and every load query). graph_open must instead survive
+        // and remain usable in-memory.
+        let mut base = std::env::temp_dir();
+        // Unique-ish name without Date/rand (unavailable): use thread id + a fixed tag.
+        base.push(format!("varg_r4_corrupt_{:?}", std::thread::current().id()));
+        let corrupt_path = format!("{}.graph.db", base.to_string_lossy());
+        std::fs::write(&corrupt_path, b"this is definitely not a sqlite database file")
+            .expect("write corrupt file");
+
+        // Must not panic despite the corrupt backing file.
+        let g = __varg_graph_open(&base.to_string_lossy());
+        // In-memory operations still work.
+        let id = __varg_graph_add_node(&g, "X", &HashMap::new());
+        assert_eq!(id, 1, "first node id should be 1 despite corrupt DB");
+        {
+            let db = g.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(db.nodes.len(), 1);
+        }
+        let _ = std::fs::remove_file(&corrupt_path);
+    }
+
+    #[test]
     fn test_graph_add_node_memory() {
         let g = __varg_graph_open(":memory:");
         let props = HashMap::from([("name".to_string(), "Alice".to_string())]);
