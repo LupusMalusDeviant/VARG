@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+defaults:
+  run:
+    # The Cargo workspace lives in a subdirectory.
+    working-directory: varg-compiler
+
+jobs:
+  # Fast gate: default features. This is what `cargo test --workspace` runs locally.
+  test:
+    name: Test (default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: varg-compiler
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Test
+        run: cargo test --workspace --locked
+
+  # Full gate: every optional runtime feature compiled and tested together.
+  # These feature-gated modules (crypto, encoding, pdf, llm, tensor, dataframe,
+  # fts, duckdb, ...) are NOT compiled by the default `cargo test` run, so without
+  # this job a break in them regresses silently.
+  test-full:
+    name: Test (--features full)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: varg-compiler
+          key: full
+      - name: Build runtime (all features)
+        # `duckdb`/`polars`/`tantivy`/`reqwest` pull heavy deps; build-essential and
+        # libssl-dev are present on ubuntu-latest runners.
+        run: cargo build -p varg-runtime --features full --locked
+      - name: Test runtime (all features)
+        run: cargo test -p varg-runtime --features full --locked
