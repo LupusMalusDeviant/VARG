@@ -2627,8 +2627,14 @@ impl RustGenerator {
                 } else if method_name == "mcp_server_new" {
                     format!("varg_runtime::mcp_server::__varg_mcp_server_new(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "mcp_server_register" {
-                    // mcp_server_register(server, name, description) — registers with a stub handler
-                    format!("{{ let __name = {}.clone(); varg_runtime::mcp_server::__varg_mcp_server_register(&{}, &{}, &{}, std::sync::Arc::new(move |args| format!(\"{{{{\\\"tool\\\": \\\"{{}}\\\", \\\"args\\\": \\\"{{}}\\\"}}}}\", __name, args))) }}", arg_strs[1], arg_strs[0], arg_strs[1], arg_strs[2])
+                    // C3: with a 4th arg, wire the user's (args) => result lambda as the real tool
+                    // handler; otherwise keep the back-compat echo stub.
+                    if args.len() == 4 {
+                        let handler = self.gen_str_handler(&args[3]);
+                        format!("varg_runtime::mcp_server::__varg_mcp_server_register(&{}, &{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2], handler)
+                    } else {
+                        format!("{{ let __name = {}.clone(); varg_runtime::mcp_server::__varg_mcp_server_register(&{}, &{}, &{}, std::sync::Arc::new(move |args| format!(\"{{{{\\\"tool\\\": \\\"{{}}\\\", \\\"args\\\": \\\"{{}}\\\"}}}}\", __name, args))) }}", arg_strs[1], arg_strs[0], arg_strs[1], arg_strs[2])
+                    }
                 } else if method_name == "mcp_server_tool_count" {
                     format!("varg_runtime::mcp_server::__varg_mcp_server_tool_count(&{})", arg_strs[0])
                 } else if method_name == "mcp_server_handle_request" {

@@ -2336,7 +2336,9 @@ impl TypeChecker {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (name, version)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Custom("McpServerHandle".to_string()))
                 } else if method_name == "mcp_server_register" {
-                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (server, name, description)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    // C3: 3 args = echo-stub tool (back-compat); 4 args = real handler lambda
+                    // (args) => result.
+                    if args.len() != 3 && args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "3 or 4 arguments (server, name, description, [handler])".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
                 } else if method_name == "mcp_server_tool_count" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (server)".to_string(), found: format!("{} arguments", args.len()) }); }
@@ -8909,6 +8911,21 @@ mod tests {
         let err = c.infer_expression_type(&nested).unwrap_err();
         assert!(matches!(err, TypeError::MissingCapability { .. }),
             "nested fs_read must require FileAccess, got: {:?}", err);
+    }
+
+    #[test]
+    fn test_tc_mcp_server_register_accepts_handler_c3() {
+        // C3: mcp_server_register accepts 3 args (stub) or 4 args (real handler); 5 is invalid.
+        let mut c = TypeChecker::new();
+        let three = c.infer_expression_type(&call("mcp_server_register", vec![
+            ident("srv"), str_lit("echo"), str_lit("desc")]));
+        assert!(three.is_ok(), "3-arg register must type-check: {:?}", three);
+        let four = c.infer_expression_type(&call("mcp_server_register", vec![
+            ident("srv"), str_lit("echo"), str_lit("desc"), ident("handler")]));
+        assert!(four.is_ok(), "4-arg register (with handler) must type-check: {:?}", four);
+        let five = c.infer_expression_type(&call("mcp_server_register", vec![
+            ident("srv"), str_lit("echo"), str_lit("desc"), ident("handler"), ident("extra")]));
+        assert!(five.is_err(), "5-arg register must fail");
     }
 
     #[test]
