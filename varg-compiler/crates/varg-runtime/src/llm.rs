@@ -312,13 +312,20 @@ pub fn __varg_llm_structured(prompt: &str, schema_json: &str, retries: i64) -> S
     "{}".to_string()
 }
 
-/// Wave 37: Generic typed variant — llm_structured<T>(provider, model, prompt) -> T
+/// Wave 37: Generic typed variant — llm_structured<T>(provider, model, prompt) -> Result<T, String>
 /// T must implement serde::de::DeserializeOwned.
 /// provider: "openai" | "anthropic" | "ollama" | "" (auto-detect)
-pub fn __varg_llm_structured_typed<T: serde::de::DeserializeOwned>(provider: &str, model: &str, prompt: &str) -> T {
+///
+/// C2: returns a `Result` instead of panicking. The response is model-generated and therefore
+/// untrusted — a malformed or non-conforming JSON reply used to abort the whole agent process.
+/// Callers handle failure with Varg's `?` / `or` / `try` instead.
+pub fn __varg_llm_structured_typed<T: serde::de::DeserializeOwned>(provider: &str, model: &str, prompt: &str) -> Result<T, String> {
+    let _ = (provider, model); // reserved for future provider/model routing
     let json_str = __varg_llm_structured(prompt, "", 3);
-    serde_json::from_str::<T>(&json_str)
-        .unwrap_or_else(|e| panic!("llm_structured: failed to deserialize response as {}: {}\nRaw: {}", std::any::type_name::<T>(), e, json_str))
+    serde_json::from_str::<T>(&json_str).map_err(|e| {
+        format!("llm_structured: could not deserialize response as {}: {} (raw: {})",
+            std::any::type_name::<T>(), e, json_str)
+    })
 }
 
 /// Collect all LLM stream chunks into a Vec<String>.

@@ -3019,10 +3019,15 @@ impl RustGenerator {
             Expression::GenericCall { func_name, type_arg, args } => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
                 match func_name.as_str() {
-                    "llm_structured" => format!(
-                        "varg_runtime::llm::__varg_llm_structured_typed::<{}>({})",
-                        type_arg, arg_strs.join(", ")
-                    ),
+                    "llm_structured" => {
+                        // __varg_llm_structured_typed(provider, model, prompt) takes &str args;
+                        // borrow each (&String coerces to &str) so String values type-check.
+                        let borrowed: Vec<String> = arg_strs.iter().map(|a| format!("&({})", a)).collect();
+                        format!(
+                            "varg_runtime::llm::__varg_llm_structured_typed::<{}>({})",
+                            type_arg, borrowed.join(", ")
+                        )
+                    },
                     other => format!("{}::<{}>({})", other, type_arg, arg_strs.join(", ")),
                 }
             },

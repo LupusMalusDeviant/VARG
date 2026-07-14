@@ -2988,7 +2988,9 @@ impl TypeChecker {
                         }
                         self.check_ocap(&CapabilityType::LlmAccess, "llm_structured")?;
                         for arg in args { self.infer_expression_type(arg)?; }
-                        Ok(TypeNode::Custom(type_arg.clone()))
+                        // C2: returns Result<T, Error> — the model reply may not conform, so
+                        // callers must handle failure (`?`/`or`) instead of the runtime panicking.
+                        Ok(TypeNode::Result(Box::new(TypeNode::Custom(type_arg.clone())), Box::new(TypeNode::Error)))
                     },
                     other => Err(TypeError::TypeMismatch {
                         expected: "generic builtin (llm_structured)".to_string(),

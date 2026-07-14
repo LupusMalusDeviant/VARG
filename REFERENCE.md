@@ -1230,8 +1230,9 @@ struct WeatherReport {
     string condition;
 }
 
-// llm_structured<T>(provider, model, prompt, llm_cap) → T
-var report = llm_structured<WeatherReport>("", "", $"Weather for Berlin as JSON", llm_cap);
+// llm_structured<T>(provider, model, prompt) → Result<T, Error>
+// The model reply may not conform, so handle failure with `?` or `or` (never panics).
+var report = llm_structured<WeatherReport>("", "", $"Weather for Berlin as JSON")?;
 print $"{report.city}: {report.temperature}°C";
 ```
 
