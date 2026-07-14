@@ -72,7 +72,7 @@ pub fn __varg_orchestrator_add_task(
     id: &str,
     input: &str,
 ) {
-    let mut o = orch.lock().unwrap();
+    let mut o = orch.lock().unwrap_or_else(|e| e.into_inner());
     o.tasks.push(Task {
         id: id.to_string(),
         input: input.to_string(),
@@ -87,7 +87,7 @@ pub fn __varg_orchestrator_run_all(
     handler: Arc<dyn Fn(&str) -> String + Send + Sync>,
 ) {
     let inputs: Vec<(usize, String)> = {
-        let o = orch.lock().unwrap();
+        let o = orch.lock().unwrap_or_else(|e| e.into_inner());
         o.tasks.iter().enumerate()
             .filter(|(_, t)| t.status == TaskStatus::Pending)
             .map(|(i, t)| (i, t.input.clone()))
@@ -100,13 +100,13 @@ pub fn __varg_orchestrator_run_all(
         thread::spawn(move || {
             // Mark as running
             {
-                let mut o = orch.lock().unwrap();
+                let mut o = orch.lock().unwrap_or_else(|e| e.into_inner());
                 o.tasks[idx].status = TaskStatus::Running;
             }
             let result = handler(&input);
             // Mark as completed
             {
-                let mut o = orch.lock().unwrap();
+                let mut o = orch.lock().unwrap_or_else(|e| e.into_inner());
                 o.tasks[idx].status = TaskStatus::Completed;
                 o.tasks[idx].result = Some(result);
             }
@@ -120,7 +120,7 @@ pub fn __varg_orchestrator_run_all(
 
 /// Get results from all completed tasks
 pub fn __varg_orchestrator_results(orch: &OrchestratorHandle) -> Vec<HashMap<String, String>> {
-    let o = orch.lock().unwrap();
+    let o = orch.lock().unwrap_or_else(|e| e.into_inner());
     o.tasks.iter().map(|t| {
         let mut m = HashMap::new();
         m.insert("id".to_string(), t.id.clone());
@@ -135,12 +135,12 @@ pub fn __varg_orchestrator_results(orch: &OrchestratorHandle) -> Vec<HashMap<Str
 
 /// Get task count
 pub fn __varg_orchestrator_task_count(orch: &OrchestratorHandle) -> i64 {
-    orch.lock().unwrap().tasks.len() as i64
+    orch.lock().unwrap_or_else(|e| e.into_inner()).tasks.len() as i64
 }
 
 /// Get completed task count
 pub fn __varg_orchestrator_completed_count(orch: &OrchestratorHandle) -> i64 {
-    orch.lock().unwrap().tasks.iter()
+    orch.lock().unwrap_or_else(|e| e.into_inner()).tasks.iter()
         .filter(|t| t.status == TaskStatus::Completed)
         .count() as i64
 }
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn test_orchestrator_new() {
         let orch = __varg_orchestrator_new("test");
-        let o = orch.lock().unwrap();
+        let o = orch.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(o.name, "test");
         assert!(o.tasks.is_empty());
     }

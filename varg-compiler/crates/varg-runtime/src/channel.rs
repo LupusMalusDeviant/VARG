@@ -43,18 +43,18 @@ pub fn __varg_channel_new(capacity: i64) -> ChannelHandle {
 }
 
 pub fn __varg_channel_send(h: &ChannelHandle, value: &str) -> bool {
-    h.lock().unwrap().send(value.to_string())
+    h.lock().unwrap_or_else(|e| e.into_inner()).send(value.to_string())
 }
 
 pub fn __varg_channel_try_recv(h: &ChannelHandle) -> String {
-    h.lock().unwrap().try_recv().unwrap_or_default()
+    h.lock().unwrap_or_else(|e| e.into_inner()).try_recv().unwrap_or_default()
 }
 
 pub fn __varg_channel_recv_timeout(h: &ChannelHandle, timeout_ms: i64) -> String {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
     loop {
         {
-            let mut ch = h.lock().unwrap();
+            let mut ch = h.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(v) = ch.try_recv() { return v; }
             if ch.closed { return String::new(); }
         }
@@ -68,15 +68,15 @@ pub fn __varg_channel_recv(h: &ChannelHandle) -> String {
 }
 
 pub fn __varg_channel_len(h: &ChannelHandle) -> i64 {
-    h.lock().unwrap().queue.len() as i64
+    h.lock().unwrap_or_else(|e| e.into_inner()).queue.len() as i64
 }
 
 pub fn __varg_channel_close(h: &ChannelHandle) {
-    h.lock().unwrap().closed = true;
+    h.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
 }
 
 pub fn __varg_channel_is_closed(h: &ChannelHandle) -> bool {
-    h.lock().unwrap().closed
+    h.lock().unwrap_or_else(|e| e.into_inner()).closed
 }
 
 #[cfg(test)]

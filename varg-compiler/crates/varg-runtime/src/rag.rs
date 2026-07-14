@@ -64,7 +64,7 @@ pub fn __varg_rag_hybrid_search(
 
     // Vector ranked list — search by pre-computed embedding
     let vec_results: Vec<String> = {
-        let store = vector_store.lock().unwrap();
+        let store = vector_store.lock().unwrap_or_else(|e| e.into_inner());
         let conn = &store.conn;
         let mut stmt = conn.prepare(
             "SELECT id, metadata FROM embeddings"

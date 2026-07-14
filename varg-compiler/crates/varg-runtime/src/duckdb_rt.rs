@@ -25,7 +25,7 @@ pub fn __varg_duckdb_open(path: &str) -> DuckDbHandle {
 }
 
 pub fn __varg_duckdb_execute(db: &DuckDbHandle, sql: &str, params: &[String]) {
-    let inner = db.lock().unwrap();
+    let inner = db.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = inner.conn.prepare(sql)
         .expect("Varg runtime error: duckdb_execute() failed — the SQL statement could not be prepared (check for syntax errors in your SQL)");
     stmt.execute(params_from_iter(params.iter().map(|s| s.as_str())))
@@ -33,7 +33,7 @@ pub fn __varg_duckdb_execute(db: &DuckDbHandle, sql: &str, params: &[String]) {
 }
 
 pub fn __varg_duckdb_query(db: &DuckDbHandle, sql: &str, params: &[String]) -> Vec<Vec<String>> {
-    let inner = db.lock().unwrap();
+    let inner = db.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = inner.conn.prepare(sql)
         .expect("Varg runtime error: duckdb_query() failed — the SQL query could not be prepared (check for syntax errors in your SQL)");
     let col_count = stmt.column_count();

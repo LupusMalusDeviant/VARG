@@ -58,11 +58,34 @@ fn send_request(conn: &mut McpConnection, method: &str, params: serde_json::Valu
     stdin.flush().map_err(|e| format!("Failed to flush MCP stdin: {}", e))?;
 
     let reader = conn.reader.as_mut().ok_or("MCP stdout not available")?;
-    let mut response_line = String::new();
-    reader.read_line(&mut response_line).map_err(|e| format!("Failed to read MCP response: {}", e))?;
-
-    let response: serde_json::Value = serde_json::from_str(&response_line)
-        .map_err(|e| format!("Invalid JSON-RPC response: {} (raw: {})", e, response_line.trim()))?;
+    // R3: read until the message whose `id` matches THIS request arrives. MCP servers may
+    // interleave notifications (no `id`), log lines, or responses to earlier requests on
+    // stdout; blindly taking the first line desynchronised the client from the server. We
+    // skip non-matching / non-JSON lines, stop on EOF, and bound the loop so a server that
+    // never answers our id cannot spin forever. (A server that emits nothing at all can still
+    // block on read; a wall-clock timeout would require a dedicated reader thread.)
+    let expected_id = conn.next_id;
+    let mut response: Option<serde_json::Value> = None;
+    for _ in 0..1000 {
+        let mut response_line = String::new();
+        let n = reader.read_line(&mut response_line)
+            .map_err(|e| format!("Failed to read MCP response: {}", e))?;
+        if n == 0 {
+            return Err("MCP server closed the connection before responding".to_string());
+        }
+        let trimmed = response_line.trim();
+        if trimmed.is_empty() { continue; }
+        let msg: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue, // non-JSON noise on stdout (e.g. server logging) — skip
+        };
+        match msg.get("id").and_then(|v| v.as_u64()) {
+            Some(id) if id == expected_id => { response = Some(msg); break; }
+            _ => continue, // notification or response to a different request — skip
+        }
+    }
+    let response = response
+        .ok_or("MCP server produced too many non-matching messages without answering the request")?;
 
     if let Some(error) = response.get("error") {
         let msg = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");

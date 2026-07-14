@@ -57,7 +57,7 @@ fn limiters() -> &'static Mutex<HashMap<String, TokenBucket>> {
 /// Acquire a rate-limit token, blocking until available.
 /// key: unique identifier (e.g. "AgentName::MethodName")
 pub fn __varg_rate_limit_acquire(key: &str, max_calls: u64, window_ms: u64) {
-    limiters().lock().unwrap()
+    limiters().lock().unwrap_or_else(|e| e.into_inner())
         .entry(key.to_string())
         .or_insert_with(|| TokenBucket::new(max_calls, window_ms))
         .acquire();
@@ -65,7 +65,7 @@ pub fn __varg_rate_limit_acquire(key: &str, max_calls: u64, window_ms: u64) {
 
 /// Non-blocking acquire. Returns false if limit exceeded.
 pub fn __varg_rate_limit_try(key: &str, max_calls: u64, window_ms: u64) -> bool {
-    limiters().lock().unwrap()
+    limiters().lock().unwrap_or_else(|e| e.into_inner())
         .entry(key.to_string())
         .or_insert_with(|| TokenBucket::new(max_calls, window_ms))
         .try_acquire()
@@ -73,7 +73,7 @@ pub fn __varg_rate_limit_try(key: &str, max_calls: u64, window_ms: u64) -> bool 
 
 /// Reset a limiter (primarily for tests).
 pub fn __varg_rate_limit_reset(key: &str) {
-    limiters().lock().unwrap().remove(key);
+    limiters().lock().unwrap_or_else(|e| e.into_inner()).remove(key);
 }
 
 // ── Varg builtins for explicit rate limiting ──────────────────────────────
@@ -88,21 +88,21 @@ fn nano_id() -> u64 {
 /// Create a named rate limiter handle (returns opaque key string).
 pub fn __varg_ratelimiter_new(max_calls: i64, window_ms: i64) -> String {
     let key = format!("__rl_{}", nano_id());
-    limiters().lock().unwrap()
+    limiters().lock().unwrap_or_else(|e| e.into_inner())
         .insert(key.clone(), TokenBucket::new(max_calls as u64, window_ms as u64));
     key
 }
 
 /// Blocking acquire on a named limiter.
 pub fn __varg_ratelimiter_acquire(key: &str) {
-    if let Some(lim) = limiters().lock().unwrap().get_mut(key) {
+    if let Some(lim) = limiters().lock().unwrap_or_else(|e| e.into_inner()).get_mut(key) {
         lim.acquire();
     }
 }
 
 /// Non-blocking acquire on a named limiter.
 pub fn __varg_ratelimiter_try_acquire(key: &str) -> bool {
-    limiters().lock().unwrap()
+    limiters().lock().unwrap_or_else(|e| e.into_inner())
         .get_mut(key)
         .map(|lim| lim.try_acquire())
         .unwrap_or(false)

@@ -105,35 +105,35 @@ pub fn __varg_workflow_new(name: &str) -> WorkflowHandle {
 }
 
 pub fn __varg_workflow_add_step(h: &WorkflowHandle, name: &str, deps: Vec<String>) {
-    h.lock().unwrap().add_step(name, deps);
+    h.lock().unwrap_or_else(|e| e.into_inner()).add_step(name, deps);
 }
 
 pub fn __varg_workflow_set_output(h: &WorkflowHandle, step: &str, output: &str) {
-    h.lock().unwrap().set_output(step, output);
+    h.lock().unwrap_or_else(|e| e.into_inner()).set_output(step, output);
 }
 
 pub fn __varg_workflow_set_failed(h: &WorkflowHandle, step: &str, error: &str) {
-    h.lock().unwrap().set_failed(step, error);
+    h.lock().unwrap_or_else(|e| e.into_inner()).set_failed(step, error);
 }
 
 pub fn __varg_workflow_ready_steps(h: &WorkflowHandle) -> Vec<String> {
-    h.lock().unwrap().ready_steps()
+    h.lock().unwrap_or_else(|e| e.into_inner()).ready_steps()
 }
 
 pub fn __varg_workflow_is_complete(h: &WorkflowHandle) -> bool {
-    h.lock().unwrap().is_complete()
+    h.lock().unwrap_or_else(|e| e.into_inner()).is_complete()
 }
 
 pub fn __varg_workflow_get_output(h: &WorkflowHandle, step: &str) -> String {
-    h.lock().unwrap().get_output(step)
+    h.lock().unwrap_or_else(|e| e.into_inner()).get_output(step)
 }
 
 pub fn __varg_workflow_step_count(h: &WorkflowHandle) -> i64 {
-    h.lock().unwrap().step_count() as i64
+    h.lock().unwrap_or_else(|e| e.into_inner()).step_count() as i64
 }
 
 pub fn __varg_workflow_status(h: &WorkflowHandle) -> String {
-    h.lock().unwrap().status_report()
+    h.lock().unwrap_or_else(|e| e.into_inner()).status_report()
 }
 
 #[cfg(test)]

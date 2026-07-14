@@ -32,7 +32,7 @@ pub fn __varg_df_write_csv(df: &DataFrameHandle, path: &str) {
     let mut file = std::fs::File::create(path)
         .expect("df_write_csv: could not create file");
     CsvWriter::new(&mut file)
-        .finish(&mut df.lock().unwrap().clone())
+        .finish(&mut df.lock().unwrap_or_else(|e| e.into_inner()).clone())
         .expect("df_write_csv: write failed");
 }
 
@@ -40,7 +40,7 @@ pub fn __varg_df_write_parquet(df: &DataFrameHandle, path: &str) {
     let file = std::fs::File::create(path)
         .expect("df_write_parquet: could not create file");
     ParquetWriter::new(file)
-        .finish(&mut df.lock().unwrap().clone())
+        .finish(&mut df.lock().unwrap_or_else(|e| e.into_inner()).clone())
         .expect("df_write_parquet: write failed");
 }
 
@@ -48,7 +48,7 @@ pub fn __varg_df_write_parquet(df: &DataFrameHandle, path: &str) {
 
 pub fn __varg_df_select(df: &DataFrameHandle, cols: &[String]) -> DataFrameHandle {
     let col_exprs: Vec<Expr> = cols.iter().map(|c| col(c)).collect();
-    let result = df.lock().unwrap()
+    let result = df.lock().unwrap_or_else(|e| e.into_inner())
         .clone()
         .lazy()
         .select(col_exprs)
@@ -60,7 +60,7 @@ pub fn __varg_df_select(df: &DataFrameHandle, cols: &[String]) -> DataFrameHandl
 pub fn __varg_df_filter(df: &DataFrameHandle, expr_str: &str) -> DataFrameHandle {
     // Supports simple "col_name op value" strings, e.g. "age > 30", "name == Alice"
     let filter_expr = parse_simple_filter(expr_str);
-    let result = df.lock().unwrap()
+    let result = df.lock().unwrap_or_else(|e| e.into_inner())
         .clone()
         .lazy()
         .filter(filter_expr)
@@ -97,7 +97,7 @@ fn parse_simple_filter(expr_str: &str) -> Expr {
 }
 
 pub fn __varg_df_sort(df: &DataFrameHandle, col_name: &str, ascending: bool) -> DataFrameHandle {
-    let result = df.lock().unwrap()
+    let result = df.lock().unwrap_or_else(|e| e.into_inner())
         .clone()
         .lazy()
         .sort([col_name], SortMultipleOptions::default().with_order_descending(!ascending))
@@ -109,7 +109,7 @@ pub fn __varg_df_sort(df: &DataFrameHandle, col_name: &str, ascending: bool) -> 
 pub fn __varg_df_groupby(df: &DataFrameHandle, by_cols: &[String]) -> DataFrameHandle {
     // groupby without agg returns the dataframe sorted by group columns
     let exprs: Vec<Expr> = by_cols.iter().map(|c| col(c)).collect();
-    let result = df.lock().unwrap()
+    let result = df.lock().unwrap_or_else(|e| e.into_inner())
         .clone()
         .lazy()
         .sort(by_cols.iter().map(|s| s.as_str()).collect::<Vec<_>>(), SortMultipleOptions::default())
@@ -131,7 +131,7 @@ pub fn __varg_df_agg(df: &DataFrameHandle, by_cols: &[String], agg_fn: &str) -> 
         "max"   => all_cols.max(),
         other   => panic!("df_agg: unsupported aggregation {:?}. Use: sum, mean, count, min, max", other),
     };
-    let result = df.lock().unwrap()
+    let result = df.lock().unwrap_or_else(|e| e.into_inner())
         .clone()
         .lazy()
         .group_by(group_exprs)
@@ -142,13 +142,13 @@ pub fn __varg_df_agg(df: &DataFrameHandle, by_cols: &[String], agg_fn: &str) -> 
 }
 
 pub fn __varg_df_head(df: &DataFrameHandle, n: i64) -> DataFrameHandle {
-    let result = df.lock().unwrap().head(Some(n as usize));
+    let result = df.lock().unwrap_or_else(|e| e.into_inner()).head(Some(n as usize));
     Arc::new(Mutex::new(result))
 }
 
 pub fn __varg_df_with_column(df: &DataFrameHandle, name: &str, data: &[f32]) -> DataFrameHandle {
     let series = Series::new(name.into(), data);
-    let mut inner = df.lock().unwrap().clone();
+    let mut inner = df.lock().unwrap_or_else(|e| e.into_inner()).clone();
     inner.with_column(series).expect("df_with_column: failed");
     Arc::new(Mutex::new(inner))
 }
@@ -156,12 +156,12 @@ pub fn __varg_df_with_column(df: &DataFrameHandle, name: &str, data: &[f32]) -> 
 // ── Introspection ─────────────────────────────────────────────────────────────
 
 pub fn __varg_df_shape(df: &DataFrameHandle) -> (i64, i64) {
-    let inner = df.lock().unwrap();
+    let inner = df.lock().unwrap_or_else(|e| e.into_inner());
     (inner.height() as i64, inner.width() as i64)
 }
 
 pub fn __varg_df_columns(df: &DataFrameHandle) -> Vec<String> {
-    df.lock().unwrap()
+    df.lock().unwrap_or_else(|e| e.into_inner())
         .get_column_names()
         .iter()
         .map(|s| s.to_string())
@@ -229,7 +229,7 @@ mod tests {
     fn test_df_sort_ascending() {
         let df = sample_df();
         let sorted = __varg_df_sort(&df, "age", true);
-        let inner = sorted.lock().unwrap();
+        let inner = sorted.lock().unwrap_or_else(|e| e.into_inner());
         let ages: Vec<i32> = inner.column("age").unwrap()
             .i32().unwrap().into_no_null_iter().collect();
         assert_eq!(ages[0], 25);

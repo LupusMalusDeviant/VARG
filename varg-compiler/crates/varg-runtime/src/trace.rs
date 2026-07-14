@@ -64,7 +64,7 @@ pub fn __varg_trace_start(name: &str) -> TracerHandle {
 
 /// Begin a new span (child of current active span if any)
 pub fn __varg_trace_span(tracer: &TracerHandle, name: &str) -> i64 {
-    let mut t = tracer.lock().unwrap();
+    let mut t = tracer.lock().unwrap_or_else(|e| e.into_inner());
     let span_id = SPAN_COUNTER.fetch_add(1, Ordering::SeqCst);
     let parent_id = t.active_span;
     t.spans.push(Span {
@@ -83,7 +83,7 @@ pub fn __varg_trace_span(tracer: &TracerHandle, name: &str) -> i64 {
 
 /// End a span (marks it as completed)
 pub fn __varg_trace_end(tracer: &TracerHandle, span_id: i64) {
-    let mut t = tracer.lock().unwrap();
+    let mut t = tracer.lock().unwrap_or_else(|e| e.into_inner());
     let sid = span_id as u64;
     if let Some(span) = t.spans.iter_mut().find(|s| s.span_id == sid) {
         if span.end_time.is_some() {
@@ -99,7 +99,7 @@ pub fn __varg_trace_end(tracer: &TracerHandle, span_id: i64) {
 
 /// End a span with error status
 pub fn __varg_trace_error(tracer: &TracerHandle, span_id: i64, error_msg: &str) {
-    let mut t = tracer.lock().unwrap();
+    let mut t = tracer.lock().unwrap_or_else(|e| e.into_inner());
     let sid = span_id as u64;
     if let Some(span) = t.spans.iter_mut().find(|s| s.span_id == sid) {
         span.end_time = Some(now_micros());
@@ -110,7 +110,7 @@ pub fn __varg_trace_error(tracer: &TracerHandle, span_id: i64, error_msg: &str) 
 
 /// Add an event to the current active span
 pub fn __varg_trace_event(tracer: &TracerHandle, name: &str, attrs: &HashMap<String, String>) {
-    let mut t = tracer.lock().unwrap();
+    let mut t = tracer.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(active_id) = t.active_span {
         if let Some(span) = t.spans.iter_mut().find(|s| s.span_id == active_id) {
             span.events.push(SpanEvent {
@@ -124,7 +124,7 @@ pub fn __varg_trace_event(tracer: &TracerHandle, name: &str, attrs: &HashMap<Str
 
 /// Set an attribute on the current active span
 pub fn __varg_trace_set_attr(tracer: &TracerHandle, key: &str, value: &str) {
-    let mut t = tracer.lock().unwrap();
+    let mut t = tracer.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(active_id) = t.active_span {
         if let Some(span) = t.spans.iter_mut().find(|s| s.span_id == active_id) {
             span.attributes.insert(key.to_string(), value.to_string());
@@ -134,12 +134,12 @@ pub fn __varg_trace_set_attr(tracer: &TracerHandle, key: &str, value: &str) {
 
 /// Get count of completed spans
 pub fn __varg_trace_span_count(tracer: &TracerHandle) -> i64 {
-    tracer.lock().unwrap().spans.len() as i64
+    tracer.lock().unwrap_or_else(|e| e.into_inner()).spans.len() as i64
 }
 
 /// Export all spans as JSON string (OpenTelemetry-compatible format)
 pub fn __varg_trace_export(tracer: &TracerHandle) -> String {
-    let t = tracer.lock().unwrap();
+    let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
     let mut spans_json = Vec::new();
 
     for span in &t.spans {
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_trace_start() {
         let tracer = __varg_trace_start("test_agent");
-        let t = tracer.lock().unwrap();
+        let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(t.name, "test_agent");
         assert!(t.spans.is_empty());
         assert!(t.active_span.is_none());
@@ -200,7 +200,7 @@ mod tests {
         assert!(span_id > 0);
 
         {
-            let t = tracer.lock().unwrap();
+            let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(t.spans.len(), 1);
             assert_eq!(t.active_span, Some(span_id as u64));
             assert_eq!(t.spans[0].status, SpanStatus::Running);
@@ -208,7 +208,7 @@ mod tests {
 
         __varg_trace_end(&tracer, span_id);
 
-        let t = tracer.lock().unwrap();
+        let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(t.spans[0].status, SpanStatus::Ok);
         assert!(t.spans[0].end_time.is_some());
         assert!(t.active_span.is_none());
@@ -221,19 +221,19 @@ mod tests {
         let child = __varg_trace_span(&tracer, "child");
 
         {
-            let t = tracer.lock().unwrap();
+            let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(t.spans[1].parent_id, Some(parent as u64));
             assert_eq!(t.active_span, Some(child as u64));
         }
 
         __varg_trace_end(&tracer, child);
         {
-            let t = tracer.lock().unwrap();
+            let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(t.active_span, Some(parent as u64)); // restored to parent
         }
 
         __varg_trace_end(&tracer, parent);
-        let t = tracer.lock().unwrap();
+        let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
         assert!(t.active_span.is_none());
     }
 
@@ -243,7 +243,7 @@ mod tests {
         let span_id = __varg_trace_span(&tracer, "failing_op");
         __varg_trace_error(&tracer, span_id, "connection timeout");
 
-        let t = tracer.lock().unwrap();
+        let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(t.spans[0].status, SpanStatus::Error("connection timeout".to_string()));
     }
 
@@ -258,7 +258,7 @@ mod tests {
         let attrs = HashMap::from([("rows".to_string(), "42".to_string())]);
         __varg_trace_event(&tracer, "query_complete", &attrs);
 
-        let t = tracer.lock().unwrap();
+        let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(t.spans[0].attributes.get("db.system").unwrap(), "sqlite");
         assert_eq!(t.spans[0].events.len(), 1);
         assert_eq!(t.spans[0].events[0].name, "query_complete");
@@ -332,7 +332,7 @@ mod tests {
         let tracer = __varg_trace_start("t");
         let s = __varg_trace_span(&tracer, "op");
         __varg_trace_error(&tracer, s, "boom");
-        let t = tracer.lock().unwrap();
+        let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
         assert!(t.spans[0].end_time.is_some(), "error span must have end_time set");
         assert!(matches!(t.spans[0].status, SpanStatus::Error(_)));
     }
@@ -347,13 +347,13 @@ mod tests {
         let c = __varg_trace_span(&tracer, "C"); // active → C
         __varg_trace_end(&tracer, b);          // second end of B — must be a no-op
         {
-            let t = tracer.lock().unwrap();
+            let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(t.active_span, Some(c as u64),
                 "second trace_end(B) must not clobber C as the active span");
         }
         __varg_trace_end(&tracer, c);
         __varg_trace_end(&tracer, a);
-        let t = tracer.lock().unwrap();
+        let t = tracer.lock().unwrap_or_else(|e| e.into_inner());
         assert!(t.active_span.is_none());
     }
 

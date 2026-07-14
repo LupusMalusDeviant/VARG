@@ -47,7 +47,7 @@ pub fn __varg_fts_open(path: &str) -> FtsHandle {
 }
 
 pub fn __varg_fts_add(handle: &FtsHandle, doc_id: &str, text: &str) {
-    let mut inner = handle.lock().unwrap();
+    let mut inner = handle.lock().unwrap_or_else(|e| e.into_inner());
     let id_field   = inner.id_field;
     let body_field = inner.body_field;
     inner.writer.add_document(doc!(
@@ -57,12 +57,12 @@ pub fn __varg_fts_add(handle: &FtsHandle, doc_id: &str, text: &str) {
 }
 
 pub fn __varg_fts_commit(handle: &FtsHandle) {
-    let mut inner = handle.lock().unwrap();
+    let mut inner = handle.lock().unwrap_or_else(|e| e.into_inner());
     inner.writer.commit().expect("Varg runtime error: fts_commit() failed — could not flush index changes to disk (check disk space and permissions)");
 }
 
 pub fn __varg_fts_search(handle: &FtsHandle, query: &str, limit: i64) -> Vec<String> {
-    let mut inner = handle.lock().unwrap();
+    let mut inner = handle.lock().unwrap_or_else(|e| e.into_inner());
     // Commit any pending changes first so they're visible
     inner.writer.commit().expect("Varg runtime error: fts_search() failed — could not commit pending writes before searching (check disk space)");
     let reader = inner.index
@@ -85,7 +85,7 @@ pub fn __varg_fts_search(handle: &FtsHandle, query: &str, limit: i64) -> Vec<Str
 }
 
 pub fn __varg_fts_delete(handle: &FtsHandle, doc_id: &str) {
-    let mut inner = handle.lock().unwrap();
+    let mut inner = handle.lock().unwrap_or_else(|e| e.into_inner());
     let id_field = inner.id_field;
     let term = tantivy::Term::from_field_text(id_field, doc_id);
     inner.writer.delete_term(term);
@@ -93,7 +93,7 @@ pub fn __varg_fts_delete(handle: &FtsHandle, doc_id: &str) {
 }
 
 pub fn __varg_fts_close(handle: &FtsHandle) {
-    let mut inner = handle.lock().unwrap();
+    let mut inner = handle.lock().unwrap_or_else(|e| e.into_inner());
     inner.writer.commit().expect("Varg runtime error: fts_close() failed — could not flush final index changes before closing (check disk space and permissions)");
 }
 

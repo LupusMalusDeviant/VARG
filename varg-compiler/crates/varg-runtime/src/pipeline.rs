@@ -53,7 +53,7 @@ pub fn __varg_event_on(
     event_name: &str,
     handler: EventHandler,
 ) {
-    let mut b = bus.lock().unwrap();
+    let mut b = bus.lock().unwrap_or_else(|e| e.into_inner());
     b.handlers.entry(event_name.to_string())
         .or_insert_with(Vec::new)
         .push(HandlerEntry { handler });
@@ -65,7 +65,7 @@ pub fn __varg_event_emit(
     event_name: &str,
     data: &HashMap<String, String>,
 ) -> Vec<String> {
-    let b = bus.lock().unwrap();
+    let b = bus.lock().unwrap_or_else(|e| e.into_inner());
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -82,7 +82,7 @@ pub fn __varg_event_emit(
     drop(b);
 
     // Log event after releasing lock
-    let mut b = bus.lock().unwrap();
+    let mut b = bus.lock().unwrap_or_else(|e| e.into_inner());
     b.event_log.push(Event {
         name: event_name.to_string(),
         data: data.clone(),
@@ -94,7 +94,7 @@ pub fn __varg_event_emit(
 
 /// Get event count in the log
 pub fn __varg_event_count(bus: &EventBusHandle) -> i64 {
-    bus.lock().unwrap().event_log.len() as i64
+    bus.lock().unwrap_or_else(|e| e.into_inner()).event_log.len() as i64
 }
 
 // ===== Pipeline =====
@@ -135,7 +135,7 @@ pub fn __varg_pipeline_add_step(
     name: &str,
     handler: Arc<dyn Fn(&str) -> String + Send + Sync>,
 ) {
-    let mut p = pipeline.lock().unwrap();
+    let mut p = pipeline.lock().unwrap_or_else(|e| e.into_inner());
     p.steps.push(PipelineStep {
         name: name.to_string(),
         handler,
@@ -144,7 +144,7 @@ pub fn __varg_pipeline_add_step(
 
 /// Run the pipeline, passing output of each step as input to the next
 pub fn __varg_pipeline_run(pipeline: &PipelineHandle, initial_input: &str) -> String {
-    let p = pipeline.lock().unwrap();
+    let p = pipeline.lock().unwrap_or_else(|e| e.into_inner());
     let mut current = initial_input.to_string();
     for step in &p.steps {
         current = (step.handler)(&current);
@@ -154,7 +154,7 @@ pub fn __varg_pipeline_run(pipeline: &PipelineHandle, initial_input: &str) -> St
 
 /// Get step count
 pub fn __varg_pipeline_step_count(pipeline: &PipelineHandle) -> i64 {
-    pipeline.lock().unwrap().steps.len() as i64
+    pipeline.lock().unwrap_or_else(|e| e.into_inner()).steps.len() as i64
 }
 
 #[cfg(test)]
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn test_event_bus_new() {
         let bus = __varg_event_bus_new("test");
-        let b = bus.lock().unwrap();
+        let b = bus.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(b.name, "test");
         assert!(b.handlers.is_empty());
     }
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn test_pipeline_new() {
         let pipe = __varg_pipeline_new("data_pipeline");
-        let p = pipe.lock().unwrap();
+        let p = pipe.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(p.name, "data_pipeline");
         assert!(p.steps.is_empty());
     }

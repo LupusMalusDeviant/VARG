@@ -14,7 +14,19 @@ pub struct Parser {
     /// `while cond { ... }`, `for x in collection { ... }`, `match scrutinee { ... }`).
     /// Without this, `if Foo {}` would parse `Foo {}` as an empty struct literal.
     no_struct_literal: bool,
+    /// B6: current expression-recursion depth, to bound deeply nested input and return a
+    /// clean ParseError instead of overflowing the native stack.
+    expr_depth: usize,
 }
+
+/// B6: maximum expression nesting depth before the parser reports an error rather than
+/// recursing until the stack overflows. Each level consumes several KB of stack (the
+/// expression parser has large frames). `vargc` runs the whole compiler on a 256 MB worker
+/// thread (see `main.rs`), so at this depth the guard fires with several MB to spare and
+/// turns pathological input into a clean `ParseError`. Library embedders that call the parser
+/// on a small default stack should likewise run it on a large-stack thread. Real programs nest
+/// far shallower than this.
+const MAX_EXPR_DEPTH: usize = 256;
 
 #[derive(Debug, PartialEq)]
 pub enum ParseError {
@@ -32,6 +44,36 @@ impl ParseError {
     }
 }
 
+/// B4: Decode a raw string-literal token (with surrounding quotes) into its runtime value,
+/// processing escape sequences. Strips exactly ONE quote from each end — `trim_matches('"')`
+/// used to strip *all* trailing quotes, corrupting strings that legitimately end in `\"`.
+/// The codegen re-encodes the decoded value with `{:?}`, so escapes must be resolved here.
+pub fn unescape_string_literal(raw: &str) -> String {
+    let inner = raw.strip_prefix('"').unwrap_or(raw);
+    let inner = inner.strip_suffix('"').unwrap_or(inner);
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some('\'') => out.push('\''),
+                Some('0') => out.push('\0'),
+                // Unknown escape: keep it verbatim rather than silently dropping the backslash.
+                Some(other) => { out.push('\\'); out.push(other); }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 impl Parser {
     pub fn new(source: &str) -> Self {
         let lexer = Lexer::new(source);
@@ -39,7 +81,7 @@ impl Parser {
             .filter_map(|(res, span)| res.ok().map(|tok| (tok, span)))
             .collect();
         let source_len = source.len();
-        Self { tokens, pos: 0, source_len, raw_source: source.to_string(), no_struct_literal: false }
+        Self { tokens, pos: 0, source_len, raw_source: source.to_string(), no_struct_literal: false, expr_depth: 0 }
     }
 
     fn advance(&mut self) -> Option<Token> {
@@ -1905,7 +1947,7 @@ impl Parser {
             },
             Some(Token::StringLiteral(_)) => {
                 if let Some(Token::StringLiteral(val)) = self.advance() {
-                    Ok(Pattern::Literal(Expression::String(val.trim_matches('"').to_string())))
+                    Ok(Pattern::Literal(Expression::String(unescape_string_literal(&val))))
                 } else { unreachable!() }
             },
             Some(Token::BoolLiteral(_)) => {
@@ -2072,6 +2114,25 @@ impl Parser {
     }
 
     fn parse_expression_bp(&mut self, min_bp: u8) -> Result<Expression, ParseError> {
+        // B6: bound recursion depth so pathologically nested input (e.g. 500× `(((…)))`)
+        // yields a ParseError instead of overflowing the stack. Delegate to an inner method
+        // and always decrement, whatever the result.
+        self.expr_depth += 1;
+        if self.expr_depth > MAX_EXPR_DEPTH {
+            self.expr_depth -= 1;
+            let span = self.tokens.get(self.pos).map(|(_, s)| s.clone()).unwrap_or(0..0);
+            return Err(ParseError::UnexpectedToken {
+                expected: format!("expression nested shallower than {} levels", MAX_EXPR_DEPTH),
+                found: self.tokens.get(self.pos).map(|(t, _)| t.clone()),
+                span,
+            });
+        }
+        let result = self.parse_expression_bp_inner(min_bp);
+        self.expr_depth -= 1;
+        result
+    }
+
+    fn parse_expression_bp_inner(&mut self, min_bp: u8) -> Result<Expression, ParseError> {
         let mut left = match self.advance() {
             // Unary prefix operators: -expr, !expr
             Some(Token::Minus) => {
@@ -2135,7 +2196,7 @@ impl Parser {
             Some(Token::Null) => Expression::Null,
             Some(Token::FloatLiteral(val)) => Expression::Float(val),  // Plan 42
             Some(Token::IntLiteral(val)) => Expression::Int(val),
-            Some(Token::StringLiteral(val)) => Expression::String(val.trim_matches('"').to_string()),
+            Some(Token::StringLiteral(val)) => Expression::String(unescape_string_literal(&val)),
             // Wave 16: Multiline strings """..."""
             Some(Token::MultilineStringLiteral(val)) => {
                 // Strip leading/trailing """ and normalize common indentation
@@ -7459,5 +7520,39 @@ mod tests {
         } else {
             panic!("Expected function item");
         }
+    }
+
+    #[test]
+    fn test_unescape_string_literal_b4() {
+        // B4 regression: escape sequences must be decoded, and a string ending in \" must
+        // not be corrupted by stripping all trailing quotes.
+        assert_eq!(unescape_string_literal("\"line1\\nline2\""), "line1\nline2");
+        assert_eq!(unescape_string_literal("\"a\\tb\""), "a\tb");
+        assert_eq!(unescape_string_literal("\"say \\\"hi\\\"\""), "say \"hi\"");
+        assert_eq!(unescape_string_literal("\"back\\\\slash\""), "back\\slash");
+    }
+
+    #[test]
+    fn test_deep_nesting_errors_not_overflow_b6() {
+        // B6 regression: pathologically nested input yields a ParseError, not a crash.
+        // Run on a large-stack thread exactly like `vargc` does (main.rs), since the depth
+        // guard's job is to fire before exhausting that stack — not before a 2 MB test stack.
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(|| {
+                let src = format!("fn f() {{ var x = {}1{}; }}", "(".repeat(600), ")".repeat(600));
+                Parser::new(&src).parse_program().is_err()
+            })
+            .unwrap();
+        assert!(handle.join().unwrap(),
+            "600 nested parens must be rejected with a ParseError, not overflow the stack");
+    }
+
+    #[test]
+    fn test_moderate_nesting_still_parses_b6() {
+        // Ensure the depth guard does not reject reasonable nesting.
+        let src = format!("fn f() {{ var x = {}1{}; }}", "(".repeat(20), ")".repeat(20));
+        let mut parser = Parser::new(&src);
+        assert!(parser.parse_program().is_ok(), "20 nested parens must still parse");
     }
 }

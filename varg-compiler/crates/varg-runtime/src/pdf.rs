@@ -52,7 +52,7 @@ pub fn __varg_pdf_create(title: &str) -> PdfDocHandle {
 
 /// Add a section with heading and body text
 pub fn __varg_pdf_add_section(doc: &PdfDocHandle, heading: &str, body: &str) {
-    let mut d = doc.lock().unwrap();
+    let mut d = doc.lock().unwrap_or_else(|e| e.into_inner());
     d.contents.push(PdfContent {
         kind: ContentKind::Section { heading: heading.to_string() },
         text: body.to_string(),
@@ -61,7 +61,7 @@ pub fn __varg_pdf_add_section(doc: &PdfDocHandle, heading: &str, body: &str) {
 
 /// Add raw text without heading
 pub fn __varg_pdf_add_text(doc: &PdfDocHandle, text: &str) {
-    let mut d = doc.lock().unwrap();
+    let mut d = doc.lock().unwrap_or_else(|e| e.into_inner());
     d.contents.push(PdfContent {
         kind: ContentKind::Text,
         text: text.to_string(),
@@ -177,7 +177,7 @@ fn render_pdf(handle: &PdfHandle) -> Vec<u8> {
 
 /// Save the PDF document to a file
 pub fn __varg_pdf_save(doc: &PdfDocHandle, path: &str) -> String {
-    let handle = doc.lock().unwrap();
+    let handle = doc.lock().unwrap_or_else(|e| e.into_inner());
     let bytes = render_pdf(&handle);
     match std::fs::write(path, &bytes) {
         Ok(_) => format!("ok:{}", bytes.len()),
@@ -187,7 +187,7 @@ pub fn __varg_pdf_save(doc: &PdfDocHandle, path: &str) -> String {
 
 /// Get the PDF document as a base64-encoded string
 pub fn __varg_pdf_to_base64(doc: &PdfDocHandle) -> String {
-    let handle = doc.lock().unwrap();
+    let handle = doc.lock().unwrap_or_else(|e| e.into_inner());
     let bytes = render_pdf(&handle);
     STANDARD.encode(&bytes)
 }
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn test_pdf_create() {
         let doc = __varg_pdf_create("Test Document");
-        let d = doc.lock().unwrap();
+        let d = doc.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(d.title, "Test Document");
         assert!(d.contents.is_empty());
     }
@@ -208,7 +208,7 @@ mod tests {
     fn test_pdf_add_section() {
         let doc = __varg_pdf_create("Test");
         __varg_pdf_add_section(&doc, "Chapter 1", "This is the body text.");
-        let d = doc.lock().unwrap();
+        let d = doc.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(d.contents.len(), 1);
     }
 
@@ -216,7 +216,7 @@ mod tests {
     fn test_pdf_add_text() {
         let doc = __varg_pdf_create("Test");
         __varg_pdf_add_text(&doc, "A paragraph of text.");
-        let d = doc.lock().unwrap();
+        let d = doc.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(d.contents.len(), 1);
     }
 
