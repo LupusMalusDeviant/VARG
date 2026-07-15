@@ -102,9 +102,14 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      `resolve_type` kennt jetzt Builtin-Ergebnisse → `var s = json_get(..); print s;` wird
      typaufgelöst (sauberer print, korrekte Konkat). Fundament, um die 346-vs-393-Duplikation
      schrittweise abzubauen.
+   **Stufe 4 (Sprach-Fix auf dem Typ-Fundament):**
+   - ✅ **Gemischte int/float-Arithmetik** (`5 + 2.5`, `i * f`): die int-Seite wird zu `f64`
+     gecoerct (war E0277). `resolve_type` promotet numerisch (Float wenn ein Operand Float),
+     sodass auch verkettete Mixed-Arithmetik über Variablen trägt (`x = 5 + 2.5; x + 1`).
+   - ✅ Nebenfund via Golden-Netz: json_get/int/bool/array ignorierten JSON-Pointer-Pfade
+     (`/name`) — jetzt korrekt (`.pointer()` für `/`-Pfade, sonst `.get()`).
    **Offen (nächste Stufen):** Typechecker adoptiert dieselbe Tabelle (Duplikation retten);
-   receiver-getypter Method-Dispatch (endgültiger `add`-Klasse-Fix; jetzt sicherer, da
-   `resolve_type` Kollektionstypen kennt); echte Generics-Bounds-Emission (`<T: Display>`).
+   receiver-getypter Method-Dispatch; echte Generics-Bounds-Emission (`<T: Display>`).
 2. **rustc-Fehler → .varg-Zeilen rückmappen** — alles, was der Typechecker nicht fängt, leakt als
    roher rustc-Fehler auf generiertem `src/main.rs:NN`. Die `// .varg:N`-„Source-Maps" sind
    nominell (falsch nummeriert, wirkungslos). Größtes Nutzer-UX-Loch.

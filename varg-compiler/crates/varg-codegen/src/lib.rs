@@ -864,11 +864,17 @@ impl RustGenerator {
             Expression::BinaryOp { operator, left, right } => match operator {
                 BinaryOperator::Eq | BinaryOperator::NotEq | BinaryOperator::Lt | BinaryOperator::Gt
                 | BinaryOperator::LtEq | BinaryOperator::GtEq | BinaryOperator::And | BinaryOperator::Or => Some(TypeNode::Bool),
-                BinaryOperator::Add => {
-                    if self.resolve_type(left) == Some(TypeNode::String) || self.resolve_type(right) == Some(TypeNode::String) {
+                BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul
+                | BinaryOperator::Div | BinaryOperator::Mod => {
+                    let (l, r) = (self.resolve_type(left), self.resolve_type(right));
+                    // Add can be string concatenation.
+                    if matches!(operator, BinaryOperator::Add)
+                        && (l == Some(TypeNode::String) || r == Some(TypeNode::String)) {
                         Some(TypeNode::String)
+                    } else if l == Some(TypeNode::Float) || r == Some(TypeNode::Float) {
+                        Some(TypeNode::Float) // numeric promotion: any float operand → float result
                     } else {
-                        self.resolve_type(left).or_else(|| self.resolve_type(right))
+                        l.or(r)
                     }
                 },
                 _ => self.resolve_type(left).or_else(|| self.resolve_type(right)),
@@ -1743,6 +1749,26 @@ impl RustGenerator {
                 if let BinaryOperator::Add = operator {
                     if self.is_string_expr(left) || self.is_string_expr(right) {
                         return format!("format!(\"{{}}{{}}\", {}, {})", self.gen_expression(left), self.gen_expression(right));
+                    }
+                }
+
+                // T-stage4: mixed int/float arithmetic — Rust won't add i64 to f64, so coerce
+                // the int operand to f64. Enabled by the type env (resolve_type knows int vs
+                // float). Only when exactly one side is Float and the other Int.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Sub
+                    | BinaryOperator::Mul | BinaryOperator::Div | BinaryOperator::Mod)
+                {
+                    let (lt, rt) = (self.resolve_type(left), self.resolve_type(right));
+                    let op = match operator {
+                        BinaryOperator::Add => "+", BinaryOperator::Sub => "-",
+                        BinaryOperator::Mul => "*", BinaryOperator::Div => "/",
+                        BinaryOperator::Mod => "%", _ => unreachable!(),
+                    };
+                    if lt == Some(TypeNode::Float) && rt == Some(TypeNode::Int) {
+                        return format!("{} {} (({}) as f64)", self.gen_operand(left), op, self.gen_operand(right));
+                    }
+                    if lt == Some(TypeNode::Int) && rt == Some(TypeNode::Float) {
+                        return format!("(({}) as f64) {} {}", self.gen_operand(left), op, self.gen_operand(right));
                     }
                 }
 
@@ -9110,6 +9136,26 @@ mod tests {
         let code = gen.gen_expression(&expr);
         assert_eq!(code, "x == \"lit\"", "string literal in == must be &str: {code}");
         assert!(!code.contains(".to_string()"), "no per-compare allocation: {code}");
+    }
+
+    #[test]
+    fn test_codegen_mixed_int_float_coercion_t4() {
+        // T-stage4: int + float coerces the int side to f64 (Rust won't mix i64/f64).
+        let mut gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::Int(5)),
+            operator: BinaryOperator::Add,
+            right: Box::new(Expression::Float(2.5)),
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(code.contains("as f64"), "int side must be coerced to f64: {code}");
+        // pure int stays int (no coercion)
+        let ints = Expression::BinaryOp {
+            left: Box::new(Expression::Int(7)),
+            operator: BinaryOperator::Add,
+            right: Box::new(Expression::Int(3)),
+        };
+        assert!(!gen.gen_expression(&ints).contains("as f64"), "pure int must not coerce");
     }
 
     #[test]

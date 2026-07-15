@@ -1,0 +1,10 @@
+agent A {
+  public void Run() {
+    print 5 + 2.5;
+    var i = 10; var f = 3.0;
+    print i * f;
+    print f - i;
+    print 7 + 3;
+    print 1.5 + 2.5;
+  }
+}
