@@ -1,0 +1,12 @@
+agent A {
+  public void Run() {
+    var xs = [3, 1, 2];
+    var ys = xs.filter((n) => n > 1).map((n) => n * 10);
+    print ys;
+    var m = {"a": 1, "b": 2};
+    print m["a"];
+    var total = 0;
+    for (var i = 0; i < xs.len(); i = i + 1) { total = total + xs[i]; }
+    print total;
+  }
+}

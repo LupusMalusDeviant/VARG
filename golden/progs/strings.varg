@@ -1,0 +1,11 @@
+agent A {
+  public string greet(string n) { return "hi " + n; }
+  public void Run() {
+    var s1 = "foo"; var s2 = "bar";
+    print s1 + s2;
+    var g = self.greet("varg");
+    print g;
+    print $"{s1}-{s2}-{g}";
+    print "upper: " + s1.to_upper();
+  }
+}

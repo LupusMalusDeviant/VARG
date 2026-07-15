@@ -1,0 +1,8 @@
+progs/*.exe
+progs/*.rs
+*.exe
+*.rs
+*.db
+*.graph.db
+*.vector.db
+.vargc_cache/

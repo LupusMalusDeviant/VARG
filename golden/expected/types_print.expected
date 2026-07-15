@@ -1,0 +1,7 @@
+literal string
+hello
+Point { x: 1, y: 2 }
+Green
+42
+[1, 2, 3]
+foobar

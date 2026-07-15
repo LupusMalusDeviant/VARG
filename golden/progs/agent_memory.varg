@@ -1,0 +1,37 @@
+// Wave 21: Agent Memory Example
+// 3-layer memory: working (key-value), episodic (vector), semantic (graph)
+
+fn main() {
+    var mem = memory_open("assistant")
+
+    // Layer 1: Working Memory (session context)
+    memory_set(mem, "current_task", "research Varg compiler")
+    memory_set(mem, "user_name", "Alice")
+    var task = memory_get(mem, "current_task", "none")
+    print $"Current task: {task}"
+
+    // Layer 2: Episodic Memory (past interactions)
+    memory_store(mem, "User asked about Rust performance benchmarks", {"topic": "performance"})
+    memory_store(mem, "Discussed compiler optimization strategies", {"topic": "compiler"})
+    memory_store(mem, "User wants to learn about async programming", {"topic": "async"})
+
+    var episodes = memory_episode_count(mem)
+    print $"Episodes stored: {episodes}"
+
+    var relevant = memory_recall(mem, "compiler performance", 2)
+    print $"Relevant memories: {len(relevant)}"
+
+    // Layer 3: Semantic Memory (facts & relations)
+    memory_add_fact(mem, "Language", {"name": "Varg", "type": "compiled"})
+    memory_add_fact(mem, "Language", {"name": "Rust", "type": "compiled"})
+
+    var languages = memory_query_facts(mem, "Language")
+    print $"Known languages: {len(languages)}"
+
+    // Clear working memory for new session
+    memory_clear_working(mem)
+    var cleared = memory_get(mem, "current_task", "cleared")
+    print $"After clear: {cleared}"
+
+    print "Agent memory demo complete!"
+}

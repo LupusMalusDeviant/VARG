@@ -1,0 +1,4 @@
+agent A {
+  public int add(int a, int b) { return a + b; }
+  public void Run() { print self.add(2, 3); print self.add(10, 20); }
+}

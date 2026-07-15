@@ -1,0 +1,18 @@
+struct Point { int x; int y; }
+enum Color { Red, Green }
+agent A {
+  public string greet() { return "hello"; }
+  public void Run() {
+    print "literal string";
+    var r = self.greet();
+    print r;
+    var p = Point { x: 1, y: 2 };
+    print p;
+    print Color::Green;
+    print 42;
+    var xs = [1, 2, 3];
+    print xs;
+    var s1 = "foo"; var s2 = "bar";
+    print s1 + s2;
+  }
+}
