@@ -1,0 +1,65 @@
+// Memory-Recall-Benchmark: labeled Q->doc mit Same-Topic-Distraktoren.
+// Misst recall@1, recall@3, MRR ueber den Varg Vector-Store. Deterministisch;
+// Qualitaet skaliert mit dem Embedding-Provider (VARG_EMBED_PROVIDER setzen fuer semantisch).
+agent MemBench {
+  public void Run() {
+    var store = vector_store_open(":memory:");
+    var ids = ["d01","d02","d03","d04","d05","d06","d07","d08",
+               "d09","d10","d11","d12","d13","d14","d15","d16"];
+    var docs = [
+      "the cat curled up on the warm windowsill in the afternoon sun",
+      "the cat stalked a mouse behind the kitchen cupboard at night",
+      "the dog fetched the tennis ball across the muddy backyard",
+      "the puppy chewed through its leash while waiting by the door",
+      "photosynthesis lets green plants turn sunlight into sugar",
+      "cellular respiration breaks down glucose to release energy",
+      "the central bank raised interest rates to cool inflation",
+      "technology shares rallied after strong quarterly earnings",
+      "she frosted a three layer chocolate cake for the wedding",
+      "the baker proofed the sourdough overnight before shaping loaves",
+      "heavy monsoon rain flooded the low lying riverside village",
+      "a wildfire spread through the dry hills near the coast",
+      "the marathon runner paced herself through the final miles",
+      "the swimmer shaved seconds off her freestyle personal best",
+      "rust gives systems programmers memory safety without a garbage collector",
+      "python remains the go to language for data science notebooks"
+    ];
+    for (var i = 0; i < 16; i = i + 1) {
+      vector_store_upsert(store, ids[i], embed(docs[i]), {"t": docs[i]});
+    }
+
+    var queries = [
+      "a feline dozing by the sunny glass in the daytime",
+      "a cat hunting a rodent in the dark",
+      "a canine retrieving a ball outdoors",
+      "how plants convert light into food",
+      "the process that releases energy from sugar in cells",
+      "policymakers hiked borrowing costs to fight rising prices",
+      "tech stocks jumped on good profit reports",
+      "a tall dessert with cocoa layers made for a marriage",
+      "flooding of a riverside town after prolonged downpours",
+      "a systems language with safe memory and no GC"
+    ];
+    var answers = ["d01","d02","d03","d05","d06","d07","d08","d09","d11","d15"];
+
+    var nq = 10;
+    var hit1 = 0;
+    var hit3 = 0;
+    var mrr_x1000 = 0;
+    for (var q = 0; q < nq; q = q + 1) {
+      var results = vector_search_text(store, queries[q], 3);
+      var gold = answers[q];
+      var rank = -1;
+      for (var j = 0; j < results.len(); j = j + 1) {
+        if results[j].contains(gold) { rank = j; break; }
+      }
+      if rank == 0 { hit1 = hit1 + 1; }
+      if rank >= 0 { hit3 = hit3 + 1; mrr_x1000 = mrr_x1000 + (1000 / (rank + 1)); }
+    }
+    print "=== Varg Memory-Recall Benchmark ===";
+    print $"docs={16} queries={nq}";
+    print $"recall@1    : {hit1}/{nq}";
+    print $"recall@3    : {hit3}/{nq}";
+    print $"MRR(x1000)  : {mrr_x1000 / nq}";
+  }
+}

@@ -1,0 +1,5 @@
+*.rs
+*.exe
+_hello*
+mem_recall.vector.db
+.vargc_cache/
