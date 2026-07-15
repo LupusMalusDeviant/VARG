@@ -1,0 +1,9 @@
+agent A {
+  public void Run() {
+    var j = json_parse("{\"name\": \"varg\", \"n\": 42, \"main\": {\"temp\": \"warm\"}}");
+    print json_get(j, "/name");
+    print json_get(j, "name");
+    print json_get_int(j, "/n");
+    print json_get(j, "/main/temp");
+  }
+}

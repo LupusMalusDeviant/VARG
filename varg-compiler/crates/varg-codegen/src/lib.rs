@@ -2404,14 +2404,16 @@ impl RustGenerator {
                     // Return Value directly (null on parse error) so json_get/pointer work without unwrap
                     format!("serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Null)", arg_strs[0])
                 } else if method_name == "json_get" {
-                    // Use .get() for single-key access — simpler than .pointer() and no path prefix needed
-                    format!("{}.get(&*{}).and_then(|v| v.as_str()).unwrap_or_default().to_string()", arg_strs[0], arg_strs[1])
+                    // Path starting with '/' is a JSON pointer (nested, e.g. "/main/temp");
+                    // otherwise a single object key. (Was .get() only, so documented pointer
+                    // paths silently returned empty.)
+                    format!("{{ let __j = &{}; let __p: String = {}; (if __p.starts_with('/') {{ __j.pointer(&__p) }} else {{ __j.get(__p.as_str()) }}).and_then(|v| v.as_str()).unwrap_or_default().to_string() }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_int" {
-                    format!("{}.get(&*{}).and_then(|v| v.as_i64()).unwrap_or(0)", arg_strs[0], arg_strs[1])
+                    format!("{{ let __j = &{}; let __p: String = {}; (if __p.starts_with('/') {{ __j.pointer(&__p) }} else {{ __j.get(__p.as_str()) }}).and_then(|v| v.as_i64()).unwrap_or(0) }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_bool" {
-                    format!("{}.get(&*{}).and_then(|v| v.as_bool()).unwrap_or(false)", arg_strs[0], arg_strs[1])
+                    format!("{{ let __j = &{}; let __p: String = {}; (if __p.starts_with('/') {{ __j.pointer(&__p) }} else {{ __j.get(__p.as_str()) }}).and_then(|v| v.as_bool()).unwrap_or(false) }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_array" {
-                    format!("{}.get(&*{}).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>()).unwrap_or_default()", arg_strs[0], arg_strs[1])
+                    format!("{{ let __j = &{}; let __p: String = {}; (if __p.starts_with('/') {{ __j.pointer(&__p) }} else {{ __j.get(__p.as_str()) }}).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>()).unwrap_or_default() }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_stringify" {
                     format!("serde_json::to_string(&{}).unwrap_or_default()", arg_strs[0])
                 } else if method_name == "json_stringify_pretty" {
