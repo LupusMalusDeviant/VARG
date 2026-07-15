@@ -41,7 +41,10 @@ pub fn __varg_proc_spawn(cmd: &str) -> Result<ProcHandle, String> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        // stderr is inherited (goes to the parent's terminal) rather than piped: nothing
+        // ever drains a piped stderr, so a child that writes more than the ~64 KB pipe buffer
+        // to stderr (e.g. cargo/rustc progress) would deadlock waiting for it to be read.
+        .stderr(Stdio::inherit());
 
     let mut child = command
         .spawn()
@@ -64,7 +67,10 @@ pub fn __varg_proc_spawn_args(program: &str, args: Vec<String>) -> Result<ProcHa
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        // stderr is inherited (goes to the parent's terminal) rather than piped: nothing
+        // ever drains a piped stderr, so a child that writes more than the ~64 KB pipe buffer
+        // to stderr (e.g. cargo/rustc progress) would deadlock waiting for it to be read.
+        .stderr(Stdio::inherit());
 
     let mut child = command
         .spawn()

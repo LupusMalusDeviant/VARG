@@ -1,0 +1,67 @@
+// ── Layer-3 Skill-Spike: "promote-to-native" (Proof-of-Concept zu ADR-0001) ─────
+//
+// Zeigt die OPTIONALE dritte Schicht aus ADR-0001: ein reifer/heißer Skill wird von
+// einem delegierten Skript zu NATIVEM, OCAP-abgesichertem Varg-Code "promotet".
+// Der laufende Agent:
+//   1. generiert zur Laufzeit Varg-Quelltext fuer den Skill,
+//   2. ruft `vargc` auf und kompiliert ihn zu einem nativen Binary,
+//   3. fuehrt das native Binary aus.
+// Und — der eigentliche Differentiator gegenueber Hermes' interpretiertem Python:
+//   4. ein UNSICHERER Skill (Capability ohne Token) wird von `vargc` zur COMPILE-Zeit
+//      abgelehnt und gar nicht erst promotet (OCAP).
+//
+// Voraussetzung: Umgebungsvariable VARGC_BIN zeigt auf ein vargc-Binary
+//   (roher Pfad, ohne Anfuehrungszeichen — proc_spawn_args nutzt keine Shell).
+
+agent SkillPromoter {
+    public void Run() {
+        unsafe {
+            var files = FileAccess {};
+            var sys = SystemAccess {};
+            var vargc = env("VARGC_BIN") or "vargc";
+            print "=== Layer 3: promote-to-native (ADR-0001) ===";
+
+            // (1) VALIDER Skill -> Varg-Quelle generieren, zu NATIVE kompilieren, ausfuehren.
+            var valid_src = """agent Shout {
+  public void Run() {
+    var input = "hello from a native varg skill";
+    print input.to_upper() + "!";
+  }
+}
+""";
+            fs_write("skill_shout.varg", valid_src)?;
+
+            var t0 = time_millis();
+            var h = proc_spawn_args(vargc, ["build", "skill_shout.varg"])?;
+            var rc = proc_wait(h)?;
+            var t1 = time_millis();
+
+            if rc == 0 {
+                print $"[promote] Skill 'shout' zu NATIVE kompiliert in {t1 - t0}ms";
+                var out = exec(".\\skill_shout.exe")?;   // .\ : lokale exe im CWD (Windows)
+                print $"[run-native] -> {out.trim()}";
+            } else {
+                print $"[promote] Kompilierung fehlgeschlagen rc={rc}";
+            }
+
+            // (2) OCAP: unsicherer Skill (fs_read OHNE FileAccess-Token) -> vargc lehnt ab.
+            var bad_src = """agent Bad {
+  public void Run() {
+    var secret = fs_read("secret.txt");
+    print secret;
+  }
+}
+""";
+            fs_write("skill_bad.varg", bad_src)?;
+            var h2 = proc_spawn_args(vargc, ["build", "skill_bad.varg"])?;
+            var rc2 = proc_wait(h2)?;
+            if rc2 != 0 {
+                print $"[ocap] unsicherer Skill von vargc ABGELEHNT (rc={rc2}) - nicht promotet";
+                print "[ocap] -> Vargs Compile-Zeit-Capabilities; Hermes' Python-Tools haben das nicht";
+            } else {
+                print "[ocap] WARNUNG: unsicherer Skill wurde faelschlich akzeptiert";
+            }
+            print "=== fertig ===";
+        }
+    }
+}

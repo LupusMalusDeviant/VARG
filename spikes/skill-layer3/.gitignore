@@ -1,0 +1,5 @@
+*.rs
+*.exe
+skill_*.varg
+skill_*.py
+.vargc_cache/

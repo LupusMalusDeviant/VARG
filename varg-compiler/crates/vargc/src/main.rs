@@ -1510,7 +1510,9 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
             final_rust_source.push_str(&command_dispatch_block);
         }
 
-        final_rust_source.push_str("    println!(\"[VargOS] Bootstrapping Runtime...\");\n");
+        // Diagnostic banner on stderr, not stdout: a Varg binary's stdout must stay clean so
+        // it can be used as a composable tool (its output captured/parsed by another program).
+        final_rust_source.push_str("    eprintln!(\"[VargOS] Bootstrapping Runtime...\");\n");
         if let Some(m) = main_method_name {
             final_rust_source.push_str(&format!("    instance.{}();\n", m));
         } else {
