@@ -1320,6 +1320,43 @@ impl TypeChecker {
                         return Err(e);
                     }
                 }
+                // T3: receiver-typed dispatch. String/collection methods are meaningless on a
+                // scalar (`n.len()`, `x.to_upper()` where n/x are numbers) — catch that here
+                // instead of leaking an opaque rustc error. Deliberately conservative: fire ONLY
+                // when the caller is a concrete, non-synthetic expression whose type resolves to a
+                // definite scalar. Free-function builtins are parsed with a synthetic `self`
+                // caller (so they never match), and unknown/Dynamic/Custom callers pass through to
+                // the existing per-method logic — no false positives on working programs.
+                const RECEIVER_METHODS: &[&str] = &[
+                    // string-shaped
+                    "to_upper", "to_lower", "trim", "trim_start", "trim_end", "ltrim", "rtrim",
+                    "substring", "char_at", "chars", "repeat", "pad_left", "pad_right", "split",
+                    "replace", "index_of", "split_once", "count_occurrences",
+                    // string-or-collection
+                    "len", "length", "contains", "starts_with", "ends_with", "is_empty",
+                    // collection / map
+                    "push", "pop", "first", "last", "reverse", "keys", "values", "contains_key",
+                    // NB: `to_string` is intentionally absent — it IS valid on scalars.
+                ];
+                let caller_is_synthetic_self =
+                    matches!(&**caller, Expression::Identifier(n) if n == "self");
+                if RECEIVER_METHODS.contains(&method_name) && !caller_is_synthetic_self {
+                    if let Ok(ct) = self.infer_expression_type(caller) {
+                        if matches!(ct, TypeNode::Int | TypeNode::Float | TypeNode::Bool) {
+                            let type_name = match ct {
+                                TypeNode::Int => "int",
+                                TypeNode::Float => "float",
+                                TypeNode::Bool => "bool",
+                                _ => unreachable!(),
+                            };
+                            return Err(TypeError::UnknownMethod {
+                                type_name: type_name.to_string(),
+                                method_name: method_name.to_string(),
+                                suggestions: Vec::new(),
+                            });
+                        }
+                    }
+                }
                 if method_name == "fetch" {
                     self.check_ocap(&CapabilityType::NetworkAccess, "fetch")?;
                     if args.len() < 1 || args.len() > 4 {
@@ -9530,5 +9567,56 @@ mod tests {
             "expected to lock ≥60 builtins against the table, only locked {} (skipped: {:?})",
             asserted, skipped
         );
+    }
+
+    // ===== T3: receiver-typed method dispatch =====
+
+    fn method_call(caller: Expression, name: &str, args: Vec<Expression>) -> Expression {
+        Expression::MethodCall { caller: Box::new(caller), method_name: name.to_string(), args }
+    }
+
+    #[test]
+    fn t3_rejects_string_method_on_int() {
+        // `n.len()` where n is an int must be caught by the typechecker, not leaked to rustc.
+        let mut checker = TypeChecker::new();
+        checker.env.insert("n".to_string(), TypeNode::Int);
+        let expr = method_call(Expression::Identifier("n".to_string()), "len", vec![]);
+        let err = checker.infer_expression_type(&expr).unwrap_err();
+        assert!(matches!(err, TypeError::UnknownMethod { .. }), "got: {:?}", err);
+    }
+
+    #[test]
+    fn t3_rejects_to_upper_on_float() {
+        let mut checker = TypeChecker::new();
+        checker.env.insert("x".to_string(), TypeNode::Float);
+        let expr = method_call(Expression::Identifier("x".to_string()), "to_upper", vec![]);
+        assert!(checker.infer_expression_type(&expr).is_err());
+    }
+
+    #[test]
+    fn t3_allows_string_method_on_string() {
+        let mut checker = TypeChecker::new();
+        let expr = method_call(Expression::String("hi".to_string()), "to_upper", vec![]);
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::String);
+    }
+
+    #[test]
+    fn t3_allows_len_on_array() {
+        let mut checker = TypeChecker::new();
+        let expr = method_call(
+            Expression::ArrayLiteral(vec![Expression::Int(1), Expression::Int(2)]),
+            "len",
+            vec![],
+        );
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::Int);
+    }
+
+    #[test]
+    fn t3_allows_to_string_on_int() {
+        // to_string IS valid on scalars — must not be swept up by the receiver check.
+        let mut checker = TypeChecker::new();
+        checker.env.insert("n".to_string(), TypeNode::Int);
+        let expr = method_call(Expression::Identifier("n".to_string()), "to_string", vec![]);
+        assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::String);
     }
 }
