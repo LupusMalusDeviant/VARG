@@ -84,10 +84,18 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
 - ✅ REFERENCE.md Result-Beispiel (Zeile ~457) korrigiert (implizite Erfolgstyp-Idiom).
 
 **Offen — größere Compiler-Projekte (nach Hebelwirkung):**
-1. **Typ-annotierter AST (Typechecker→Codegen)** — die eine Wurzel hinter der Codegen-Fragilität:
-   Builtin-/Methoden-Dispatch rein nach Namen (346 Typechecker- vs. 393 Codegen-Arme, keine
-   gemeinsame Tabelle). Ermöglicht: receiver-getypter Dispatch (endgültiger Fix der `add`-Klasse),
-   Allokations-Optimierung (s.u.), echte Generics-Bounds.
+1. **Typ-annotierter AST (Typechecker→Codegen)** — die eine Wurzel hinter der Codegen-Fragilität.
+   **Begonnen (Stufe 1, mit Golden-Output-Netz):**
+   - ✅ `golden/` — Golden-Output-Sicherheitsnetz (9 Programme, stdout-Diff) gegen stille
+     Miskompilierung.
+   - ✅ Codegen-Typumgebung `var_types` + `resolve_type(expr)` (aus Let-/Param-/Feld-Typen).
+   - ✅ `is_string_expr` typ-genau über `resolve_type` (statt reiner Heuristik).
+   - ✅ Erster Allokations-Gewinn: `x == "lit"` vergleicht gegen `&str` statt pro Vergleich
+     einen `String` zu allokieren.
+   **Offen (nächste Stufen auf diesem Fundament):** receiver-getypter Method-Dispatch
+   (endgültiger `add`-Klasse-Fix für Kollektionen), breitere Allokations-Optimierung
+   (Literal-Passthrough in `print`, Doppel-Clone in Closures), echte Generics-Bounds-Emission,
+   und `resolve_type` für Builtin-Rückgabetypen (via gemeinsamer Signatur-Tabelle).
 2. **rustc-Fehler → .varg-Zeilen rückmappen** — alles, was der Typechecker nicht fängt, leakt als
    roher rustc-Fehler auf generiertem `src/main.rs:NN`. Die `// .varg:N`-„Source-Maps" sind
    nominell (falsch nummeriert, wirkungslos). Größtes Nutzer-UX-Loch.

@@ -122,6 +122,10 @@ fn expr_contains_try_propagate(expr: &Expression) -> bool {
 pub struct RustGenerator {
     /// Plan 19: Agent field names for self-prefix resolution in methods
     agent_field_names: HashSet<String>,
+    /// T1: resolved type of in-scope variables/fields/params (declared or inferred). The start
+    /// of a type-annotated codegen — lets dispatch/formatting decisions consult real types
+    /// instead of name heuristics. Flat (no block scoping), matching the existing string_vars.
+    var_types: HashMap<String, TypeNode>,
     /// Plan 16: Known agent definitions for spawn method dispatch
     known_agents: HashMap<String, AgentDef>,
     /// Plan 27: Whether program uses async (for tokio spawn/channels)
@@ -173,6 +177,7 @@ impl RustGenerator {
             known_functions: HashSet::new(),
             known_contract_methods: HashMap::new(),
             string_vars: HashSet::new(),
+            var_types: HashMap::new(),
             varg_line_counter: 0,
             emit_source_maps: false,
             current_file: String::new(),
@@ -444,6 +449,7 @@ impl RustGenerator {
                     if matches!(field.ty, TypeNode::String) {
                         self.string_vars.insert(field.name.clone());
                     }
+                    self.var_types.insert(field.name.clone(), field.ty.clone()); // T1
                 }
                 let vis = if a.is_public { "pub " } else { "" };
                 let mut out = String::new();
@@ -836,7 +842,44 @@ impl RustGenerator {
     }
 
     /// Heuristic: does this expression produce a String?
+    /// T1: best-effort resolved type of an expression from the variable-type environment and
+    /// literals. `None` when unknown (callers fall back to existing heuristics). Read-only.
+    fn resolve_type(&self, expr: &Expression) -> Option<TypeNode> {
+        match expr {
+            Expression::Int(_) => Some(TypeNode::Int),
+            Expression::Float(_) => Some(TypeNode::Float),
+            Expression::Bool(_) => Some(TypeNode::Bool),
+            Expression::String(_) | Expression::InterpolatedString(_) | Expression::PromptLiteral(_) => Some(TypeNode::String),
+            Expression::Identifier(name) => self.var_types.get(name).cloned(),
+            Expression::PropertyAccess { property_name, .. } => self.var_types.get(property_name).cloned(),
+            Expression::TryPropagate(inner) => match self.resolve_type(inner) {
+                Some(TypeNode::Result(ok, _)) => Some(*ok),
+                other => other,
+            },
+            Expression::OrDefault { expr, default } => match self.resolve_type(expr) {
+                Some(TypeNode::Result(ok, _)) => Some(*ok),
+                Some(t) => Some(t),
+                None => self.resolve_type(default),
+            },
+            Expression::BinaryOp { operator, left, right } => match operator {
+                BinaryOperator::Eq | BinaryOperator::NotEq | BinaryOperator::Lt | BinaryOperator::Gt
+                | BinaryOperator::LtEq | BinaryOperator::GtEq | BinaryOperator::And | BinaryOperator::Or => Some(TypeNode::Bool),
+                BinaryOperator::Add => {
+                    if self.resolve_type(left) == Some(TypeNode::String) || self.resolve_type(right) == Some(TypeNode::String) {
+                        Some(TypeNode::String)
+                    } else {
+                        self.resolve_type(left).or_else(|| self.resolve_type(right))
+                    }
+                },
+                _ => self.resolve_type(left).or_else(|| self.resolve_type(right)),
+            },
+            _ => None,
+        }
+    }
+
     fn is_string_expr(&self, expr: &Expression) -> bool {
+        // T2: type-accurate — any expression the type environment resolves to String.
+        if self.resolve_type(expr) == Some(TypeNode::String) { return true; }
         matches!(expr, Expression::String(_) | Expression::PromptLiteral(_) | Expression::InterpolatedString(_))
             || matches!(expr, Expression::MethodCall { method_name, .. }
                 if ["to_upper", "to_lower", "trim", "replace", "substring", "char_at", "join"].contains(&method_name.as_str()))
@@ -1073,6 +1116,10 @@ impl RustGenerator {
             }
             match stmt {
                 Statement::Let { name, ty, value } => {
+                    // T1: record the variable's type — declared type wins, else infer from value.
+                    if let Some(t) = ty.clone().or_else(|| self.resolve_type(value)) {
+                        self.var_types.insert(name.clone(), t);
+                    }
                     // Track string variables for correct += codegen
                     if matches!(ty, Some(TypeNode::String)) || self.is_string_expr(value) {
                         self.string_vars.insert(name.clone());
@@ -1570,6 +1617,8 @@ impl RustGenerator {
             if matches!(p.ty, TypeNode::String) {
                 self.string_vars.insert(p.name.clone());
             }
+            // T1: record the full param type for the type environment.
+            self.var_types.insert(p.name.clone(), p.ty.clone());
         }
     }
 
@@ -1677,6 +1726,22 @@ impl RustGenerator {
                     if self.is_string_expr(left) || self.is_string_expr(right) {
                         return format!("format!(\"{{}}{{}}\", {}, {})", self.gen_expression(left), self.gen_expression(right));
                     }
+                }
+
+                // T3 (allocation win): in ==/!= comparisons, emit String literals as raw &str
+                // (no per-comparison `.to_string()` alloc). `String` and `&str` compare directly
+                // via PartialEq, so this is behaviour-preserving. Only ==/!= (PartialEq is well
+                // defined for both directions); ordering ops keep the default path.
+                if matches!(operator, BinaryOperator::Eq | BinaryOperator::NotEq)
+                    && (matches!(**left, Expression::String(_)) || matches!(**right, Expression::String(_)))
+                {
+                    let opstr = if matches!(operator, BinaryOperator::Eq) { "==" } else { "!=" };
+                    let side = |g: &mut Self, e: &Expression| -> String {
+                        if let Expression::String(s) = e { format!("{:?}", s) } else { g.gen_operand(e) }
+                    };
+                    let l = side(self, left);
+                    let r = side(self, right);
+                    return format!("{} {} {}", l, opstr, r);
                 }
 
                 let op = match operator {
@@ -9005,6 +9070,34 @@ mod tests {
         assert_eq!(gen.gen_expression(&Expression::Int(9_999_999_999)), "9999999999i64");
         // small literals stay unsuffixed so they still coerce into usize/index contexts.
         assert_eq!(gen.gen_expression(&Expression::Int(3)), "3");
+    }
+
+    #[test]
+    fn test_codegen_string_compare_avoids_alloc_t3() {
+        // T3: `x == "lit"` compares against a &str, not a freshly allocated String.
+        let mut gen = RustGenerator::new();
+        let expr = Expression::BinaryOp {
+            left: Box::new(Expression::Identifier("x".to_string())),
+            operator: BinaryOperator::Eq,
+            right: Box::new(Expression::String("lit".to_string())),
+        };
+        let code = gen.gen_expression(&expr);
+        assert_eq!(code, "x == \"lit\"", "string literal in == must be &str: {code}");
+        assert!(!code.contains(".to_string()"), "no per-compare allocation: {code}");
+    }
+
+    #[test]
+    fn test_codegen_resolve_type_t1() {
+        // T1: the type environment resolves declared/param/literal types.
+        let mut gen = RustGenerator::new();
+        gen.var_types.insert("s".to_string(), TypeNode::String);
+        gen.var_types.insert("n".to_string(), TypeNode::Int);
+        assert_eq!(gen.resolve_type(&Expression::Identifier("s".to_string())), Some(TypeNode::String));
+        assert_eq!(gen.resolve_type(&Expression::Identifier("n".to_string())), Some(TypeNode::Int));
+        assert_eq!(gen.resolve_type(&Expression::Int(5)), Some(TypeNode::Int));
+        // string var makes is_string_expr type-accurate (T2)
+        assert!(gen.is_string_expr(&Expression::Identifier("s".to_string())));
+        assert!(!gen.is_string_expr(&Expression::Identifier("n".to_string())));
     }
 
     #[test]
