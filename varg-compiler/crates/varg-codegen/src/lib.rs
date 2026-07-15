@@ -1336,10 +1336,19 @@ impl RustGenerator {
                     }
                 },
                 Statement::Print(expr) => {
-                    // a2: render through the universal __varg_fmt() — strings via Display (no
-                    // surrounding quotes), collections/structs/enums/Option via Debug. This is
-                    // the same path string interpolation uses, so `print x` and `$"{x}"` agree.
-                    out.push_str(&format!("{}println!(\"{{}}\", ({}).__varg_fmt());\n", indent, self.gen_expression(expr)));
+                    // a2: render via __varg_fmt (strings without quotes, collections/structs/
+                    // enums/Option via Debug). T-stage2: for values the type env resolves to a
+                    // Display primitive, format with `{}` directly — same output, but skips the
+                    // extra String allocation __varg_fmt makes. Unknown types keep __varg_fmt.
+                    let g = self.gen_expression(expr);
+                    let display_direct = matches!(self.resolve_type(expr),
+                        Some(TypeNode::String) | Some(TypeNode::Int) | Some(TypeNode::Float)
+                        | Some(TypeNode::Bool) | Some(TypeNode::Ulong));
+                    if display_direct {
+                        out.push_str(&format!("{}println!(\"{{}}\", {});\n", indent, g));
+                    } else {
+                        out.push_str(&format!("{}println!(\"{{}}\", ({}).__varg_fmt());\n", indent, g));
+                    }
                 },
                 Statement::Expr(expr) => {
                     out.push_str(&format!("{}{};\n", indent, self.gen_expression(expr)));
@@ -2005,12 +2014,16 @@ impl RustGenerator {
                                 LambdaBody::Expression(expr) => self.gen_expression(expr),
                                 LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
                             };
-                            format!("|__varg_ref| {{ let {} = (*__varg_ref).clone(); {} }}", param_name, body_str)
+                            // T-stage2: filter on references and clone only the survivors
+                            // (`.iter().filter(..).cloned()`), not every element up front. The
+                            // closure receives `&&T`, so bind the owned value with `(**ref)`.
+                            format!("|__varg_ref| {{ let {} = (**__varg_ref).clone(); {} }}", param_name, body_str)
                         },
                         other => self.gen_expression(other),
                     };
-                    // Use iter().cloned() so the original collection is not moved/consumed
-                    format!("{}.iter().cloned().filter({}).collect::<Vec<_>>()", caller_code, filter_closure)
+                    // Filter by reference, then clone only the elements that survive — avoids
+                    // cloning the whole collection up front (was iter().cloned().filter()).
+                    format!("{}.iter().filter({}).cloned().collect::<Vec<_>>()", caller_code, filter_closure)
                 } else if method_name == "map" {
                     let lambda = self.gen_expression(&args[0]);
                     let caller_code = self.gen_expression(caller);
@@ -5515,7 +5528,9 @@ mod tests {
             }],
         };
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("iter().cloned().filter("), "Expected filter chain, got: {}", code);
+        // T-stage2: filter by reference, clone only survivors (was iter().cloned().filter()).
+        assert!(code.contains("iter().filter(") && code.contains(").cloned()"),
+            "Expected filter-by-ref then cloned, got: {}", code);
         assert!(code.contains("collect::<Vec<_>>()"), "Expected collect, got: {}", code);
     }
 

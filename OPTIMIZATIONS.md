@@ -90,12 +90,16 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      Miskompilierung.
    - ✅ Codegen-Typumgebung `var_types` + `resolve_type(expr)` (aus Let-/Param-/Feld-Typen).
    - ✅ `is_string_expr` typ-genau über `resolve_type` (statt reiner Heuristik).
-   - ✅ Erster Allokations-Gewinn: `x == "lit"` vergleicht gegen `&str` statt pro Vergleich
-     einen `String` zu allokieren.
-   **Offen (nächste Stufen auf diesem Fundament):** receiver-getypter Method-Dispatch
-   (endgültiger `add`-Klasse-Fix für Kollektionen), breitere Allokations-Optimierung
-   (Literal-Passthrough in `print`, Doppel-Clone in Closures), echte Generics-Bounds-Emission,
-   und `resolve_type` für Builtin-Rückgabetypen (via gemeinsamer Signatur-Tabelle).
+   **Allokations-Gewinne (Stufe 1+2):**
+   - ✅ `x == "lit"` vergleicht gegen `&str` statt pro Vergleich einen `String` zu allokieren.
+   - ✅ Typ-getriebenes `print`: für Display-Primitive (String/Zahl/Bool) direkt `{}` statt der
+     Extra-String-Allokation von `__varg_fmt()`.
+   - ✅ `filter`: `.iter().filter(..).cloned()` statt `.iter().cloned().filter(..)` — klont nur
+     die Überlebenden, nicht die ganze Kollektion vorab (2N → N+K Clones).
+   **Offen (nächste Stufen):** receiver-getypter Method-Dispatch (endgültiger `add`-Klasse-Fix;
+   braucht `resolve_type` für Builtin-Rückgabetypen, sonst würde `set_of()`-Sets regredieren),
+   echte Generics-Bounds-Emission (`<T: Display>`), und eine **gemeinsame Builtin-Signatur-
+   Tabelle**, die die 346-vs-393-Duplikation zwischen Typechecker und Codegen auflöst.
 2. **rustc-Fehler → .varg-Zeilen rückmappen** — alles, was der Typechecker nicht fängt, leakt als
    roher rustc-Fehler auf generiertem `src/main.rs:NN`. Die `// .varg:N`-„Source-Maps" sind
    nominell (falsch nummeriert, wirkungslos). Größtes Nutzer-UX-Loch.
