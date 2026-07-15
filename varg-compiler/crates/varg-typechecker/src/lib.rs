@@ -9458,4 +9458,77 @@ mod tests {
         assert!(errs.iter().any(|e| matches!(&e.error, TypeError::AgentGraphCycle { .. })),
             "should detect self-cycle");
     }
+
+    // ===== (b) Drift-lock: typechecker builtin arms vs the shared signature table =====
+    //
+    // `varg_ast::builtins::builtin_return_type` is the single source of truth the codegen already
+    // consults for builtin return types. The typechecker keeps its own per-builtin arms (they also
+    // carry arity/OCAP validation the table can't express), so the two can silently diverge — the
+    // exact bug that once typed `env` as String while codegen emitted a Result.
+    //
+    // This test drives the typechecker's own inference for every name in the table and asserts it
+    // agrees. It never fabricates a failure: a builtin whose arm inspects its receiver (so a
+    // synthetic `self`-caller can't exercise it) is *skipped*, not failed. Everything reachable
+    // with a string caller + string args is locked. Any future edit that changes one side without
+    // the other breaks CI here.
+    #[test]
+    fn typechecker_agrees_with_builtin_signature_table() {
+        // `TypeNode::Error` renders to `String` in codegen and the typechecker treats the two as
+        // interchangeable in a Result's error position (see the `== TypeNode::Error` guard in
+        // Result unification). The table and the arms legitimately spell it either way, so
+        // canonicalise error-position `Error` → `String` before comparing; the OK type must match
+        // exactly.
+        fn norm(t: &TypeNode) -> TypeNode {
+            match t {
+                TypeNode::Result(ok, err) => {
+                    let e = if **err == TypeNode::Error { TypeNode::String } else { (**err).clone() };
+                    TypeNode::Result(Box::new((**ok).clone()), Box::new(e))
+                }
+                other => other.clone(),
+            }
+        }
+        let mut asserted = 0usize;
+        let mut skipped: Vec<&str> = Vec::new();
+        for name in varg_ast::builtins::known_builtin_names() {
+            let expected = varg_ast::builtins::builtin_return_type(name)
+                .expect("known_builtin_names entry must resolve");
+            // Probe increasing arities; take the first that the typechecker accepts.
+            let mut resolved: Option<TypeNode> = None;
+            for argc in 0..=4 {
+                let mut checker = TypeChecker::new();
+                checker.in_unsafe_block = true; // bypass OCAP for fallible builtins (fs_read, exec, …)
+                let args: Vec<Expression> = (0..argc)
+                    .map(|_| Expression::String("x".to_string()))
+                    .collect();
+                let expr = Expression::MethodCall {
+                    caller: Box::new(Expression::Identifier("self".to_string())),
+                    method_name: name.to_string(),
+                    args,
+                };
+                if let Ok(ty) = checker.infer_expression_type(&expr) {
+                    resolved = Some(ty);
+                    break;
+                }
+            }
+            match resolved {
+                Some(ty) => {
+                    assert_eq!(
+                        norm(&ty), norm(&expected),
+                        "builtin `{}`: typechecker inferred {:?} but the signature table says {:?} \
+                         — the two drifted; update whichever is wrong",
+                        name, ty, expected
+                    );
+                    asserted += 1;
+                }
+                None => skipped.push(name),
+            }
+        }
+        // Guardrail: the vast majority must be reachable. If this trips, the harness (not the
+        // compiler) likely regressed — investigate before loosening.
+        assert!(
+            asserted >= 60,
+            "expected to lock ≥60 builtins against the table, only locked {} (skipped: {:?})",
+            asserted, skipped
+        );
+    }
 }
