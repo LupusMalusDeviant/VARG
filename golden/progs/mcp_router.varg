@@ -1,0 +1,13 @@
+agent Router {
+    public void Run() {
+        var srv = mcp_server_new("router", "1.0");
+        mcp_server_register(srv, "echo", "echoes input");
+        mcp_server_register(srv, "ping", "returns pong");
+        print(mcp_server_tool_count(srv));
+        var removed = mcp_server_remove_tool(srv, "echo");
+        print(removed);
+        print(mcp_server_has_tool(srv, "echo"));
+        print(mcp_server_has_tool(srv, "ping"));
+        print(mcp_server_tool_count(srv));
+    }
+}

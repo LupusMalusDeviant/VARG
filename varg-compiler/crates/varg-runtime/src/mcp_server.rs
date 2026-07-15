@@ -85,6 +85,45 @@ pub fn __varg_mcp_server_tool_count(server: &McpServerHandle) -> i64 {
     server.lock().unwrap_or_else(|e| e.into_inner()).tools.len() as i64
 }
 
+/// Remove a tool by name at runtime (dynamic hot-unplug). Returns `true` if a tool was removed.
+/// After this, the tool no longer appears in `tools/list` and calls to it are rejected — the
+/// building block for a router MCP that swaps child capabilities on and off.
+pub fn __varg_mcp_server_remove_tool(server: &McpServerHandle, name: &str) -> bool {
+    let mut s = server.lock().unwrap_or_else(|e| e.into_inner());
+    let before = s.tools.len();
+    s.tools.retain(|t| t.name != name);
+    s.tools.len() != before
+}
+
+/// Whether a tool with this name is currently registered.
+pub fn __varg_mcp_server_has_tool(server: &McpServerHandle, name: &str) -> bool {
+    server.lock().unwrap_or_else(|e| e.into_inner()).tools.iter().any(|t| t.name == name)
+}
+
+#[cfg(test)]
+mod remove_tests {
+    use super::*;
+
+    #[test]
+    fn remove_tool_hot_unplugs() {
+        let srv = __varg_mcp_server_new("router", "1.0");
+        __varg_mcp_server_register(&srv, "echo", "echoes", Arc::new(|a: &str| a.to_string()));
+        __varg_mcp_server_register(&srv, "ping", "pong", Arc::new(|_: &str| "pong".to_string()));
+        assert_eq!(__varg_mcp_server_tool_count(&srv), 2);
+        assert!(__varg_mcp_server_has_tool(&srv, "echo"));
+        // Remove one → count drops, tool gone, second remove is a no-op.
+        assert!(__varg_mcp_server_remove_tool(&srv, "echo"));
+        assert!(!__varg_mcp_server_has_tool(&srv, "echo"));
+        assert_eq!(__varg_mcp_server_tool_count(&srv), 1);
+        assert!(!__varg_mcp_server_remove_tool(&srv, "echo"));
+        // tools/list no longer advertises the removed tool.
+        let s = srv.lock().unwrap();
+        let list = generate_tools_list(&s);
+        assert!(!list.contains("echo"));
+        assert!(list.contains("ping"));
+    }
+}
+
 /// Generate the JSON schema for tools/list response
 fn generate_tools_list(server: &McpServer) -> String {
     let tools: Vec<String> = server.tools.iter().map(|tool| {

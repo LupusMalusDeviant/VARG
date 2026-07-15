@@ -142,10 +142,27 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
    - **End-to-end verifiziert:** `total_area(Square(3.0))` (generische Funktion über einen per
      Konstruktor gebauten, Contract-implementierenden Agenten) kompiliert & läuft → `9`. Als
      Golden-Programme `generics.varg` + `construction.varg` dauerhaft abgesichert.
-   **Verbliebene, bewusst separate Lücken:** DI-Konstruktoren mit Contract-typisierten Feldern
-   (`MyService(db)`) — dieselbe Default-Init-Grenze wie die auto-`new()`; und Methoden-Namen, die
-   Builtins überdecken (`get`/`contains` als User-Methode) werden im Typechecker noch vom Builtin-Arm
-   geschluckt (Codegen priorisiert User-Methoden bereits).
+   **Stufe 8 (Baubarkeit der Zielprojekte Egregor/Edda/MCP-MCP — Blocker geschlossen):**
+   - ✅ **DI-Konstruktoren mit Contract-Feldern** (`Service(ILog l) { self.logger = l; }`): Konstruktor-
+     Bodies aus reinen `self.field = expr`-Zuweisungen werden als **Struct-Literal** emittiert (keine
+     Default-Init nötig → Contract-`Box<dyn>`-Felder funktionieren); Call-Site **boxt** konkrete Agenten
+     in den Trait-Objekt-Parameter. End-to-end: `Service(ConsoleLog())` → läuft. Das ist das
+     Kompositions-/Testmuster (CLAUDE.md) für alle drei Zielprojekte.
+   - ✅ **User-Methoden vor Builtins** (Typechecker): `agent.get()`/`add()`/`contains()` lösen zur
+     User-Methode auf, statt vom gleichnamigen Map/Collection-Builtin-Arm geschluckt zu werden
+     (generisch-gebundene Methoden weiterhin über den Bound-Enforcement-Pfad). Codegen priorisierte
+     bereits.
+   - ✅ **MCP-Server dynamisches Tool-Abschalten**: `mcp_server_remove_tool(srv, name) -> bool` +
+     `mcp_server_has_tool` (Runtime + Typechecker + Codegen). `tools/list`/Calls bedienen entfernte
+     Tools nicht mehr → Kern-Baustein für einen Router-MCP, der Kind-Capabilities zur Laufzeit
+     an/abschaltet. Golden: `mcp_router.varg`.
+   - **Baubarkeits-Fazit:** Egregor (Agent-Loop + LLM + MCP-Client + 3-Lagen-Memory/KG/Vector) und
+     Edda (KG/Vector/RAG) waren schon durch bestehende Golden-Programme (`agent_memory`,
+     `knowledge_graph`, `vector_store`) abgedeckt; es fehlte nur **Komposition (DI)** und **MCP-Tool-
+     Hotswap** — beide jetzt zu. Golden-Netz: 17 Programme.
+   **Bewusst offen (Skalierung/Komfort, keine Baubarkeits-Blocker):** serverseitiges WebSocket (SSE-Push
+   deckt UI ab), echter Registry-HTTP-Download, Produktions-ANN im Vector-Store (aktuell Cosine+LSH),
+   Workflow-Runner (Orchestrierung via `orchestrator_run_all`/Pipelines), LLM-Token-Streaming.
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

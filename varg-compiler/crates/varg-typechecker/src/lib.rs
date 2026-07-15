@@ -321,7 +321,7 @@ impl TypeChecker {
             "sse_open", "sse_push", "sse_shutdown",
             "memory_open", "memory_set", "memory_get", "memory_store", "memory_recall", "memory_add_fact", "memory_query_facts", "memory_episode_count", "memory_clear_working",
             "trace_start", "trace_span", "trace_end", "trace_error", "trace_event", "trace_set_attr", "trace_span_count", "trace_export",
-            "mcp_server_new", "mcp_server_register", "mcp_server_tool_count", "mcp_server_handle_request", "mcp_server_run",
+            "mcp_server_new", "mcp_server_register", "mcp_server_tool_count", "mcp_server_remove_tool", "mcp_server_has_tool", "mcp_server_handle_request", "mcp_server_run",
             "event_bus_new", "event_emit", "event_count", "event_on",
             "http_response", "http_response_json",
             "pipeline_new", "pipeline_add_step", "pipeline_run", "pipeline_step_count",
@@ -1409,6 +1409,24 @@ impl TypeChecker {
                     }
                     return Ok(TypeNode::Custom(method_name.to_string()));
                 }
+                // User methods on a known type take precedence over builtins of the same name — an
+                // agent/struct method `get()`/`add()`/`contains()` must not be swallowed by the
+                // map/collection builtin arms. Mirrors the codegen (user_impl_methods priority).
+                // Skipped for methods that carry generic trait bounds: those must fall through to
+                // the full resolution path so call-site bound enforcement still runs.
+                if let Ok(TypeNode::Custom(tn)) = self.infer_expression_type(caller) {
+                    let has_bounds = self.method_constraints.get(&tn)
+                        .and_then(|m| m.get(method_name))
+                        .map_or(false, |(_, cs)| !cs.is_empty());
+                    if !has_bounds {
+                        if let Some(sig) = self.method_signatures.get(&tn).and_then(|m| m.get(method_name)).cloned() {
+                            // Resolve to the user method's return type. Arity/default-param checking
+                            // is left to the general path (methods may have default params, so a
+                            // strict len comparison here would reject valid shorter calls).
+                            return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
+                        }
+                    }
+                }
                 if method_name == "fetch" {
                     self.check_ocap(&CapabilityType::NetworkAccess, "fetch")?;
                     if args.len() < 1 || args.len() > 4 {
@@ -2452,6 +2470,13 @@ impl TypeChecker {
                 } else if method_name == "mcp_server_tool_count" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (server)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Int)
+                } else if method_name == "mcp_server_remove_tool" {
+                    // Dynamic hot-unplug: remove an exposed tool by name. Returns whether it existed.
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (server, tool_name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
+                } else if method_name == "mcp_server_has_tool" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (server, tool_name)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Bool)
                 } else if method_name == "mcp_server_handle_request" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (server, request_json)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
@@ -9740,6 +9765,23 @@ mod tests {
             vec![Expression::Float(3.0)],
         );
         assert!(c.infer_expression_type(&expr).is_err());
+    }
+
+    // ===== User methods take precedence over same-named builtins =====
+
+    #[test]
+    fn user_method_shadows_builtin_get() {
+        let mut c = TypeChecker::new();
+        // An agent Box with a 0-arg get() returning int.
+        let mut methods = HashMap::new();
+        methods.insert("get".to_string(), MethodSignature { return_ty: Some(TypeNode::Int), args: vec![] });
+        c.method_signatures.insert("Box".to_string(), methods);
+        c.agent_fields.insert("Box".to_string(), vec![]);
+        c.env.insert("b".to_string(), TypeNode::Custom("Box".to_string()));
+        // b.get() must resolve to the user method (int), NOT the map `get` builtin (which demands
+        // 2 args and would otherwise raise an arity error).
+        let expr = method_call(Expression::Identifier("b".to_string()), "get", vec![]);
+        assert_eq!(c.infer_expression_type(&expr).unwrap(), TypeNode::Int);
     }
 
     // ===== Generic body method resolution =====

@@ -1,0 +1,19 @@
+contract ILog { void log(string m); }
+
+agent ConsoleLog implements ILog {
+    public void log(string m) { print(m); }
+}
+
+agent Service {
+    ILog logger;
+    public Service(ILog l) { self.logger = l; }
+    public void run() { self.logger.log("service running"); }
+}
+
+agent Main {
+    public void Run() {
+        var log = ConsoleLog();
+        var svc = Service(log);
+        svc.run();
+    }
+}

@@ -547,31 +547,45 @@ impl RustGenerator {
                     // in the body stays valid without any renaming. Only when the fields are
                     // default-constructible (same guard as the auto-new()); DI/contract-field
                     // constructors remain out of scope.
-                    if method.name == a.name && !has_contract_fields {
+                    if method.name == a.name {
                         let arg_sig: Vec<String> = method.args.iter()
                             .map(|arg| format!("{}: {}", esc_ident(&arg.name), self.gen_type(&arg.ty)))
                             .collect();
-                        let arg_names: Vec<String> = method.args.iter().map(|arg| esc_ident(&arg.name)).collect();
-                        let init_name = format!("__ctor_{}", a.name);
-                        out.push_str(&format!("    pub fn {}({}) -> Self {{\n", a.name, arg_sig.join(", ")));
-                        out.push_str(&format!("        let mut __obj = {} {{\n", a.name));
-                        for field in &a.fields {
-                            out.push_str(&format!("            {}: {},\n", field.name, self.gen_type_default(&field.ty)));
+                        // Preferred form: a constructor whose body is only `self.field = expr`
+                        // assignments becomes a direct struct literal. This is the only form that
+                        // works for contract-typed (DI, `Box<dyn>`) fields, since those have no
+                        // default to seed a default-init with.
+                        if let Some(lit) = self.try_ctor_struct_literal(a, method) {
+                            out.push_str(&format!("    pub fn {}({}) -> Self {{\n        {}\n    }}\n",
+                                a.name, arg_sig.join(", "), lit));
+                            continue;
                         }
-                        out.push_str("        };\n");
-                        out.push_str(&format!("        __obj.{}({});\n", init_name, arg_names.join(", ")));
-                        out.push_str("        __obj\n    }\n");
-                        let init_args = if method.args.is_empty() {
-                            "&mut self".to_string()
-                        } else {
-                            format!("&mut self, {}", arg_sig.join(", "))
-                        };
-                        out.push_str(&format!("    fn {}({}) {{\n", init_name, init_args));
-                        self.set_context(format!("agent {}.{} (constructor)", a.name, method.name));
-                        if let Some(body) = &method.body {
-                            out.push_str(&self.gen_block(body, 2));
+                        // Fallback for a non-trivial body: default-init the fields, then run the
+                        // body through a private `&mut self` initializer (so `self.x` stays valid).
+                        // Only sound when fields are default-constructible.
+                        if !has_contract_fields {
+                            let arg_names: Vec<String> = method.args.iter().map(|arg| esc_ident(&arg.name)).collect();
+                            let init_name = format!("__ctor_{}", a.name);
+                            out.push_str(&format!("    pub fn {}({}) -> Self {{\n", a.name, arg_sig.join(", ")));
+                            out.push_str(&format!("        let mut __obj = {} {{\n", a.name));
+                            for field in &a.fields {
+                                out.push_str(&format!("            {}: {},\n", field.name, self.gen_type_default(&field.ty)));
+                            }
+                            out.push_str("        };\n");
+                            out.push_str(&format!("        __obj.{}({});\n", init_name, arg_names.join(", ")));
+                            out.push_str("        __obj\n    }\n");
+                            let init_args = if method.args.is_empty() {
+                                "&mut self".to_string()
+                            } else {
+                                format!("&mut self, {}", arg_sig.join(", "))
+                            };
+                            out.push_str(&format!("    fn {}({}) {{\n", init_name, init_args));
+                            self.set_context(format!("agent {}.{} (constructor)", a.name, method.name));
+                            if let Some(body) = &method.body {
+                                out.push_str(&self.gen_block(body, 2));
+                            }
+                            out.push_str("    }\n");
                         }
-                        out.push_str("    }\n");
                         continue;
                     }
                     // on_error method: private handler — use declared parameter names
@@ -848,6 +862,46 @@ impl RustGenerator {
         );
         out.push_str("        }\n    }\n");
         out
+    }
+
+    /// If a constructor's body is nothing but `self.field = expr` assignments (with no `self`
+    /// reference on the right-hand side), synthesize the equivalent struct literal
+    /// `Name { field: expr, ... }`. Returns None for any other body shape. This is what lets a DI
+    /// constructor set contract-typed (`Box<dyn>`) fields, which cannot be default-initialized.
+    fn try_ctor_struct_literal(&mut self, a: &AgentDef, method: &MethodDecl) -> Option<String> {
+        let body = method.body.as_ref()?;
+        // Collect self.field = expr assignments; bail on anything else.
+        let mut assigned: HashMap<String, String> = HashMap::new();
+        for stmt in &body.statements {
+            match stmt {
+                Statement::PropertyAssign { target, property, value } => {
+                    if !matches!(target, Expression::Identifier(n) if n == "self") {
+                        return None;
+                    }
+                    let rhs = self.gen_expression(value);
+                    // A struct literal can't reference sibling fields via `self`; bail if it tries.
+                    if rhs.contains("self") {
+                        return None;
+                    }
+                    assigned.insert(property.clone(), rhs);
+                }
+                _ => return None,
+            }
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for field in &a.fields {
+            if let Some(rhs) = assigned.get(&field.name) {
+                parts.push(format!("{}: {}", field.name, rhs));
+            } else {
+                // Field not set by the constructor: default it. Contract-typed fields have no
+                // default, so a constructor that leaves one unset can't be synthesized this way.
+                if matches!(&field.ty, TypeNode::Custom(n) if self.known_contract_methods.contains_key(n)) {
+                    return None;
+                }
+                parts.push(format!("{}: {}", field.name, self.gen_type_default(&field.ty)));
+            }
+        }
+        Some(format!("{} {{ {} }}", a.name, parts.join(", ")))
     }
 
     fn gen_method_signature(&self, method: &MethodDecl, force_no_vis: bool) -> String {
@@ -1915,7 +1969,22 @@ impl RustGenerator {
                     if let Some(agent_def) = self.known_agents.get(method_name.as_str()) {
                         let has_ctor = agent_def.methods.iter().any(|m| m.name == *method_name);
                         let has_fields = !agent_def.fields.is_empty();
-                        let cloned: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                        // Which constructor params are contract-typed (Box<dyn>)? Concrete agents
+                        // passed to those must be boxed into the trait object (DI).
+                        let contract_params: Vec<bool> = agent_def.methods.iter()
+                            .find(|m| m.name == *method_name)
+                            .map(|c| c.args.iter().map(|p| {
+                                matches!(&p.ty, TypeNode::Custom(n) if self.known_contract_methods.contains_key(n))
+                            }).collect())
+                            .unwrap_or_default();
+                        let cloned: Vec<String> = args.iter().enumerate().map(|(i, a)| {
+                            let raw = self.gen_cloned_arg(a);
+                            if contract_params.get(i).copied().unwrap_or(false) {
+                                format!("Box::new({})", raw)
+                            } else {
+                                raw
+                            }
+                        }).collect();
                         if has_ctor {
                             return format!("{}::{}({})", method_name, method_name, cloned.join(", "));
                         } else if has_fields {
@@ -2879,6 +2948,10 @@ impl RustGenerator {
                     }
                 } else if method_name == "mcp_server_tool_count" {
                     format!("varg_runtime::mcp_server::__varg_mcp_server_tool_count(&{})", arg_strs[0])
+                } else if method_name == "mcp_server_remove_tool" {
+                    format!("varg_runtime::mcp_server::__varg_mcp_server_remove_tool(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "mcp_server_has_tool" {
+                    format!("varg_runtime::mcp_server::__varg_mcp_server_has_tool(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "mcp_server_handle_request" {
                     format!("varg_runtime::mcp_server::__varg_mcp_server_handle_request(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "mcp_server_run" {
