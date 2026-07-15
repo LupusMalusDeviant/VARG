@@ -402,8 +402,21 @@ impl RustGenerator {
                         body.push_str("    Ok(())\n");
                     }
                 }
-                let type_param_str = if f.type_params.is_empty() { String::new() }
-                    else { format!("<{}>", f.type_params.join(", ")) };
+                // Emit inline trait bounds (`<T: IShape + Clone>`) so rustc enforces the same
+                // constraints the parser captured — brings standalone functions to parity with
+                // methods (which already emit their bounds).
+                let type_param_str = if f.type_params.is_empty() {
+                    String::new()
+                } else {
+                    let parts: Vec<String> = f.type_params.iter().map(|tp| {
+                        let bounds: Vec<&str> = f.constraints.iter()
+                            .filter(|c| &c.type_param == tp)
+                            .flat_map(|c| c.bounds.iter().map(|b| b.as_str()))
+                            .collect();
+                        if bounds.is_empty() { tp.clone() } else { format!("{}: {}", tp, bounds.join(" + ")) }
+                    }).collect();
+                    format!("<{}>", parts.join(", "))
+                };
                 format!("fn {}{}({}){} {{\n{}}}\n", f.name, type_param_str, params.join(", "), ret, body)
             },
             Item::TypeAlias { name, target } => {
@@ -5304,7 +5317,7 @@ mod tests {
         let mut gen = RustGenerator::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "add".to_string(),
                 is_public: false,
                 params: vec![
@@ -5332,7 +5345,7 @@ mod tests {
         let mut gen = RustGenerator::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "double".to_string(),
                 is_public: false,
                 params: vec![
@@ -5940,7 +5953,7 @@ mod tests {
                     implements: vec![],
                     annotations: vec![],
                 }),
-                Item::Function(FunctionDef { type_params: vec![],
+                Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                     name: "main".to_string(),
                     is_public: true,
                     params: vec![],
@@ -6552,7 +6565,7 @@ mod tests {
         // Standalone function: fibonacci with while loop
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "fibonacci".to_string(),
                 is_public: false,
                 params: vec![FieldDecl { name: "n".to_string(), ty: TypeNode::Int, default_value: None }],
@@ -7308,7 +7321,7 @@ mod tests {
     fn test_function_with_try_propagate_gets_result_return() {
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "load_config".to_string(),
                 is_public: false,
                 params: vec![FieldDecl { name: "path".to_string(), ty: TypeNode::String, default_value: None }],
@@ -7336,7 +7349,7 @@ mod tests {
     fn test_function_without_try_propagate_normal_return() {
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "add".to_string(),
                 is_public: false,
                 params: vec![
@@ -8800,10 +8813,57 @@ mod tests {
         assert!(code.contains("__varg_checkpoint_open"), "checkpoint open: {code}");
     }
 
+    // ===== Generics: standalone functions must emit their trait bounds (parity with methods) =====
+    #[test]
+    fn test_codegen_generic_function_emits_bounds() {
+        let f = Item::Function(FunctionDef {
+            name: "describe".to_string(),
+            is_public: false,
+            type_params: vec!["T".to_string()],
+            constraints: vec![GenericConstraint {
+                type_param: "T".to_string(),
+                bounds: vec!["IShape".to_string(), "Clone".to_string()],
+            }],
+            params: vec![FieldDecl {
+                name: "shape".to_string(),
+                ty: TypeNode::Custom("T".to_string()),
+                default_value: None,
+            }],
+            return_ty: Some(TypeNode::Void),
+            body: Block { statements: vec![] },
+        });
+        let program = Program { no_std: false, docs: Default::default(), items: vec![f] };
+        let code = RustGenerator::new().generate(&program);
+        assert!(
+            code.contains("fn describe<T: IShape + Clone>"),
+            "generic function must emit its bounds, got: {code}"
+        );
+    }
+
+    #[test]
+    fn test_codegen_generic_function_without_bounds_stays_bare() {
+        let f = Item::Function(FunctionDef {
+            name: "identity".to_string(),
+            is_public: false,
+            type_params: vec!["T".to_string()],
+            constraints: vec![],
+            params: vec![FieldDecl {
+                name: "x".to_string(),
+                ty: TypeNode::Custom("T".to_string()),
+                default_value: None,
+            }],
+            return_ty: Some(TypeNode::Custom("T".to_string())),
+            body: Block { statements: vec![Statement::Return(Some(Expression::Identifier("x".to_string())))] },
+        });
+        let program = Program { no_std: false, docs: Default::default(), items: vec![f] };
+        let code = RustGenerator::new().generate(&program);
+        assert!(code.contains("fn identity<T>"), "unbounded generic stays bare, got: {code}");
+    }
+
     // ===== Regression: Issue #6 — user-defined fn named `add` must not become HashSet::insert =====
     #[test]
     fn test_codegen_user_fn_add_not_rewritten_as_hashset_insert() {
-        let add_fn = Item::Function(FunctionDef { type_params: vec![],
+        let add_fn = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "add".to_string(),
             is_public: false,
             params: vec![
@@ -8820,7 +8880,7 @@ mod tests {
             ]},
         });
         // Call add(3, 4) as a bare function — parser emits MethodCall{caller:self, method:"add"}
-        let main_fn = Item::Function(FunctionDef { type_params: vec![],
+        let main_fn = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "main".to_string(),
             is_public: false,
             params: vec![],
@@ -8854,7 +8914,7 @@ mod tests {
             ],
         });
         // Expression: Color.Red  →  PropertyAccess{caller: Identifier("Color"), property: "Red"}
-        let fn_item = Item::Function(FunctionDef { type_params: vec![],
+        let fn_item = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "get_red".to_string(),
             is_public: false,
             params: vec![],
@@ -8877,7 +8937,7 @@ mod tests {
     #[test]
     fn test_codegen_named_args_reordered_to_param_order() {
         // add(b: 4, a: 3) should generate add(3, 4) — a before b per declaration
-        let fn_def = Item::Function(FunctionDef { type_params: vec![],
+        let fn_def = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "add".to_string(),
             is_public: false,
             params: vec![
@@ -8893,7 +8953,7 @@ mod tests {
                 })),
             ]},
         });
-        let main_fn = Item::Function(FunctionDef { type_params: vec![],
+        let main_fn = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "main".to_string(),
             is_public: true,
             params: vec![],
@@ -8927,7 +8987,7 @@ mod tests {
     #[test]
     fn test_codegen_named_args_same_order_is_noop() {
         // add(a: 10, b: 20) — same order as declaration, should just work
-        let fn_def = Item::Function(FunctionDef { type_params: vec![],
+        let fn_def = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "mul".to_string(),
             is_public: false,
             params: vec![
@@ -8943,7 +9003,7 @@ mod tests {
                 })),
             ]},
         });
-        let main_fn = Item::Function(FunctionDef { type_params: vec![],
+        let main_fn = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "main".to_string(),
             is_public: true,
             params: vec![],
@@ -8975,7 +9035,7 @@ mod tests {
     // ===== Regression: Issue #8 — BitOr operator emits | =====
     #[test]
     fn test_codegen_bitor_operator_emits_pipe() {
-        let fn_item = Item::Function(FunctionDef { type_params: vec![],
+        let fn_item = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "bitmask".to_string(),
             is_public: false,
             params: vec![

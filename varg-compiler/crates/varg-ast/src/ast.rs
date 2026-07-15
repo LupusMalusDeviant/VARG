@@ -60,6 +60,9 @@ pub struct FunctionDef {
     pub name: String,
     pub is_public: bool,
     pub type_params: Vec<String>,
+    /// Plan 39/47: generic trait bounds (`fn max<T: Comparable>` / `where T: …`). Parsed for
+    /// functions just like for methods; emitted by the codegen so rustc sees the same bound.
+    pub constraints: Vec<GenericConstraint>,
     pub params: Vec<FieldDecl>,
     pub return_ty: Option<TypeNode>,
     pub body: Block,

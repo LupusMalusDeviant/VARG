@@ -736,18 +736,21 @@ impl Parser {
                 let name = self.parse_identifier()?;
                 // Optional generic type parameters: fn foo<T, U>(...) or fn foo<T: Display>(...)
                 let mut type_params = Vec::new();
+                let mut constraints: Vec<GenericConstraint> = Vec::new();
                 if self.peek() == Some(&Token::LessThan) {
                     self.advance(); // consume <
                     while self.peek() != Some(&Token::GreaterThan) && self.peek().is_some() {
                         let tp = self.parse_identifier()?;
-                        // Skip optional trait bounds: T: Display + Clone
+                        // Optional inline trait bounds: T: Display + Clone — captured (previously
+                        // discarded) so the codegen can re-emit them and rustc enforces the same.
                         if self.peek() == Some(&Token::Colon) {
                             self.advance();
-                            self.parse_identifier()?; // bound name
+                            let mut bounds = vec![self.parse_identifier()?];
                             while self.peek() == Some(&Token::Plus) {
                                 self.advance();
-                                self.parse_identifier()?;
+                                bounds.push(self.parse_identifier()?);
                             }
+                            constraints.push(GenericConstraint { type_param: tp.clone(), bounds });
                         }
                         type_params.push(tp);
                         if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
@@ -774,7 +777,7 @@ impl Parser {
                     Some(self.parse_type()?)
                 } else { None };
                 let body = self.parse_block()?;
-                Ok(Item::Function(FunctionDef { name, is_public, type_params, params, return_ty, body }))
+                Ok(Item::Function(FunctionDef { name, is_public, type_params, constraints, params, return_ty, body }))
             },
             Some(t) => Err(ParseError::UnexpectedToken {
                 expected: "Agent, Contract, Struct, Enum, Type, Prompt, or fn".to_string(),

@@ -117,8 +117,21 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      `Result<String,Error>` getaggt, ihre Runtime-Fns liefern aber blankes `String` → `resolve_type`
      hätte die Ergebnisse fehlbehandelt. Tabelle auf `String` korrigiert, `known_builtin_names()`
      ergänzt (Test deckt künftige Einträge automatisch ab).
-   **Offen (nächste Stufen):** receiver-getypter Method-Dispatch; echte Generics-Bounds-Emission
-   (`<T: Display>`).
+   **Stufe 6 (Receiver-Dispatch + Generics-Bounds):**
+   - ✅ **Receiver-getypter Method-Dispatch (T3)** — String/Collection-Builtins (`len`, `to_upper`,
+     `split`, `push`, …) auf einem skalaren Empfänger (`n.len()` mit int) werden jetzt im
+     Typechecker mit exaktem Source-Span abgelehnt, statt als rustc-Fehler zu leaken. Konservativ:
+     feuert nur bei konkretem Nicht-`self`-Empfänger mit definitem Skalar-Typ; `to_string` bleibt
+     erlaubt. Keine False-Positives (volle Suite + Golden + 11 Beispiele grün).
+   - ✅ **Generics-Bounds-Emission** — der `fn`-Parser verwarf Trait-Bounds (`fn max<T: Comparable>`);
+     jetzt werden sie gespeichert (`FunctionDef.constraints`) und vom Codegen emittiert, sodass rustc
+     dieselbe Schranke durchsetzt (Parität mit Methoden, die das schon taten). End-to-end verifiziert:
+     `fn label<T: IShape>` kompiliert & läuft mit erhaltener Schranke.
+   **Offen (größere, eigenständige Features — beim Testen aufgedeckt):** generische **Body**-Methoden-
+   auflösung (`shape.area()` auf `T: IShape` wird noch als `Void` inferiert statt gegen den Contract
+   aufgelöst) und **Agent-Konstruktor-Syntax** (`Circle(2.0)` gilt als „unknown method"). Erst diese
+   beiden schließen die generische Funktions-Pipeline komplett; die Bounds-Emission ist die
+   notwendige Codegen-Voraussetzung dafür.
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

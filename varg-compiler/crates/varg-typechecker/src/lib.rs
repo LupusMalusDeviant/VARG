@@ -5570,7 +5570,7 @@ mod tests {
         let mut checker = TypeChecker::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "add".to_string(),
                 is_public: false,
                 params: vec![
@@ -5594,7 +5594,7 @@ mod tests {
         let mut checker = TypeChecker::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "bad".to_string(),
                 is_public: false,
                 params: vec![],
@@ -6186,7 +6186,7 @@ mod tests {
     #[test]
     fn test_return_path_simple_return() {
         let mut checker = TypeChecker::new();
-        let func = Item::Function(FunctionDef { type_params: vec![],
+        let func = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "get_value".to_string(),
             is_public: true,
             params: vec![],
@@ -6201,7 +6201,7 @@ mod tests {
     #[test]
     fn test_return_path_missing_return() {
         let mut checker = TypeChecker::new();
-        let func = Item::Function(FunctionDef { type_params: vec![],
+        let func = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "get_value".to_string(),
             is_public: true,
             params: vec![],
@@ -6219,7 +6219,7 @@ mod tests {
     fn test_return_path_if_else_both() {
         let mut checker = TypeChecker::new();
         checker.env.insert("x".to_string(), TypeNode::Bool);
-        let func = Item::Function(FunctionDef { type_params: vec![],
+        let func = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "pick".to_string(),
             is_public: true,
             params: vec![],
@@ -6242,7 +6242,7 @@ mod tests {
     #[test]
     fn test_return_path_if_only_no_else() {
         let mut checker = TypeChecker::new();
-        let func = Item::Function(FunctionDef { type_params: vec![],
+        let func = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "maybe".to_string(),
             is_public: true,
             params: vec![],
@@ -6264,7 +6264,7 @@ mod tests {
     #[test]
     fn test_return_path_void_no_return_ok() {
         let mut checker = TypeChecker::new();
-        let func = Item::Function(FunctionDef { type_params: vec![],
+        let func = Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
             name: "do_stuff".to_string(),
             is_public: true,
             params: vec![],
@@ -8062,7 +8062,7 @@ mod tests {
         });
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "main_fn".to_string(),
                 is_public: false,
                 params: vec![],
@@ -8091,7 +8091,7 @@ mod tests {
         let mut checker = TypeChecker::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
-            items: vec![Item::Function(FunctionDef { type_params: vec![],
+            items: vec![Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                 name: "caller_fn".to_string(),
                 is_public: false,
                 params: vec![],
@@ -9213,7 +9213,7 @@ mod tests {
                         EnumVariant { name: "Blue".to_string(), fields: vec![] },
                     ],
                 }),
-                Item::Function(FunctionDef { type_params: vec![],
+                Item::Function(FunctionDef { type_params: vec![], constraints: vec![],
                     name: "get_red".to_string(),
                     is_public: false,
                     params: vec![],
