@@ -166,6 +166,13 @@ pub struct RustGenerator {
     trace_method: bool,
     trace_agent_name: String,
     trace_method_name: String,
+    /// (a) rustc→.varg mapping: the Varg construct currently being emitted (e.g. "fn foo",
+    /// "agent Server.handle"). Emitted as a `// @varg-ctx` marker at each body's top so vargc can
+    /// translate a generated-Rust error line back to the Varg function it came from.
+    current_context: String,
+    /// Set right before a function/method body is generated; consumed once by gen_block to emit
+    /// the context marker at the body top (not on every nested block).
+    pending_ctx_marker: bool,
 }
 
 impl RustGenerator {
@@ -194,7 +201,16 @@ impl RustGenerator {
             trace_method: false,
             trace_agent_name: String::new(),
             trace_method_name: String::new(),
+            current_context: String::new(),
+            pending_ctx_marker: false,
         }
+    }
+
+    /// (a) Arm the context marker for the next `gen_block` (the function/method body). `ctx` is a
+    /// short human label like "fn foo" or "agent Server.handle".
+    fn set_context(&mut self, ctx: impl Into<String>) {
+        self.current_context = ctx.into();
+        self.pending_ctx_marker = true;
     }
 
     /// Wave 13: Set the current source file for source map comments
@@ -375,6 +391,7 @@ impl RustGenerator {
                         func_body.statements[last_idx] = Statement::Return(Some(expr));
                     }
                 }
+                self.set_context(format!("fn {}", f.name));
                 let mut body = self.gen_block(&func_body, 1);
                 self.in_result_function = prev;
                 // Wave 14: If uses_try, wrap implicit return with Ok(())
@@ -430,6 +447,7 @@ impl RustGenerator {
                     if let Some(ref body) = method.body {
                         // Wave 13: Contract default implementation
                         out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, true)));
+                        self.set_context(format!("contract {}.{}", c.name, method.name));
                         let body_code = self.gen_block(body, 2);
                         out.push_str(&body_code);
                         out.push_str("    }\n");
@@ -507,6 +525,7 @@ impl RustGenerator {
                     if method.name == "on_error" && has_on_error {
                         let sig = self.gen_method_signature(method, true); // force_no_vis=true
                         out.push_str(&format!("    {} {{\n", sig));
+                        self.set_context(format!("agent {}.{}", a.name, method.name));
                         if let Some(body) = &method.body {
                             out.push_str(&self.gen_block(body, 2));
                         }
@@ -598,6 +617,7 @@ impl RustGenerator {
                         out.push_str(&format!("    {} {{\n", impl_sig));
                         let prev = self.in_result_function;
                         self.in_result_function = true;
+                        self.set_context(format!("agent {}.{}", a.name, method.name));
                         if let Some(body) = &method.body {
                             out.push_str(&self.gen_block(body, 2));
                         }
@@ -657,6 +677,7 @@ impl RustGenerator {
                         }
                         let prev = self.in_result_function;
                         self.in_result_function = uses_try;
+                        self.set_context(format!("agent {}.{}", a.name, method.name));
                         if let Some(body) = &method.body {
                             out.push_str(&self.gen_block(body, 2));
                         }
@@ -691,6 +712,7 @@ impl RustGenerator {
                     for method in &a.methods {
                         if contract_methods.contains(&method.name) {
                             out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, true)));
+                            self.set_context(format!("agent {}.{} (impl {})", a.name, method.name, contract_name));
                             if let Some(body) = &method.body {
                                 out.push_str(&self.gen_block(body, 2));
                             }
@@ -711,6 +733,7 @@ impl RustGenerator {
                 let mut out = format!("impl{} {} {{\n", tp, type_with_params);
                 for method in methods {
                     out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, false)));
+                    self.set_context(format!("impl {}.{}", type_name, method.name));
                     if let Some(body) = &method.body {
                         out.push_str(&self.gen_block(body, 2));
                     }
@@ -1122,6 +1145,13 @@ impl RustGenerator {
 
         let indent = "    ".repeat(indent_level);
         let mut out = String::new();
+        // (a) Emit the Varg-context marker once at the top of a function/method body, so vargc can
+        // map a generated-Rust error line back to the Varg construct it came from.
+        if self.pending_ctx_marker && self.emit_source_maps {
+            self.pending_ctx_marker = false;
+            let file_prefix = if self.current_file.is_empty() { ".varg".to_string() } else { self.current_file.clone() };
+            out.push_str(&format!("{}// @varg-ctx {} :: {}\n", indent, file_prefix, self.current_context));
+        }
         for stmt in &block.statements {
             // Plan 46: Emit source map comment
             if self.emit_source_maps {

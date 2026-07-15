@@ -108,11 +108,23 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      sodass auch verkettete Mixed-Arithmetik über Variablen trägt (`x = 5 + 2.5; x + 1`).
    - ✅ Nebenfund via Golden-Netz: json_get/int/bool/array ignorierten JSON-Pointer-Pfade
      (`/name`) — jetzt korrekt (`.pointer()` für `/`-Pfade, sonst `.get()`).
-   **Offen (nächste Stufen):** Typechecker adoptiert dieselbe Tabelle (Duplikation retten);
-   receiver-getypter Method-Dispatch; echte Generics-Bounds-Emission (`<T: Display>`).
-2. **rustc-Fehler → .varg-Zeilen rückmappen** — alles, was der Typechecker nicht fängt, leakt als
-   roher rustc-Fehler auf generiertem `src/main.rs:NN`. Die `// .varg:N`-„Source-Maps" sind
-   nominell (falsch nummeriert, wirkungslos). Größtes Nutzer-UX-Loch.
+   **Stufe 5 (Drift-Lock statt Duplikation):**
+   - ✅ **Typechecker an die Tabelle gekoppelt** — statt die ~340 Builtin-Arms (die zusätzlich
+     Arity-/OCAP-Checks tragen und daher nicht durch reine Tabellen-Lookups ersetzbar sind) blind
+     umzuschreiben, treibt ein Cross-Check-Test die *echte* Typechecker-Inferenz für jeden Namen in
+     `builtins.rs` und asserted Gleichheit mit `builtin_return_type`. Divergenz bricht CI. Der Lock
+     fand sofort **zwei echte Latenz-Bugs**: `fetch`/`http_download_base64` waren als
+     `Result<String,Error>` getaggt, ihre Runtime-Fns liefern aber blankes `String` → `resolve_type`
+     hätte die Ergebnisse fehlbehandelt. Tabelle auf `String` korrigiert, `known_builtin_names()`
+     ergänzt (Test deckt künftige Einträge automatisch ab).
+   **Offen (nächste Stufen):** receiver-getypter Method-Dispatch; echte Generics-Bounds-Emission
+   (`<T: Display>`).
+2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
+   an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
+   `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),
+   statt roher Weitergabe. Nebenbei: ein Nicht-Null-**Programm**exit (aus `vargc run`) wird nicht mehr
+   fälschlich als „Compilation failed" gemeldet. Der Happy-Path bleibt unverändert (Live-Ausgabe);
+   nur im Fehlerfall läuft ein schneller, cachender Re-Build zum Einsammeln der Diagnostik.
 3. **Typechecker-Vollständigkeit** — fängt derzeit NICHT: User-Method-Arity, Methoden-Existenz
    auf Werten, Enum-mit-Daten-Konstruktion (`Circle(5)` → falsch als Methodenaufruf), mixed
    int+float-Coercion, Type-Alias-Transparenz, Funktionstypen `fn(int)->int` (Parser),

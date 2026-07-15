@@ -1240,6 +1240,11 @@ fn parse_and_generate_traced(input_path: &str, trace: bool) -> (String, varg_ast
         exit(1);
     }
     let mut generator = RustGenerator::new();
+    // (a) Name the source file so @varg-ctx / source-map markers carry the real .varg basename
+    // (e.g. "orders.varg :: agent …") instead of the bare ".varg" placeholder.
+    if let Some(base) = Path::new(input_path).file_name().and_then(|s| s.to_str()) {
+        generator.set_current_file(base);
+    }
     let source = generator.generate_with_source_map(&merged_ast, &source_for_errors);
     (source, merged_ast)
 }
@@ -1748,8 +1753,29 @@ serde_json = "1.0"
     });
 
     if !status.success() {
-        eprintln!("Compilation failed.");
-        exit(1);
+        // (a) The happy path streams cargo/program output live (unchanged). On failure, do one
+        // fast, capturing `cargo build` to recover the diagnostics as text — cargo replays the
+        // cached errors instantly. This lets us (1) map each generated-Rust error line back to the
+        // Varg construct it came from, and (2) tell a genuine compile error apart from a non-zero
+        // *program* exit (which `cargo run` otherwise mislabels as "Compilation failed").
+        let mut diag = Command::new("cargo");
+        diag.arg("build");
+        if !debug_mode { diag.arg("--release"); }
+        if let Some(ref triple) = effective_triple { diag.arg("--target").arg(triple); }
+        diag.current_dir(&cache_dir);
+        if !is_wasm { diag.env("CARGO_TARGET_DIR", &gtd); }
+        match diag.output() {
+            Ok(o) if !o.status.success() => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                if let Some(map) = translate_cargo_diagnostics(&main_rs_path, &stderr) {
+                    eprint!("\n{}", map);
+                }
+                eprintln!("Compilation failed.");
+                exit(1);
+            }
+            // Re-build is clean → the non-zero status came from the program itself (cargo run).
+            _ => exit(status.code().unwrap_or(1)),
+        }
     }
 
     if is_wasm {
@@ -1818,6 +1844,79 @@ serde_json = "1.0"
             eprintln!("-> Built, but failed to copy {} to current directory.", exe_name);
         }
     }
+}
+
+/// (a) Map rustc/cargo error locations in the generated Rust back to the Varg construct they came
+/// from. The codegen seeds the generated `main.rs` with `// @varg-ctx <file> :: <construct>`
+/// markers at the top of every function/method body; cargo reports errors as `main.rs:LINE:COL`.
+/// For each referenced line we find the nearest marker above it and surface a compact map, so the
+/// user sees "this error is in `agent Server.handle`" instead of an opaque generated-Rust line.
+///
+/// Returns `None` when there is nothing useful to show (no markers, or no `main.rs:` references),
+/// in which case the caller just prints cargo's own output.
+fn translate_cargo_diagnostics(main_rs_path: &Path, cargo_stderr: &str) -> Option<String> {
+    let src = fs::read_to_string(main_rs_path).ok()?;
+    let lines: Vec<&str> = src.lines().collect();
+
+    // Index the context markers: 0-based line → "file :: construct".
+    let mut markers: Vec<(usize, String)> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if let Some(rest) = l.trim_start().strip_prefix("// @varg-ctx ") {
+            markers.push((i, rest.trim().to_string()));
+        }
+    }
+    if markers.is_empty() {
+        return None;
+    }
+
+    // Collect the generated-Rust line numbers cargo pointed at (`main.rs:LINE:COL`), de-duplicated
+    // and in first-seen order, each resolved to its nearest enclosing Varg construct.
+    let mut mapped: Vec<(usize, String)> = Vec::new();
+    for rust_line in find_referenced_rust_lines(cargo_stderr) {
+        if mapped.iter().any(|(l, _)| *l == rust_line) {
+            continue;
+        }
+        // Nearest marker at or above the error line (marker sits on the line above the body).
+        if let Some((_, ctx)) = markers.iter().rev().find(|(ml, _)| *ml + 1 <= rust_line) {
+            mapped.push((rust_line, ctx.clone()));
+        }
+    }
+    if mapped.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    out.push_str("── Varg source map ─ generated Rust → your .varg construct ──────\n");
+    for (line, ctx) in &mapped {
+        out.push_str(&format!("   main.rs:{:<5} →  {}\n", line, ctx));
+    }
+    out.push_str("   (line numbers above index the generated Rust in .vargc_cache/src/main.rs)\n");
+    Some(out)
+}
+
+/// Extract every generated-Rust line number referenced as `main.rs:<line>:` in cargo output.
+/// Regex-free (vargc pulls in no regex crate): scan for the `main.rs:` needle and parse the digits
+/// after the colon. Matches both `src/main.rs:` and `src\main.rs:`.
+fn find_referenced_rust_lines(stderr: &str) -> Vec<usize> {
+    const NEEDLE: &str = "main.rs:";
+    let mut out = Vec::new();
+    let bytes = stderr.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = stderr[from..].find(NEEDLE) {
+        let after = from + rel + NEEDLE.len();
+        let digits: String = bytes[after..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .map(|b| *b as char)
+            .collect();
+        if let Ok(n) = digits.parse::<usize>() {
+            if n > 0 {
+                out.push(n);
+            }
+        }
+        from = after;
+    }
+    out
 }
 
 /// Wave 15: Test runner — finds @[Test] methods in agents and generates a test harness
@@ -2128,5 +2227,55 @@ mod tests {
             assert!(pkg["description"].as_str().is_some(), "package missing 'description'");
             assert!(pkg["url"].as_str().is_some(), "package missing 'url'");
         }
+    }
+
+    // ===== (a) rustc → .varg source mapping =====
+
+    #[test]
+    fn test_find_referenced_rust_lines() {
+        let stderr = "\
+error[E0689]: can't call method `len`
+  --> src\\main.rs:65:27
+error[E0277]: mismatched types
+  --> src/main.rs:12:5
+note: elsewhere at src\\main.rs:65:9
+warning: unrelated other.rs:99";
+        let lines = find_referenced_rust_lines(stderr);
+        // Both slash styles parsed; 65 appears twice (de-dup happens in the caller); other.rs ignored.
+        assert_eq!(lines, vec![65, 12, 65]);
+    }
+
+    #[test]
+    fn test_translate_maps_error_line_to_nearest_context() {
+        // Synthetic generated Rust with two context markers; an error on line 5 must resolve to the
+        // marker above it (line 4), not the earlier one.
+        let gen = "\
+fn main() {
+    // @varg-ctx orders.varg :: fn setup
+    let a = 1;
+    // @varg-ctx orders.varg :: agent Server.handle
+    let b = boom();
+}
+";
+        let dir = std::env::temp_dir().join("vargc_ctx_test");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("main.rs");
+        fs::write(&path, gen).unwrap();
+
+        let stderr = "error[E0425]: cannot find `boom`\n  --> src\\main.rs:5:13";
+        let out = translate_cargo_diagnostics(&path, stderr).expect("should produce a map");
+        assert!(out.contains("agent Server.handle"), "got: {}", out);
+        assert!(!out.contains("fn setup"), "should pick the nearest marker, got: {}", out);
+        assert!(out.contains("main.rs:5"), "should cite the rust line, got: {}", out);
+    }
+
+    #[test]
+    fn test_translate_returns_none_without_markers() {
+        let dir = std::env::temp_dir().join("vargc_ctx_test_nomarker");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("main.rs");
+        fs::write(&path, "fn main() { let b = boom(); }\n").unwrap();
+        let stderr = "error --> src/main.rs:1:21";
+        assert!(translate_cargo_diagnostics(&path, stderr).is_none());
     }
 }
