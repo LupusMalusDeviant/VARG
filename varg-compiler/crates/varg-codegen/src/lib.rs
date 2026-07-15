@@ -363,7 +363,14 @@ impl RustGenerator {
             // Plan 25: Standalone top-level functions
             Item::Function(f) => {
                 let params: Vec<String> = f.params.iter()
-                    .map(|p| format!("{}: {}", esc_ident(&p.name), self.gen_type(&p.ty)))
+                    .map(|p| {
+                        // A parameter whose type is a generic type param may be the receiver of a
+                        // `&mut self` contract method (agent methods mutate), so bind it `mut`.
+                        // #![allow(unused_mut)] in the header keeps this warning-free otherwise.
+                        let is_type_param = matches!(&p.ty, TypeNode::Custom(n) if f.type_params.contains(n));
+                        let mut_kw = if is_type_param { "mut " } else { "" };
+                        format!("{}{}: {}", mut_kw, esc_ident(&p.name), self.gen_type(&p.ty))
+                    })
                     .collect();
                 // Wave 14: Auto-wrap return type in Result if body uses ?
                 let uses_try = block_contains_try_propagate(&f.body);
@@ -534,6 +541,39 @@ impl RustGenerator {
                 for method in &a.methods {
                     // B5: string-typed params of this method become string vars in its body.
                     self.register_string_params(&method.args);
+                    // Agent construction: a method named like the agent is its constructor. Emit an
+                    // associated `fn Name(args) -> Self` that default-inits the fields and then runs
+                    // the constructor body through a private `&mut self` initializer — so `self.x`
+                    // in the body stays valid without any renaming. Only when the fields are
+                    // default-constructible (same guard as the auto-new()); DI/contract-field
+                    // constructors remain out of scope.
+                    if method.name == a.name && !has_contract_fields {
+                        let arg_sig: Vec<String> = method.args.iter()
+                            .map(|arg| format!("{}: {}", esc_ident(&arg.name), self.gen_type(&arg.ty)))
+                            .collect();
+                        let arg_names: Vec<String> = method.args.iter().map(|arg| esc_ident(&arg.name)).collect();
+                        let init_name = format!("__ctor_{}", a.name);
+                        out.push_str(&format!("    pub fn {}({}) -> Self {{\n", a.name, arg_sig.join(", ")));
+                        out.push_str(&format!("        let mut __obj = {} {{\n", a.name));
+                        for field in &a.fields {
+                            out.push_str(&format!("            {}: {},\n", field.name, self.gen_type_default(&field.ty)));
+                        }
+                        out.push_str("        };\n");
+                        out.push_str(&format!("        __obj.{}({});\n", init_name, arg_names.join(", ")));
+                        out.push_str("        __obj\n    }\n");
+                        let init_args = if method.args.is_empty() {
+                            "&mut self".to_string()
+                        } else {
+                            format!("&mut self, {}", arg_sig.join(", "))
+                        };
+                        out.push_str(&format!("    fn {}({}) {{\n", init_name, init_args));
+                        self.set_context(format!("agent {}.{} (constructor)", a.name, method.name));
+                        if let Some(body) = &method.body {
+                            out.push_str(&self.gen_block(body, 2));
+                        }
+                        out.push_str("    }\n");
+                        continue;
+                    }
                     // on_error method: private handler — use declared parameter names
                     if method.name == "on_error" && has_on_error {
                         let sig = self.gen_method_signature(method, true); // force_no_vis=true
@@ -1867,6 +1907,24 @@ impl RustGenerator {
             },
             Expression::MethodCall { caller, method_name, args } => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.gen_expression(a)).collect();
+                // Agent construction: `Square(3.0)` is parsed as a bare call on synthetic `self`.
+                // Emit the associated constructor. Checked BEFORE known_functions/user_impl_methods
+                // because the constructor method shares the agent's name and would otherwise be
+                // mis-dispatched as `self.Square(...)`.
+                if matches!(**caller, Expression::Identifier(ref n) if n == "self") {
+                    if let Some(agent_def) = self.known_agents.get(method_name.as_str()) {
+                        let has_ctor = agent_def.methods.iter().any(|m| m.name == *method_name);
+                        let has_fields = !agent_def.fields.is_empty();
+                        let cloned: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                        if has_ctor {
+                            return format!("{}::{}({})", method_name, method_name, cloned.join(", "));
+                        } else if has_fields {
+                            return format!("{}::new()", method_name);
+                        } else {
+                            return format!("{} {{}}", method_name);
+                        }
+                    }
+                }
                 // Bare function calls are parsed as MethodCall{caller:self, method:fn_name}.
                 // Resolve known standalone functions FIRST so their names cannot be shadowed
                 // by built-in method handlers (e.g. a user fn named `add` must not become

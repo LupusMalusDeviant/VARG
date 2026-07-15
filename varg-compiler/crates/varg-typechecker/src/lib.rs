@@ -207,6 +207,11 @@ pub struct TypeChecker {
     // Trait-bound enforcement: agent_name → method_name → (type_params, constraints)
     method_constraints: HashMap<String, HashMap<String, (Vec<String>, Vec<GenericConstraint>)>>,
 
+    // Generic body resolution: type-param → bound contract names for the function/method currently
+    // being checked (e.g. T → ["IShape"]). Lets `shape.area()` on a `T: IShape` parameter resolve
+    // against the contract instead of inferring Void.
+    current_type_param_bounds: HashMap<String, Vec<String>>,
+
     // Wave 12 Phase 5: Source text + current item span for error reporting
     source: Option<String>,
     current_item_span: Option<Range<usize>>,
@@ -246,6 +251,7 @@ impl TypeChecker {
             imported_crates: std::collections::HashSet::new(),
             agent_implements: HashMap::new(),
             method_constraints: HashMap::new(),
+            current_type_param_bounds: HashMap::new(),
             source: None,
             current_item_span: None,
         }
@@ -740,8 +746,18 @@ impl TypeChecker {
                         self.available_capabilities.push(cap.clone());
                     }
                 }
+                // Generic body resolution: expose this function's trait bounds (T: IShape) so a
+                // method call on a `T`-typed parameter resolves against the bound contract.
+                self.current_type_param_bounds.clear();
+                for c in &f.constraints {
+                    self.current_type_param_bounds
+                        .entry(c.type_param.clone())
+                        .or_default()
+                        .extend(c.bounds.iter().cloned());
+                }
                 self.current_return_ty = f.return_ty.clone();
                 self.check_block(&f.body)?;
+                self.current_type_param_bounds.clear();
                 // Plan 58: Validate all code paths return for non-void functions
                 if let Some(ref ret_ty) = f.return_ty {
                     if *ret_ty != TypeNode::Void && !Self::block_always_returns(&f.body) {
@@ -1282,9 +1298,22 @@ impl TypeChecker {
                     BinaryOperator::And | BinaryOperator::Or => Ok(TypeNode::Bool),
                     BinaryOperator::CosineSim => Ok(TypeNode::Custom("f32".to_string())),
                     BinaryOperator::Add => {
-                        // String + anything = String (concat)
+                        // String + anything = String (concat); else numeric with float promotion.
                         if left_ty == TypeNode::String || right_ty == TypeNode::String {
                             Ok(TypeNode::String)
+                        } else if left_ty == TypeNode::Float || right_ty == TypeNode::Float {
+                            Ok(TypeNode::Float)
+                        } else {
+                            Ok(TypeNode::Int)
+                        }
+                    },
+                    BinaryOperator::Sub | BinaryOperator::Mul
+                    | BinaryOperator::Div | BinaryOperator::Mod => {
+                        // Numeric arithmetic: if either operand is Float the result is Float
+                        // (matches the codegen's int→f64 promotion). Previously always Int, so
+                        // `float * float` mis-typed as Int and leaked as an rustc/typecheck error.
+                        if left_ty == TypeNode::Float || right_ty == TypeNode::Float {
+                            Ok(TypeNode::Float)
                         } else {
                             Ok(TypeNode::Int)
                         }
@@ -1356,6 +1385,29 @@ impl TypeChecker {
                             });
                         }
                     }
+                }
+                // Agent construction: `Square(3.0)` — a bare call whose name is a known agent.
+                // Parsed as a method call on the synthetic `self`; recognise it as construction so
+                // it yields the agent type instead of falling through to "unknown method".
+                if self.agent_fields.contains_key(method_name)
+                    && matches!(&**caller, Expression::Identifier(n) if n == "self")
+                {
+                    // Validate arity against the user constructor (a method named like the agent),
+                    // else it's the zero-arg auto-constructor.
+                    if let Some(ctor) = self.method_signatures.get(method_name).and_then(|m| m.get(method_name)) {
+                        if ctor.args.len() != args.len() {
+                            return Err(TypeError::TypeMismatch {
+                                expected: format!("{} constructor argument(s)", ctor.args.len()),
+                                found: format!("{}", args.len()),
+                            });
+                        }
+                    } else if !args.is_empty() {
+                        return Err(TypeError::TypeMismatch {
+                            expected: format!("0 arguments (agent `{}` has no constructor)", method_name),
+                            found: format!("{}", args.len()),
+                        });
+                    }
+                    return Ok(TypeNode::Custom(method_name.to_string()));
                 }
                 if method_name == "fetch" {
                     self.check_ocap(&CapabilityType::NetworkAccess, "fetch")?;
@@ -2647,6 +2699,23 @@ impl TypeChecker {
                 } else if method_name == "is_ok" || method_name == "is_err" || method_name == "is_some" || method_name == "is_none" {
                     Ok(TypeNode::Bool)
                 } else {
+                    // Generic body resolution: the caller is a parameter whose type is a bound
+                    // type param (e.g. `shape: T` with `T: IShape`). Resolve the method against the
+                    // bound contract so `shape.area()` yields the contract method's type instead of
+                    // falling through to Void/unknown.
+                    if !self.current_type_param_bounds.is_empty() {
+                        if let Ok(TypeNode::Custom(tn)) = self.infer_expression_type(caller) {
+                            if let Some(bounds) = self.current_type_param_bounds.get(&tn).cloned() {
+                                for bound in &bounds {
+                                    if let Some(contract) = self.known_contracts.get(bound) {
+                                        if let Some(m) = contract.methods.iter().find(|m| m.name == *method_name) {
+                                            return Ok(m.return_ty.clone().unwrap_or(TypeNode::Void));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // Plan 33: Check known standalone functions first
                     if let Some(sig) = self.known_functions.get(method_name) {
                         return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
@@ -9618,5 +9687,86 @@ mod tests {
         checker.env.insert("n".to_string(), TypeNode::Int);
         let expr = method_call(Expression::Identifier("n".to_string()), "to_string", vec![]);
         assert_eq!(checker.infer_expression_type(&expr).unwrap(), TypeNode::String);
+    }
+
+    // ===== Float arithmetic inference =====
+
+    #[test]
+    fn float_arithmetic_infers_float() {
+        let mut c = TypeChecker::new();
+        for op in [BinaryOperator::Mul, BinaryOperator::Sub, BinaryOperator::Div, BinaryOperator::Add] {
+            let e = Expression::BinaryOp {
+                left: Box::new(Expression::Float(2.0)),
+                operator: op.clone(),
+                right: Box::new(Expression::Float(3.0)),
+            };
+            assert_eq!(c.infer_expression_type(&e).unwrap(), TypeNode::Float, "op {:?}", op);
+        }
+        // Mixed int/float promotes to float.
+        let mixed = Expression::BinaryOp {
+            left: Box::new(Expression::Int(2)),
+            operator: BinaryOperator::Mul,
+            right: Box::new(Expression::Float(3.0)),
+        };
+        assert_eq!(c.infer_expression_type(&mixed).unwrap(), TypeNode::Float);
+        // Pure int stays int.
+        let ints = Expression::BinaryOp {
+            left: Box::new(Expression::Int(2)),
+            operator: BinaryOperator::Mul,
+            right: Box::new(Expression::Int(3)),
+        };
+        assert_eq!(c.infer_expression_type(&ints).unwrap(), TypeNode::Int);
+    }
+
+    // ===== Agent construction =====
+
+    #[test]
+    fn agent_construction_infers_agent_type() {
+        let mut c = TypeChecker::new();
+        c.agent_fields.insert("Square".to_string(), vec![]); // Square is a known agent
+        // No constructor registered → zero-arg construction yields the agent type.
+        let expr = method_call(Expression::Identifier("self".to_string()), "Square", vec![]);
+        assert_eq!(c.infer_expression_type(&expr).unwrap(), TypeNode::Custom("Square".to_string()));
+    }
+
+    #[test]
+    fn agent_construction_arity_mismatch_errors() {
+        let mut c = TypeChecker::new();
+        c.agent_fields.insert("Square".to_string(), vec![]);
+        // No constructor, but args passed → error.
+        let expr = method_call(
+            Expression::Identifier("self".to_string()),
+            "Square",
+            vec![Expression::Float(3.0)],
+        );
+        assert!(c.infer_expression_type(&expr).is_err());
+    }
+
+    // ===== Generic body method resolution =====
+
+    #[test]
+    fn generic_body_resolves_bound_contract_method() {
+        let mut c = TypeChecker::new();
+        c.known_contracts.insert("IShape".to_string(), ContractDef {
+            name: "IShape".to_string(),
+            is_public: false,
+            target_annotation: None,
+            methods: vec![MethodDecl {
+                name: "area".to_string(),
+                is_public: true,
+                is_async: false,
+                annotations: vec![],
+                type_params: vec![],
+                constraints: vec![],
+                args: vec![],
+                return_ty: Some(TypeNode::Float),
+                body: None,
+            }],
+        });
+        c.current_type_param_bounds.insert("T".to_string(), vec!["IShape".to_string()]);
+        c.env.insert("shape".to_string(), TypeNode::Custom("T".to_string()));
+        // shape.area() where shape: T and T: IShape → resolves against the contract.
+        let expr = method_call(Expression::Identifier("shape".to_string()), "area", vec![]);
+        assert_eq!(c.infer_expression_type(&expr).unwrap(), TypeNode::Float);
     }
 }

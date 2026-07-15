@@ -1,0 +1,21 @@
+contract IShape {
+    float area();
+}
+
+agent Square implements IShape {
+    float side;
+    public Square(float s) { self.side = s; }
+    public float area() { return self.side * self.side; }
+}
+
+fn total_area<T: IShape>(T shape) -> float {
+    return shape.area();
+}
+
+agent Main {
+    public void Run() {
+        var sq = Square(3.0);
+        var a = total_area(sq);
+        print(a);
+    }
+}

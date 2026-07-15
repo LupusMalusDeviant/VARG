@@ -1378,26 +1378,46 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
     final_rust_source.push_str("    let _varg_args: Vec<String> = std::env::args().collect();\n");
     final_rust_source.push_str("    varg_runtime::__varg_install_panic_hook();\n");
 
-    // Find the first agent and a suitable default method
+    // Find the entry agent and its default method. Prefer an agent that actually exposes an
+    // entry point (@[CliCommand], or a 0-arg Run/Main) over merely the first agent declared —
+    // otherwise a helper agent declared first (e.g. a constructable value type) would be picked
+    // and no runnable method found.
     let mut main_agent_name = None;
     let mut main_method_name = None;
+    let mut fallback_agent_name = None;
     for item in &ast.items {
         if let varg_ast::ast::Item::Agent(a) = item {
-            main_agent_name = Some(a.name.clone());
+            if fallback_agent_name.is_none() {
+                fallback_agent_name = Some(a.name.clone());
+            }
             // @[CliCommand] on the agent → run_cli() dispatches all public methods
             if a.annotations.iter().any(|ann| ann.name == "CliCommand") {
+                main_agent_name = Some(a.name.clone());
                 main_method_name = Some("run_cli".to_string());
-            } else {
-                // Look for `Run` or `Main`, otherwise just the first method *if it has 0 args*
-                if let Some(run_m) = a.methods.iter().find(|m| m.name == "Run" || m.name == "Main") {
-                    if run_m.args.is_empty() { main_method_name = Some(run_m.name.clone()); }
-                } else if let Some(first_m) = a.methods.first() {
-                    if first_m.args.is_empty() {
-                        main_method_name = Some(first_m.name.clone());
+                break;
+            }
+            // A 0-arg Run/Main makes this the entry agent.
+            if let Some(run_m) = a.methods.iter().find(|m| (m.name == "Run" || m.name == "Main") && m.args.is_empty()) {
+                main_agent_name = Some(a.name.clone());
+                main_method_name = Some(run_m.name.clone());
+                break;
+            }
+        }
+    }
+    // No agent had an explicit entry point: fall back to the first agent's first 0-arg method.
+    if main_agent_name.is_none() {
+        main_agent_name = fallback_agent_name;
+        if let Some(ref name) = main_agent_name {
+            for item in &ast.items {
+                if let varg_ast::ast::Item::Agent(a) = item {
+                    if &a.name == name {
+                        if let Some(first_m) = a.methods.first() {
+                            if first_m.args.is_empty() { main_method_name = Some(first_m.name.clone()); }
+                        }
+                        break;
                     }
                 }
             }
-            break;
         }
     }
     

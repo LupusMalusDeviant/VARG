@@ -127,11 +127,25 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      jetzt werden sie gespeichert (`FunctionDef.constraints`) und vom Codegen emittiert, sodass rustc
      dieselbe Schranke durchsetzt (Parität mit Methoden, die das schon taten). End-to-end verifiziert:
      `fn label<T: IShape>` kompiliert & läuft mit erhaltener Schranke.
-   **Offen (größere, eigenständige Features — beim Testen aufgedeckt):** generische **Body**-Methoden-
-   auflösung (`shape.area()` auf `T: IShape` wird noch als `Void` inferiert statt gegen den Contract
-   aufgelöst) und **Agent-Konstruktor-Syntax** (`Circle(2.0)` gilt als „unknown method"). Erst diese
-   beiden schließen die generische Funktions-Pipeline komplett; die Bounds-Emission ist die
-   notwendige Codegen-Voraussetzung dafür.
+   **Stufe 7 (generische Funktions-Pipeline komplett — „durchgezogen"):**
+   - ✅ **Agent-Konstruktor-Syntax** `AgentName(args)` — Typechecker erkennt den Aufruf eines
+     bekannten Agent-Namens als Konstruktion (→ Agent-Typ, mit Arity-Prüfung gegen den Konstruktor).
+     Codegen emittiert den Konstruktor als assoziierte `fn Name(args) -> Self` (Feld-Default-Init +
+     privater `&mut self`-Initializer für den Body, ohne `self`-Renaming) und übersetzt die Call-Site
+     zu `Name::Name(args)` / `Name::new()` / `Name {}`. Bonus: der Entry-Point-Picker bevorzugt jetzt
+     einen Agenten mit `Run`/`Main` statt blind den ersten.
+   - ✅ **Float-Arithmetik-Inferenz** — `-`/`*`/`/`/`%` (und `+`) promoten auf `Float`, wenn ein
+     Operand Float ist (vorher immer `Int` → `float * float` schlug als Typfehler fehl).
+   - ✅ **Generische Body-Methodenauflösung** — ein Methodenaufruf auf einem an einen Contract
+     gebundenen Type-Param (`shape.area()` bei `T: IShape`) löst gegen den Contract auf; Codegen
+     bindet solche Params `mut` (Contract-Methoden nehmen `&mut self`).
+   - **End-to-end verifiziert:** `total_area(Square(3.0))` (generische Funktion über einen per
+     Konstruktor gebauten, Contract-implementierenden Agenten) kompiliert & läuft → `9`. Als
+     Golden-Programme `generics.varg` + `construction.varg` dauerhaft abgesichert.
+   **Verbliebene, bewusst separate Lücken:** DI-Konstruktoren mit Contract-typisierten Feldern
+   (`MyService(db)`) — dieselbe Default-Init-Grenze wie die auto-`new()`; und Methoden-Namen, die
+   Builtins überdecken (`get`/`contains` als User-Methode) werden im Typechecker noch vom Builtin-Arm
+   geschluckt (Codegen priorisiert User-Methoden bereits).
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

@@ -1,0 +1,15 @@
+agent Counter {
+    int value;
+    public Counter(int start) { self.value = start; }
+    public void bump() { self.value = self.value + 1; }
+    public int current() { return self.value; }
+}
+
+agent Main {
+    public void Run() {
+        var c = Counter(10);
+        c.bump();
+        c.bump();
+        print(c.current());
+    }
+}
