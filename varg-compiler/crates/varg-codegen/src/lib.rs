@@ -1752,18 +1752,19 @@ impl RustGenerator {
                     }
                 }
 
-                // T-stage4: mixed int/float arithmetic — Rust won't add i64 to f64, so coerce
-                // the int operand to f64. Enabled by the type env (resolve_type knows int vs
-                // float). Only when exactly one side is Float and the other Int.
-                if matches!(operator, BinaryOperator::Add | BinaryOperator::Sub
-                    | BinaryOperator::Mul | BinaryOperator::Div | BinaryOperator::Mod)
-                {
+                // T-stage4: mixed int/float — Rust won't mix i64 and f64 in arithmetic OR
+                // comparisons, so coerce the int operand to f64. Enabled by the type env
+                // (resolve_type knows int vs float); only when exactly one side is Float and the
+                // other Int.
+                if let Some(op) = match operator {
+                    BinaryOperator::Add => Some("+"), BinaryOperator::Sub => Some("-"),
+                    BinaryOperator::Mul => Some("*"), BinaryOperator::Div => Some("/"),
+                    BinaryOperator::Mod => Some("%"), BinaryOperator::Lt => Some("<"),
+                    BinaryOperator::Gt => Some(">"), BinaryOperator::LtEq => Some("<="),
+                    BinaryOperator::GtEq => Some(">="), BinaryOperator::Eq => Some("=="),
+                    BinaryOperator::NotEq => Some("!="), _ => None,
+                } {
                     let (lt, rt) = (self.resolve_type(left), self.resolve_type(right));
-                    let op = match operator {
-                        BinaryOperator::Add => "+", BinaryOperator::Sub => "-",
-                        BinaryOperator::Mul => "*", BinaryOperator::Div => "/",
-                        BinaryOperator::Mod => "%", _ => unreachable!(),
-                    };
                     if lt == Some(TypeNode::Float) && rt == Some(TypeNode::Int) {
                         return format!("{} {} (({}) as f64)", self.gen_operand(left), op, self.gen_operand(right));
                     }

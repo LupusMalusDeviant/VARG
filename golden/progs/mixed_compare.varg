@@ -1,0 +1,9 @@
+agent A {
+  public void Run() {
+    var i = 5; var f = 2.5;
+    if i > f { print "i>f"; }
+    if f < i { print "f<i"; }
+    if 3 <= 3.0 { print "eq-le"; }
+    print i > f;
+  }
+}
