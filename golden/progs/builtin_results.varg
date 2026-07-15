@@ -1,0 +1,11 @@
+agent A {
+  public void Run() {
+    var s = "hello".to_upper();
+    print s;
+    print "x=" + s;
+    var n = len([1, 2, 3, 4]);
+    print n;
+    var t = "  trimmed  ".trim();
+    print "[" + t + "]";
+  }
+}

@@ -96,10 +96,15 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      Extra-String-Allokation von `__varg_fmt()`.
    - ✅ `filter`: `.iter().filter(..).cloned()` statt `.iter().cloned().filter(..)` — klont nur
      die Überlebenden, nicht die ganze Kollektion vorab (2N → N+K Clones).
-   **Offen (nächste Stufen):** receiver-getypter Method-Dispatch (endgültiger `add`-Klasse-Fix;
-   braucht `resolve_type` für Builtin-Rückgabetypen, sonst würde `set_of()`-Sets regredieren),
-   echte Generics-Bounds-Emission (`<T: Display>`), und eine **gemeinsame Builtin-Signatur-
-   Tabelle**, die die 346-vs-393-Duplikation zwischen Typechecker und Codegen auflöst.
+   **Stufe 3 (gemeinsame Signatur-Tabelle):**
+   - ✅ `varg-ast/src/builtins.rs` — `builtin_return_type(name)` als **Single Source of Truth**
+     für Builtin-Rückgabetypen (String/Int/Float/Bool/Result), von `resolve_type` konsultiert.
+     `resolve_type` kennt jetzt Builtin-Ergebnisse → `var s = json_get(..); print s;` wird
+     typaufgelöst (sauberer print, korrekte Konkat). Fundament, um die 346-vs-393-Duplikation
+     schrittweise abzubauen.
+   **Offen (nächste Stufen):** Typechecker adoptiert dieselbe Tabelle (Duplikation retten);
+   receiver-getypter Method-Dispatch (endgültiger `add`-Klasse-Fix; jetzt sicherer, da
+   `resolve_type` Kollektionstypen kennt); echte Generics-Bounds-Emission (`<T: Display>`).
 2. **rustc-Fehler → .varg-Zeilen rückmappen** — alles, was der Typechecker nicht fängt, leakt als
    roher rustc-Fehler auf generiertem `src/main.rs:NN`. Die `// .varg:N`-„Source-Maps" sind
    nominell (falsch nummeriert, wirkungslos). Größtes Nutzer-UX-Loch.

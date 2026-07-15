@@ -873,6 +873,15 @@ impl RustGenerator {
                 },
                 _ => self.resolve_type(left).or_else(|| self.resolve_type(right)),
             },
+            // T-stage3: builtin call results, via the shared signature table — unless the name
+            // is a user-defined method (those shadow builtins and have their own return type).
+            Expression::MethodCall { method_name, .. } => {
+                if self.user_impl_methods.contains(method_name.as_str()) {
+                    None
+                } else {
+                    varg_ast::builtins::builtin_return_type(method_name)
+                }
+            },
             _ => None,
         }
     }

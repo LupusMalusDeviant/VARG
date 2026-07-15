@@ -1,5 +1,6 @@
 use logos::Logos;
 pub mod ast;
+pub mod builtins;
 
 fn lex_interpolated_string<'a>(lex: &mut logos::Lexer<'a, Token>) -> Option<String> {
     let remainder = lex.remainder();
