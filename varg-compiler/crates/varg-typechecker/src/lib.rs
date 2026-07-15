@@ -1008,7 +1008,16 @@ impl TypeChecker {
                      }
                 },
                 Statement::Print(expr) => {
-                     self.infer_expression_type(expr)?;
+                    let ty = self.infer_expression_type(expr)?;
+                    // b1: printing an unhandled Result is almost always a forgotten `?`/`or`.
+                    // Reject it here with a clear message instead of leaking a `__varg_fmt`
+                    // error from rustc on generated Rust the user never wrote.
+                    if let TypeNode::Result(_, _) = ty {
+                        return Err(TypeError::TypeMismatch {
+                            expected: "a printable value — handle the Result first with `?` or `or` (e.g. `print x or \"\"`)".to_string(),
+                            found: format!("{:?}", ty),
+                        });
+                    }
                 },
                 Statement::Return(Some(expr)) => {
                     let val_type = self.infer_expression_type(expr)?;
@@ -1217,7 +1226,15 @@ impl TypeChecker {
             Expression::InterpolatedString(parts) => {
                 for part in parts {
                     if let InterpolationPart::Expression(expr) = part {
-                        self.infer_expression_type(expr)?;
+                        let ty = self.infer_expression_type(expr)?;
+                        // b1: same as `print` — an embedded unhandled Result is a forgotten
+                        // `?`/`or`; reject cleanly instead of leaking a rustc error.
+                        if let TypeNode::Result(_, _) = ty {
+                            return Err(TypeError::TypeMismatch {
+                                expected: "a printable value in interpolation — handle the Result with `?` or `or`".to_string(),
+                                found: format!("{:?}", ty),
+                            });
+                        }
                     }
                 }
                 Ok(TypeNode::String)
@@ -1494,7 +1511,10 @@ impl TypeChecker {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (key)".to_string(), found: format!("{} arguments", args.len()) });
                     }
-                    Ok(TypeNode::String)
+                    // b1: the codegen emits `std::env::var(..)` (a Result), so the type must be
+                    // Result too — otherwise bare `env("X")` type-checks as String and then
+                    // fails in rustc. Handle with `or`/`?` (e.g. `env("X") or ""`).
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "set_env" {
                     if args.len() != 2 {
                         return Err(TypeError::TypeMismatch { expected: "2 arguments (key, value)".to_string(), found: format!("{} arguments", args.len()) });
@@ -5922,6 +5942,8 @@ mod tests {
 
     #[test]
     fn test_env_returns_string() {
+        // b1: env now types as Result<String, Error> (matches the codegen, which emits
+        // std::env::var). Callers handle it with `or`/`?`.
         let mut checker = TypeChecker::new();
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
@@ -5929,7 +5951,7 @@ mod tests {
             args: vec![Expression::String("HOME".to_string())],
         };
         let ty = checker.infer_expression_type(&expr).unwrap();
-        assert_eq!(ty, TypeNode::String);
+        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)));
     }
 
     #[test]
@@ -8911,6 +8933,25 @@ mod tests {
         let err = c.infer_expression_type(&nested).unwrap_err();
         assert!(matches!(err, TypeError::MissingCapability { .. }),
             "nested fs_read must require FileAccess, got: {:?}", err);
+    }
+
+    #[test]
+    fn test_tc_interpolation_of_result_rejected_b1() {
+        // b1: embedding an unhandled Result in interpolation must be a clean type error.
+        let mut c = TypeChecker::new();
+        let interp = Expression::InterpolatedString(vec![
+            InterpolationPart::Expression(call("env", vec![str_lit("X")])),
+        ]);
+        assert!(c.infer_expression_type(&interp).is_err(),
+            "interpolating env() (a Result) must be rejected");
+        // handled with `or` it must pass:
+        let ok = Expression::InterpolatedString(vec![
+            InterpolationPart::Expression(Expression::OrDefault {
+                expr: Box::new(call("env", vec![str_lit("X")])),
+                default: Box::new(str_lit("")),
+            }),
+        ]);
+        assert!(c.infer_expression_type(&ok).is_ok(), "env(..) or \"\" must be printable");
     }
 
     #[test]

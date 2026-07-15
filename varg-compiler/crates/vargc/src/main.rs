@@ -540,7 +540,7 @@ fn run_cli() {
         .cloned()
         .unwrap_or_else(|| {
             // No .varg file supplied — commands that need one print usage and exit.
-            if ["build", "run", "emit-rs", "watch", "fmt", "doc", "test"].contains(&command.as_str()) {
+            if ["build", "run", "emit-rs", "watch", "fmt", "doc", "test", "check"].contains(&command.as_str()) {
                 eprintln!("Error: no .varg file specified.");
                 print_usage();
                 exit(1);
@@ -554,6 +554,10 @@ fn run_cli() {
     let trace_mode = args.iter().any(|a| a == "--trace");
 
     match command.as_str() {
+        "check" => {
+            // a1: fast parse + typecheck only — no codegen, no cargo. For editors/CI.
+            cmd_check(&input_file_str);
+        },
         "build" => {
             compile_varg_file_traced(&input_file_str, false, debug_mode, wasm_target.as_deref(), trace_mode);
         },
@@ -631,8 +635,9 @@ fn run_cli() {
 }
 
 fn print_usage() {
-    println!("Varg Compiler (vargc) v0.13.0");
+    println!("Varg Compiler (vargc) v1.0.0");
     println!("Usage:");
+    println!("  vargc check <file.varg>                       Parse + typecheck only (fast, no build)");
     println!("  vargc build [--target <triple>] <file.varg>   Build to a native (or WASM) executable");
     println!("  vargc run   [--target <triple>] <file.varg>   Build and immediately execute");
     println!("  vargc emit-rs <file.varg>                     Emit generated Rust source only");
@@ -1204,6 +1209,22 @@ fn inject_trace_annotations(program: &mut varg_ast::ast::Program) {
 }
 
 /// Wave 48: parse_and_generate with optional global trace injection.
+/// a1: `vargc check <file>` — parse + typecheck only, no codegen/cargo. ~10x faster than a
+/// full build; intended for editor/CI feedback loops.
+fn cmd_check(input_path: &str) {
+    let mut loaded = std::collections::HashSet::new();
+    let mut merged_ast = varg_ast::ast::Program { no_std: false, items: Vec::new(), docs: std::collections::HashMap::new() };
+    parse_recursive(input_path, &mut merged_ast, &mut loaded);
+    let source_for_errors = fs::read_to_string(input_path).unwrap_or_default();
+    let mut checker = TypeChecker::new();
+    checker.set_source(&source_for_errors);
+    if let Err(errors) = checker.check_program(&merged_ast) {
+        for err in &errors { report_semantic_error(input_path, &source_for_errors, err); }
+        exit(1);
+    }
+    println!("OK: {} — no type errors", input_path);
+}
+
 fn parse_and_generate_traced(input_path: &str, trace: bool) -> (String, varg_ast::ast::Program) {
     let mut loaded = std::collections::HashSet::new();
     let mut merged_ast = varg_ast::ast::Program { no_std: false, items: Vec::new(), docs: std::collections::HashMap::new() };

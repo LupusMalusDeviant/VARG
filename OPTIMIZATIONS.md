@@ -67,6 +67,41 @@ Diese Bugs wurden in diesem Durchgang behoben und mit Regressionstests abgesiche
   `--features full` (nach Reparatur der obigen Module) oder pro-Feature-Matrix, damit solche
   Brüche nicht unbemerkt bleiben. Gehört zu Priorität 0.1 (Test-Abdeckung).
 
+## Compiler-Audit (2026-07-15) — Befunde & Status
+
+Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~35 Probe-Programme).
+
+**Behoben in dieser Runde:**
+- ✅ **`vargc check`** — reiner Parse+Typecheck, **39 ms vs. 646 ms Build (~16×)**. Für Editor/CI.
+- ✅ **`print` berechneter Werte** — nutzte Debug `{:?}` (Strings mit Anführungszeichen). Jetzt
+  einheitlich über `__varg_fmt()` (Strings via Display, Structs/Enums/Collections/Option via
+  Debug; User-Typen bekommen eine `__VargFmt`-Impl emittiert).
+- ✅ **`add`→`insert`-Korrektheitsbug** — jede Agent-Methode namens `add` (o.ä. Builtin-Name)
+  wurde zu `.insert(...)` umgeschrieben. Agent-Methoden schatten jetzt Builtins (wie Impl-Methoden).
+- ✅ **`env` Typ-Drift** — Typechecker sagte `String`, Codegen emittiert `Result`. Angeglichen.
+- ✅ **`print`/Interpolation eines `Result`** wird jetzt vom Typechecker mit klarer Meldung
+  abgelehnt (statt rustc-Leak). Fängt vergessene `?`/`or`.
+- ✅ REFERENCE.md Result-Beispiel (Zeile ~457) korrigiert (implizite Erfolgstyp-Idiom).
+
+**Offen — größere Compiler-Projekte (nach Hebelwirkung):**
+1. **Typ-annotierter AST (Typechecker→Codegen)** — die eine Wurzel hinter der Codegen-Fragilität:
+   Builtin-/Methoden-Dispatch rein nach Namen (346 Typechecker- vs. 393 Codegen-Arme, keine
+   gemeinsame Tabelle). Ermöglicht: receiver-getypter Dispatch (endgültiger Fix der `add`-Klasse),
+   Allokations-Optimierung (s.u.), echte Generics-Bounds.
+2. **rustc-Fehler → .varg-Zeilen rückmappen** — alles, was der Typechecker nicht fängt, leakt als
+   roher rustc-Fehler auf generiertem `src/main.rs:NN`. Die `// .varg:N`-„Source-Maps" sind
+   nominell (falsch nummeriert, wirkungslos). Größtes Nutzer-UX-Loch.
+3. **Typechecker-Vollständigkeit** — fängt derzeit NICHT: User-Method-Arity, Methoden-Existenz
+   auf Werten, Enum-mit-Daten-Konstruktion (`Circle(5)` → falsch als Methodenaufruf), mixed
+   int+float-Coercion, Type-Alias-Transparenz, Funktionstypen `fn(int)->int` (Parser),
+   Closure-in-Variable-Typinferenz, explizites `-> Result<T>`-Auto-Wrap, `.sort()`-Rückgabe,
+   async Entry-Point (wird nie awaited).
+4. **Codegen-Allokations-Quick-Wins** — `"lit".to_string()` in print/Vergleichen,
+   String-Vergleich allokiert pro Iteration, Doppel-Clone in `filter`-Closures für Copy-Typen.
+   ~27 `to_string`/223 Zeilen im typischen Datenpfad. (Voll erst mit #1 sauber.)
+5. **LSP-Härtung** — Typfehler als `WARNING` statt `ERROR`, statische Completion,
+   Textscan-Go-to-Definition, kein Rename, Formatter nicht angebunden.
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests

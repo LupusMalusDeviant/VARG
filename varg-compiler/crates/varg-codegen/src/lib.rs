@@ -244,6 +244,14 @@ impl RustGenerator {
                     self.user_impl_methods.insert(m.name.clone());
                 }
             }
+            // a3: agent methods must ALSO shadow builtins — otherwise e.g. an agent method
+            // named `add` was rewritten to `.insert(...)` (HashSet builtin), producing wrong
+            // Rust. Same priority rule as impl methods.
+            if let Item::Agent(a) = item {
+                for m in &a.methods {
+                    self.user_impl_methods.insert(m.name.clone());
+                }
+            }
         }
 
         // F41-6: Second pass — mark agent/struct fields whose type is a contract
@@ -276,7 +284,10 @@ impl RustGenerator {
         output.push_str("impl<K: std::fmt::Debug, V: std::fmt::Debug> __VargFmt for std::collections::HashMap<K, V> { fn __varg_fmt(&self) -> String { format!(\"{:?}\", self) } }\n");
         output.push_str("impl<T: std::fmt::Debug> __VargFmt for std::collections::HashSet<T> { fn __varg_fmt(&self) -> String { format!(\"{:?}\", self) } }\n");
         output.push_str("impl<A: std::fmt::Debug, B: std::fmt::Debug> __VargFmt for (A, B) { fn __varg_fmt(&self) -> String { format!(\"{:?}\", self) } }\n");
-        output.push_str("impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) { fn __varg_fmt(&self) -> String { format!(\"{:?}\", self) } }\n\n");
+        output.push_str("impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) { fn __varg_fmt(&self) -> String { format!(\"{:?}\", self) } }\n");
+        // a2: nullable (Option) is a normal printable value. (Result is intentionally NOT
+        // printable — it must be handled with ?/or; the typechecker rejects printing it.)
+        output.push_str("impl<T: std::fmt::Debug> __VargFmt for Option<T> { fn __varg_fmt(&self) -> String { format!(\"{:?}\", self) } }\n\n");
 
         for item in &program.items {
             output.push_str(&self.gen_item(item));
@@ -390,6 +401,7 @@ impl RustGenerator {
                     }
                 }
                 out.push_str("}\n");
+                out.push_str(&Self::vargfmt_impl(&e.name, &[])); // a2
                 out
             },
             Item::Struct(s) => {
@@ -401,6 +413,9 @@ impl RustGenerator {
                     out.push_str(&format!("    pub {}: {},\n", field.name, self.gen_type(&field.ty)));
                 }
                 out.push_str("}\n");
+                // a2: emit a __VargFmt impl (via Debug) so `print`/interpolation render this
+                // type cleanly through the same path as strings/collections.
+                out.push_str(&Self::vargfmt_impl(&s.name, &s.type_params));
                 out
             },
             Item::Contract(c) => {
@@ -838,6 +853,18 @@ impl RustGenerator {
                 if self.is_string_expr(left) || self.is_string_expr(right))
     }
 
+    /// a2: build a `__VargFmt` impl (Debug-based) for a user struct/enum so `print` and string
+    /// interpolation can render it through the universal `__varg_fmt()` path.
+    fn vargfmt_impl(name: &str, type_params: &[String]) -> String {
+        if type_params.is_empty() {
+            format!("impl __VargFmt for {} {{ fn __varg_fmt(&self) -> String {{ format!(\"{{:?}}\", self) }} }}\n", name)
+        } else {
+            let bounds: Vec<String> = type_params.iter().map(|t| format!("{}: std::fmt::Debug", t)).collect();
+            format!("impl<{}> __VargFmt for {}<{}> {{ fn __varg_fmt(&self) -> String {{ format!(\"{{:?}}\", self) }} }}\n",
+                bounds.join(", "), name, type_params.join(", "))
+        }
+    }
+
     fn gen_type(&self, ty: &TypeNode) -> String {
         match ty {
             TypeNode::Int => "i64".to_string(),
@@ -1262,15 +1289,10 @@ impl RustGenerator {
                     }
                 },
                 Statement::Print(expr) => {
-                    // Use Display ({}) for strings, Debug ({:?}) for other types
-                    if self.is_string_expr(expr) {
-                        out.push_str(&format!("{}println!(\"{{}}\", {});\n", indent, self.gen_expression(expr)));
-                    } else if let Expression::Identifier(_) = expr {
-                        // Identifiers could be any type — use Debug for safety
-                        out.push_str(&format!("{}println!(\"{{:?}}\", {});\n", indent, self.gen_expression(expr)));
-                    } else {
-                        out.push_str(&format!("{}println!(\"{{:?}}\", {});\n", indent, self.gen_expression(expr)));
-                    }
+                    // a2: render through the universal __varg_fmt() — strings via Display (no
+                    // surrounding quotes), collections/structs/enums/Option via Debug. This is
+                    // the same path string interpolation uses, so `print x` and `$"{x}"` agree.
+                    out.push_str(&format!("{}println!(\"{{}}\", ({}).__varg_fmt());\n", indent, self.gen_expression(expr)));
                 },
                 Statement::Expr(expr) => {
                     out.push_str(&format!("{}{};\n", indent, self.gen_expression(expr)));
@@ -8983,6 +9005,31 @@ mod tests {
         assert_eq!(gen.gen_expression(&Expression::Int(9_999_999_999)), "9999999999i64");
         // small literals stay unsuffixed so they still coerce into usize/index contexts.
         assert_eq!(gen.gen_expression(&Expression::Int(3)), "3");
+    }
+
+    #[test]
+    fn test_codegen_print_uses_varg_fmt_a2() {
+        // a2: print renders via __varg_fmt (strings without quotes, structs/collections via
+        // Debug) instead of the old {:?} that quoted strings.
+        let mut gen = RustGenerator::new();
+        let block = Block { statements: vec![
+            Statement::Print(Expression::Identifier("x".to_string())),
+        ] };
+        let code = gen.gen_block(&block, 0);
+        assert!(code.contains("__varg_fmt()"), "print must use __varg_fmt: {code}");
+        assert!(!code.contains("{:?}"), "print must not use Debug formatting: {code}");
+    }
+
+    #[test]
+    fn test_codegen_user_struct_gets_vargfmt_impl_a2() {
+        // a2: a user struct must get a __VargFmt impl so print/interpolation can render it.
+        let s = StructDef {
+            name: "Point".to_string(), is_public: false, type_params: vec![],
+            fields: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::Int, default_value: None }],
+        };
+        let mut gen = RustGenerator::new();
+        let code = gen.gen_item(&Item::Struct(s));
+        assert!(code.contains("impl __VargFmt for Point"), "struct needs __VargFmt impl: {code}");
     }
 
     #[test]

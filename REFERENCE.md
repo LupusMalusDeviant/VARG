@@ -450,14 +450,22 @@ for item in items {
 
 ### Result Type
 
-Fallible operations return `Result<T, String>`:
+Fallible operations return `Result<T, String>`.
+
+Declare the **success type** as the return type and use `?` inside — the compiler
+auto-wraps the function into `Result<T, String>` when it contains `?`. (Writing an explicit
+`-> Result<...>` return type and `return value;` is *not* auto-wrapped; use the success-type
+form below.)
 
 ```csharp
-// Using ? operator (auto-propagates errors)
-fn read_config(string path, FileAccess cap) -> Result<string, string> {
+// Using ? operator (auto-propagates errors). Return type is the SUCCESS type `string`;
+// the presence of `?` makes the function fallible automatically.
+fn read_config(string path, FileAccess cap) -> string {
     var content = fs_read(path)?;  // Propagates error if fs_read fails
     return content;
 }
+// Caller handles failure with `or` / `?`:
+//   var cfg = read_config(path, cap) or "default";
 
 // Using try/catch
 try {
