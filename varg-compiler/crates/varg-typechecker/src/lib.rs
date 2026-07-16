@@ -318,7 +318,7 @@ impl TypeChecker {
             "vector_search_text",
             "rag_index", "rag_retrieve", "rag_build_prompt",
             "llm_chat_cached", "llm_structured_schema", "llm_chat_opts",
-            "sse_open", "sse_push", "sse_shutdown",
+            "sse_open", "sse_push", "sse_shutdown", "ws_route",
             "memory_open", "memory_set", "memory_get", "memory_store", "memory_recall", "memory_add_fact", "memory_query_facts", "memory_episode_count", "memory_clear_working",
             "trace_start", "trace_span", "trace_end", "trace_error", "trace_event", "trace_set_attr", "trace_span_count", "trace_export",
             "mcp_server_new", "mcp_server_register", "mcp_server_tool_count", "mcp_server_remove_tool", "mcp_server_has_tool", "mcp_server_handle_request", "mcp_server_run",
@@ -2396,6 +2396,11 @@ impl TypeChecker {
                     if args.len() != 5 { return Err(TypeError::TypeMismatch { expected: "5 arguments (ctx, prompt, model, temperature, max_tokens)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
                 // ===== SSE Server (channel-based) =====
+                } else if method_name == "ws_route" {
+                    // Server-side WebSocket: ws_route(server, path, (msg) => reply). Bidirectional
+                    // counterpart to the server→client-only SSE broadcast.
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (server, path, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
                 } else if method_name == "sse_open" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (server, path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Custom("SseSenderHandle".to_string()))

@@ -2892,8 +2892,12 @@ impl RustGenerator {
                 } else if method_name == "llm_chat_opts" {
                     format!("varg_runtime::llm::__varg_llm_chat_opts(&mut {}, &{}, &{}, {}, {})", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3], arg_strs[4])
                 // ===== SSE Server (channel-based) =====
+                } else if method_name == "ws_route" {
+                    // ws_route(server, path, handler) — server-side WebSocket upgrade route.
+                    format!("varg_runtime::server::__varg_ws_route(&mut {}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "sse_open" {
-                    format!("varg_runtime::server::__varg_sse_open(&{}, &{})", arg_strs[0], arg_strs[1])
+                    // Registers a route on the server → needs &mut (was &, which never compiled).
+                    format!("varg_runtime::server::__varg_sse_open(&mut {}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "sse_push" {
                     format!("varg_runtime::server::__varg_sse_push(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "sse_shutdown" {

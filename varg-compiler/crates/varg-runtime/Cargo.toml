@@ -42,7 +42,7 @@ dirs          = "5.0"
 rusqlite      = { version = "0.31", features = ["bundled"] }
 
 # ── Optional heavy deps ────────────────────────────────────────────────────────
-axum        = { version = "0.7",                                                  optional = true }
+axum        = { version = "0.7", features = ["ws"],                              optional = true }
 tokio       = { version = "1",    features = ["full"],                            optional = true }
 reqwest     = { version = "0.12", features = ["blocking", "json", "native-tls"], optional = true }
 # ureq removed: net feature now uses reqwest::blocking

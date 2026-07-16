@@ -1384,6 +1384,9 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
     // and no runnable method found.
     let mut main_agent_name = None;
     let mut main_method_name = None;
+    // Whether the chosen entry method is async — it must be `.await`ed, otherwise the returned
+    // future is dropped and the whole entry body silently never runs (e.g. an async http_listen).
+    let mut main_method_is_async = false;
     let mut fallback_agent_name = None;
     for item in &ast.items {
         if let varg_ast::ast::Item::Agent(a) = item {
@@ -1400,6 +1403,7 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
             if let Some(run_m) = a.methods.iter().find(|m| (m.name == "Run" || m.name == "Main") && m.args.is_empty()) {
                 main_agent_name = Some(a.name.clone());
                 main_method_name = Some(run_m.name.clone());
+                main_method_is_async = run_m.is_async;
                 break;
             }
         }
@@ -1412,7 +1416,10 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
                 if let varg_ast::ast::Item::Agent(a) = item {
                     if &a.name == name {
                         if let Some(first_m) = a.methods.first() {
-                            if first_m.args.is_empty() { main_method_name = Some(first_m.name.clone()); }
+                            if first_m.args.is_empty() {
+                                main_method_name = Some(first_m.name.clone());
+                                main_method_is_async = first_m.is_async;
+                            }
                         }
                         break;
                     }
@@ -1560,7 +1567,10 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
         // it can be used as a composable tool (its output captured/parsed by another program).
         final_rust_source.push_str("    eprintln!(\"[VargOS] Bootstrapping Runtime...\");\n");
         if let Some(m) = main_method_name {
-            final_rust_source.push_str(&format!("    instance.{}();\n", m));
+            // An async entry must be awaited — without this the future is dropped and the body
+            // never executes (an `async Run()` that starts a server would exit silently).
+            let await_kw = if main_method_is_async { ".await" } else { "" };
+            final_rust_source.push_str(&format!("    instance.{}(){};\n", m, await_kw));
         } else {
             final_rust_source.push_str("    println!(\"[VargOS] No parameterless 'Run' or 'Main' method found. Exiting.\");\n");
         }

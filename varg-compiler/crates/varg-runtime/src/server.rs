@@ -95,11 +95,14 @@ pub fn __varg_http_response_json(status: i64, body: &str) -> VargHttpResponse {
 }
 
 // Runtime constructors
-pub fn __varg_http_server() -> VargHttpServer {
-    VargHttpServer::new(0)
+/// Create a server. Returns the full handle so that plain routes, SSE broadcasts and WebSocket
+/// routes all live on one object — previously `VargHttpServerHandle` was unreachable from Varg,
+/// which left `sse_open`/`ws_route` unusable from the language even though the runtime had them.
+pub fn __varg_http_server() -> VargHttpServerHandle {
+    VargHttpServerHandle::new()
 }
 
-pub fn __varg_http_route<F>(server: &mut VargHttpServer, method: &str, path: &str, handler: F)
+pub fn __varg_http_route_inner<F>(server: &mut VargHttpServer, method: &str, path: &str, handler: F)
 where
     F: Fn(VargHttpRequest) -> VargHttpResponse + Send + Sync + 'static,
 {
@@ -143,49 +146,18 @@ fn varg_response_to_axum(resp: VargHttpResponse) -> impl IntoResponse {
     })
 }
 
-/// Start the HTTP server (async — called with .await from generated code)
-pub async fn __varg_http_listen(server: VargHttpServer, addr: &str) -> Result<(), String> {
-    let mut router = Router::new();
+/// Register a route on the server (async — called from generated code).
+pub fn __varg_http_route<F>(server: &mut VargHttpServerHandle, method: &str, path: &str, handler: F)
+where
+    F: Fn(VargHttpRequest) -> VargHttpResponse + Send + Sync + 'static,
+{
+    __varg_http_route_inner(&mut server.inner, method, path, handler);
+}
 
-    for route in server.routes {
-        let handler = route.handler.clone();
-        let make_handler = move || {
-            let h = handler.clone();
-            move |req: Request| {
-                let h = h.clone();
-                async move {
-                    let varg_req = axum_request_to_varg(req).await;
-                    // B7: Varg route handlers are synchronous and commonly perform blocking I/O
-                    // (db_query, reqwest::blocking fetch). Running them inline on the async
-                    // worker stalled the whole executor and could trip reqwest's "blocking call
-                    // inside a runtime" guard. Offload to a blocking thread pool instead.
-                    let varg_resp = match tokio::task::spawn_blocking(move || h(varg_req)).await {
-                        Ok(resp) => resp,
-                        Err(_) => VargHttpResponse::new(500, "Internal Server Error: handler panicked"),
-                    };
-                    varg_response_to_axum(varg_resp)
-                }
-            }
-        };
-
-        let path = route.path.as_str();
-        router = match route.method.as_str() {
-            "GET" => router.route(path, get(make_handler())),
-            "POST" => router.route(path, post(make_handler())),
-            "PUT" => router.route(path, put(make_handler())),
-            "DELETE" => router.route(path, delete(make_handler())),
-            "PATCH" => router.route(path, patch(make_handler())),
-            _ => router.route(path, get(make_handler())),
-        };
-    }
-
-    let listener = tokio::net::TcpListener::bind(addr).await
-        .map_err(|e| format!("Failed to bind '{}': {}", addr, e))?;
-
-    println!("Varg HTTP server listening on {}", addr);
-
-    axum::serve(listener, router).await
-        .map_err(|e| format!("Server error: {}", e))
+/// Start the HTTP server (async — called with .await from generated code). Delegates to the single
+/// implementation that wires plain routes, SSE broadcast routes and WebSocket routes together.
+pub async fn __varg_http_listen(server: VargHttpServerHandle, addr: &str) -> Result<(), String> {
+    __varg_http_listen_sse(server, addr).await
 }
 
 // ── Wave 32: SSE Server Support ───────────────────────────────────────────
@@ -243,12 +215,20 @@ pub struct VargSseRoute {
     pub tx: Arc<broadcast::Sender<String>>,
 }
 
+/// Pending server-side WebSocket route: each incoming text frame is handed to `handler` and the
+/// returned string is sent back on the same socket (bidirectional request/response).
+pub struct VargWsRoute {
+    pub path: String,
+    pub handler: Arc<dyn Fn(String) -> String + Send + Sync>,
+}
+
 /// HTTP server augmented with SSE routes.
 /// We keep SSE routes separate because their axum handler is async and
 /// cannot be boxed the same way as the sync `VargRoute` handlers.
 pub struct VargHttpServerHandle {
     pub inner: VargHttpServer,
     pub sse_routes: Vec<VargSseRoute>,
+    pub ws_routes: Vec<VargWsRoute>,
 }
 
 impl VargHttpServerHandle {
@@ -256,6 +236,57 @@ impl VargHttpServerHandle {
         Self {
             inner: VargHttpServer::new(0),
             sse_routes: Vec::new(),
+            ws_routes: Vec::new(),
+        }
+    }
+}
+
+/// Register a server-side WebSocket route. `handler` is called for every incoming text frame and
+/// its return value is sent back to that client. Complements the SSE broadcast (server→client only)
+/// with a genuinely bidirectional channel.
+pub fn __varg_ws_route<F>(server: &mut VargHttpServerHandle, path: &str, handler: F)
+where
+    F: Fn(String) -> String + Send + Sync + 'static,
+{
+    server.ws_routes.push(VargWsRoute {
+        path: path.to_string(),
+        handler: Arc::new(handler),
+    });
+}
+
+/// axum state wrapper carrying the per-route WebSocket handler.
+#[derive(Clone)]
+struct WsHandlerState {
+    handler: Arc<dyn Fn(String) -> String + Send + Sync>,
+}
+
+/// axum handler: perform the HTTP→WebSocket upgrade for a registered ws route.
+async fn ws_upgrade_handler(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<WsHandlerState>,
+) -> axum::response::Response {
+    ws.on_upgrade(move |socket| ws_conn_loop(socket, state))
+}
+
+/// Per-connection loop: text frame → Varg handler → reply.
+async fn ws_conn_loop(mut socket: axum::extract::ws::WebSocket, state: WsHandlerState) {
+    use axum::extract::ws::Message;
+    while let Some(Ok(msg)) = socket.recv().await {
+        match msg {
+            Message::Text(text) => {
+                let h = Arc::clone(&state.handler);
+                // Varg handlers are synchronous and may block (db/fetch); keep them off the
+                // async worker — same reasoning as the regular route handlers.
+                let reply = match tokio::task::spawn_blocking(move || h(text)).await {
+                    Ok(r) => r,
+                    Err(_) => String::from("{\"error\":\"handler panicked\"}"),
+                };
+                if socket.send(Message::Text(reply)).await.is_err() {
+                    break;
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
         }
     }
 }
@@ -368,6 +399,16 @@ pub async fn __varg_http_listen_sse(server: VargHttpServerHandle, addr: &str) ->
         router = router.merge(sse_sub);
     }
 
+    // ── WebSocket routes ────────────────────────────────────────────────────
+    // Same shape as SSE: one sub-router per route carrying its handler as state.
+    for ws_route in server.ws_routes {
+        let state = WsHandlerState { handler: Arc::clone(&ws_route.handler) };
+        let ws_sub = Router::new()
+            .route(&ws_route.path, get(ws_upgrade_handler))
+            .with_state(state);
+        router = router.merge(ws_sub);
+    }
+
     let listener = tokio::net::TcpListener::bind(addr).await
         .map_err(|e| format!("Failed to bind '{}': {}", addr, e))?;
 
@@ -384,7 +425,7 @@ mod tests {
     #[test]
     fn test_create_server() {
         let server = __varg_http_server();
-        assert!(server.routes.is_empty());
+        assert!(server.inner.routes.is_empty());
     }
 
     #[test]
@@ -393,9 +434,9 @@ mod tests {
         __varg_http_route(&mut server, "GET", "/health", |_req| {
             VargHttpResponse::ok("{\"status\": \"ok\"}")
         });
-        assert_eq!(server.routes.len(), 1);
-        assert_eq!(server.routes[0].method, "GET");
-        assert_eq!(server.routes[0].path, "/health");
+        assert_eq!(server.inner.routes.len(), 1);
+        assert_eq!(server.inner.routes[0].method, "GET");
+        assert_eq!(server.inner.routes[0].path, "/health");
     }
 
     #[test]
@@ -424,7 +465,7 @@ mod tests {
             query_params: HashMap::new(),
         };
 
-        let response = (server.routes[0].handler)(req);
+        let response = (server.inner.routes[0].handler)(req);
         assert_eq!(response.body, "test body");
     }
 
@@ -458,6 +499,58 @@ mod tests {
         assert_eq!(received, "hello from varg");
     }
 
+    #[test]
+    fn test_ws_route_registers() {
+        let mut srv = VargHttpServerHandle::new();
+        __varg_ws_route(&mut srv, "/ws", |m: String| format!("echo: {}", m));
+        assert_eq!(srv.ws_routes.len(), 1);
+        assert_eq!(srv.ws_routes[0].path, "/ws");
+        // The stored handler is the one we registered.
+        assert_eq!((srv.ws_routes[0].handler)("hi".to_string()), "echo: hi");
+    }
+
+    /// Real bidirectional round-trip: serve the ws route over a live socket and drive it with the
+    /// tungstenite client. Proves the axum upgrade + handler dispatch actually work, not just that
+    /// the route was recorded.
+    #[cfg(feature = "ws")]
+    #[tokio::test]
+    async fn test_ws_route_bidirectional_roundtrip() {
+        let mut srv = VargHttpServerHandle::new();
+        __varg_ws_route(&mut srv, "/ws", |msg: String| format!("echo: {}", msg));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Same wiring __varg_http_listen_sse performs for ws routes.
+        let mut router: Router = Router::new();
+        for ws_route in srv.ws_routes {
+            let state = WsHandlerState { handler: Arc::clone(&ws_route.handler) };
+            router = router.merge(
+                Router::new()
+                    .route(&ws_route.path, get(ws_upgrade_handler))
+                    .with_state(state),
+            );
+        }
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let url = format!("ws://{}/ws", addr);
+        let reply = tokio::task::spawn_blocking(move || {
+            let (mut sock, _) = tungstenite::connect(&url).expect("ws connect");
+            sock.send(tungstenite::Message::Text("ping".to_string())).expect("ws send");
+            match sock.read().expect("ws read") {
+                tungstenite::Message::Text(t) => t,
+                other => panic!("unexpected frame: {:?}", other),
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(reply, "echo: ping");
+    }
+
     #[tokio::test]
     async fn test_server_listen_and_respond() {
         let mut server = __varg_http_server();
@@ -470,7 +563,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let mut router = Router::new();
-        for route in server.routes {
+        for route in server.inner.routes {
             let handler = route.handler.clone();
             let h = move |req: Request| {
                 let h = handler.clone();
