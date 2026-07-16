@@ -7,14 +7,6 @@
 // (router tool -> handler -> child process -> reply) is exercised in one deterministic process.
 
 agent Router {
-    // Ask the exposed MCP server for its tool list, JSON-RPC style.
-    private string listTools(McpServerHandle srv) {
-        var req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}";
-        var resp = mcp_server_handle_request(srv, req);
-        var names = json_get_array(resp, "/result/tools");
-        return names.len().to_string();
-    }
-
     // Call one aggregated tool through the router, JSON-RPC style.
     private string callTool(McpServerHandle srv, string name, string argsJson) {
         var req = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\""

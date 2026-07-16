@@ -409,6 +409,9 @@ pub fn __varg_vector_search_text(store: &VectorStoreHandle, query_text: &str, to
 // exactly (brute force) — correct, just linear.
 
 /// L2-normalise so Euclidean distance ranks identically to cosine similarity.
+/// Only the HNSW index needs this; without `ann` it would be dead code (and a warning on every
+/// default build of every Varg program).
+#[cfg(feature = "ann")]
 fn normalize(v: &[f32]) -> Vec<f32> {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm == 0.0 { return v.to_vec(); }

@@ -551,6 +551,10 @@ mod tests {
         assert_eq!(reply, "echo: ping");
     }
 
+    /// Needs an HTTP client to drive the server, so it additionally requires `net` — without this
+    /// gate `--features server` on its own failed to compile (reqwest unresolved), which the
+    /// default/full CI matrix never exercised.
+    #[cfg(feature = "net")]
     #[tokio::test]
     async fn test_server_listen_and_respond() {
         let mut server = __varg_http_server();

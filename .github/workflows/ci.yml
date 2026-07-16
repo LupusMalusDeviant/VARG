@@ -56,3 +56,27 @@ jobs:
         run: cargo build -p varg-runtime --features full --locked
       - name: Test runtime (all features)
         run: cargo test -p varg-runtime --features full --locked
+
+  # Individual-feature gate. `default` and `full` both hid the case where a feature
+  # is enabled *on its own*: e.g. a test under `server` used reqwest without the
+  # `net` gate, so `--features server` alone did not compile — invisible to the two
+  # jobs above, and exactly what a user enabling one feature would hit.
+  test-single-features:
+    name: Compile (one feature at a time)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: varg-compiler
+          key: single-features
+      - name: Check each feature in isolation
+        working-directory: varg-compiler
+        run: |
+          set -e
+          for f in net server db llm ws pdf crypto encoding tensor ann; do
+            echo "::group::--features $f"
+            cargo test -p varg-runtime --features "$f" --lib --no-run --locked
+            echo "::endgroup::"
+          done
