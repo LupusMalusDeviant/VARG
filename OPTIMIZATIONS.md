@@ -236,9 +236,14 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      **CI-Job, der jedes Feature einzeln kompiliert** — die Lücke, die default/full strukturell nicht
      sehen können.
 
-   **Verbleibende benannte Grenzen:** Route-Handler erreichen `self` nicht (`Fn`) — Seite wird vorab
-   gerendert und gecaptured; **`?`/`try-catch` funktionieren nicht in einem Handler** (Handler ist
-   kein `Result`, `try`-Body wird eigene Closure) → Fehlerbehandlung via `res.is_err()`/`unwrap()`.
+   - ✅ **`try/catch` + `return` war generell kaputt** — nicht handler-spezifisch. Der try-Body wird
+     für `catch_unwind` in eine Closure gewickelt, also verließ ein `return` nur die Closure
+     (Typfehler); und der Typechecker zählte `try/catch` gar nicht als returnend („not all code
+     paths return"). Die Closure trägt den Rückgabewert jetzt heraus (`Ok(Some(v))`, RET von Rust
+     inferiert), der Typechecker kennt `try/catch`/`throw` als returnend. **Damit geht auch `?` im
+     Handler**: es propagiert in die try-Closure → wird zum `catch`. Golden: `try_return.varg`.
+   **Verbleibende benannte Grenze:** Route-Handler erreichen `self` nicht (`Fn`-Closures) — Seite
+   wird vorab gerendert und gecaptured.
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

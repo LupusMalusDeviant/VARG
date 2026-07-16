@@ -1220,6 +1220,13 @@ impl TypeChecker {
             Statement::If { then_block, else_block: Some(else_b), .. } => {
                 Self::block_always_returns(then_block) && Self::block_always_returns(else_b)
             },
+            // try/catch was missing: a try whose body and handler both return does return on every
+            // path, but it was reported as "not all code paths return a value".
+            Statement::TryCatch { try_block, catch_block, .. } => {
+                Self::block_always_returns(try_block) && Self::block_always_returns(catch_block)
+            },
+            // `throw` leaves the block just like a return does.
+            Statement::Throw(_) => true,
             Statement::Match { arms, .. } => {
                 if arms.is_empty() { return false; }
                 // All arms must return AND there must be a wildcard or exhaustive coverage
@@ -9844,4 +9851,46 @@ mod tests {
         let expr = method_call(Expression::Identifier("shape".to_string()), "area", vec![]);
         assert_eq!(c.infer_expression_type(&expr).unwrap(), TypeNode::Float);
     }
+
+    // ===== try/catch counts as returning =====
+
+    /// A function whose try and catch both return does return on every path. The checker used to
+    /// miss try/catch entirely and demanded a trailing return.
+    #[test]
+    fn try_catch_that_returns_on_both_paths_satisfies_missing_return() {
+        let body = Block { statements: vec![Statement::TryCatch {
+            try_block: Block { statements: vec![Statement::Return(Some(Expression::String("a".into())))] },
+            catch_var: "e".to_string(),
+            catch_block: Block { statements: vec![Statement::Return(Some(Expression::String("b".into())))] },
+        }]};
+        let f = FunctionDef {
+            name: "pick".to_string(), is_public: false,
+            type_params: vec![], constraints: vec![], params: vec![],
+            return_ty: Some(TypeNode::String), body,
+        };
+        let mut c = TypeChecker::new();
+        let program = Program { no_std: false, docs: Default::default(), items: vec![Item::Function(f)] };
+        assert!(c.check_program(&program).is_ok(), "try/catch returning on both paths must satisfy the return check");
+    }
+
+    /// ...but a catch that falls through still leaves a path without a return.
+    #[test]
+    fn try_catch_with_falling_through_catch_still_needs_a_return() {
+        let body = Block { statements: vec![Statement::TryCatch {
+            try_block: Block { statements: vec![Statement::Return(Some(Expression::String("a".into())))] },
+            catch_var: "e".to_string(),
+            catch_block: Block { statements: vec![Statement::Print(Expression::String("oops".into()))] },
+        }]};
+        let f = FunctionDef {
+            name: "pick".to_string(), is_public: false,
+            type_params: vec![], constraints: vec![], params: vec![],
+            return_ty: Some(TypeNode::String), body,
+        };
+        let mut c = TypeChecker::new();
+        let program = Program { no_std: false, docs: Default::default(), items: vec![Item::Function(f)] };
+        let errs = c.check_program(&program).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(&e.error, TypeError::MissingReturn { .. })),
+            "a catch that falls through must still be reported");
+    }
+
 }

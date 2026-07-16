@@ -55,22 +55,19 @@ agent RouterUI {
                 if (mcp_server_has_tool(srv, "math.double")) {
                     return http_response_json(200, "{\"already\":\"attached\"}");
                 }
-                var res = mcp_connect("./child_math.exe", []);
-                if (res.is_err()) {
-                    return http_response_json(500, "{\"error\":\"spawn failed\"}");
+                // `?` inside a try turns a failure into the catch — both work in a handler now.
+                try {
+                    var conn = mcp_connect("./child_math.exe", [])?;
+                    foreach (t in mcp_list_tools(conn)?) {
+                        var tool = t.name;
+                        mcp_server_register(srv, "math." + tool, t.description, (args) => {
+                            return mcp_call_tool(conn, tool, args) or "{\"error\":\"forward failed\"}";
+                        });
+                    }
+                    return http_response_json(200, "{\"attached\":\"math\"}");
+                } catch (e) {
+                    return http_response_json(500, "{\"error\":\"attach failed\"}");
                 }
-                var conn = res.unwrap();
-                var listed = mcp_list_tools(conn);
-                if (listed.is_err()) {
-                    return http_response_json(500, "{\"error\":\"list failed\"}");
-                }
-                foreach (t in listed.unwrap()) {
-                    var tool = t.name;
-                    mcp_server_register(srv, "math." + tool, t.description, (args) => {
-                        return mcp_call_tool(conn, tool, args) or "{\"error\":\"forward failed\"}";
-                    });
-                }
-                return http_response_json(200, "{\"attached\":\"math\"}");
             });
 
             // Detach: the tools leave the exposed surface immediately. The child's connection is

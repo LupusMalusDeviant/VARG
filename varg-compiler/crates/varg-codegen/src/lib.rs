@@ -1431,15 +1431,25 @@ impl RustGenerator {
                     let ret_expr = self.gen_expression(expr);
                     // Plan 53: Use unified self-field clone helper
                     let ret_str = self.clone_self_field_if_needed(&ret_expr);
-                    // Wave 14: Wrap return value in Ok() if in a Result-returning function
-                    if self.in_result_function {
+                    // A try block is compiled into a closure (for catch_unwind), so a plain
+                    // `return` there would only leave the closure and fail to type-check. Carry the
+                    // value out of the labelled block instead; the try site turns it into a real
+                    // return. See the TryCatch arm.
+                    if self.in_try_block {
+                        let v = if self.in_result_function { format!("Ok({})", ret_str) } else { ret_str };
+                        out.push_str(&format!("{}break 'varg_try Ok(Some({}));\n", indent, v));
+                    } else if self.in_result_function {
+                        // Wave 14: Wrap return value in Ok() if in a Result-returning function
                         out.push_str(&format!("{}return Ok({});\n", indent, ret_str));
                     } else {
                         out.push_str(&format!("{}return {};\n", indent, ret_str));
                     }
                 },
                 Statement::Return(None) => {
-                    if self.in_result_function {
+                    if self.in_try_block {
+                        let v = if self.in_result_function { "Ok(())".to_string() } else { "()".to_string() };
+                        out.push_str(&format!("{}break 'varg_try Ok(Some({}));\n", indent, v));
+                    } else if self.in_result_function {
                         out.push_str(&format!("{}return Ok(());\n", indent));
                     } else {
                         out.push_str(&format!("{}return;\n", indent));
@@ -1573,16 +1583,21 @@ impl RustGenerator {
                     out.push_str(&format!("{}{};\n", indent, self.gen_expression(expr)));
                 },
                 Statement::TryCatch { try_block, catch_var, catch_block } => {
+                    // The try body runs inside a closure so catch_unwind can catch runtime panics,
+                    // not just an explicit `throw`. That makes a `return` inside the body leave the
+                    // *closure*, which used to be a hard type error — `return` in a try simply did
+                    // not work. The closure now yields `Ok(Some(value))` for a return (Rust infers
+                    // the value type from the returns themselves) and `Ok(None)` when the body just
+                    // falls through; the call site turns Some back into a real return.
                     out.push_str(&format!("{}#[allow(unreachable_code, unused_labels, unused_variables)]\n", indent));
-                    // Wrap in catch_unwind so runtime panics are caught, not just explicit throw
-                    out.push_str(&format!("{}let _varg_try_res: std::result::Result<(), String> =\n", indent));
-                    out.push_str(&format!("{}    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> std::result::Result<(), String> {{\n", indent));
+                    out.push_str(&format!("{}let _varg_try_res =\n", indent));
+                    out.push_str(&format!("{}    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n", indent));
                     out.push_str(&format!("{}        #[allow(unreachable_code)] 'varg_try: {{\n", indent));
                     let prev_in_try = self.in_try_block;
                     self.in_try_block = true;
                     out.push_str(&self.gen_block(try_block, indent_level + 3));
                     self.in_try_block = prev_in_try;
-                    out.push_str(&format!("{}        Ok(())\n", indent));
+                    out.push_str(&format!("{}        std::result::Result::<_, String>::Ok(None)\n", indent));
                     out.push_str(&format!("{}        }}\n", indent));
                     out.push_str(&format!("{}    }}))\n", indent));
                     out.push_str(&format!("{}    .unwrap_or_else(|_panic_val| {{\n", indent));
@@ -1591,9 +1606,19 @@ impl RustGenerator {
                     out.push_str(&format!("{}            else {{ \"runtime error\".to_string() }};\n", indent));
                     out.push_str(&format!("{}        Err(_emsg)\n", indent));
                     out.push_str(&format!("{}    }});\n", indent));
-                    out.push_str(&format!("{}if let Err(mut {}) = _varg_try_res {{\n", indent, catch_var));
-                    out.push_str(&self.gen_block(catch_block, indent_level + 1));
+                    out.push_str(&format!("{}match _varg_try_res {{\n", indent));
+                    out.push_str(&format!("{}    Ok(Some(__varg_ret)) => return __varg_ret,\n", indent));
+                    out.push_str(&format!("{}    Ok(None) => {{}}\n", indent));
+                    out.push_str(&format!("{}    Err(mut {}) => {{\n", indent, catch_var));
+                    out.push_str(&self.gen_block(catch_block, indent_level + 2));
+                    out.push_str(&format!("{}    }}\n", indent));
                     out.push_str(&format!("{}}}\n", indent));
+                    // When both halves return, control never reaches past the match, and the match
+                    // sits in the function's tail position — tell rustc so, or it reports the
+                    // fall-through arm's `()` as the function's missing return value.
+                    if Self::block_always_returns(try_block) && Self::block_always_returns(catch_block) {
+                        out.push_str(&format!("{}#[allow(unreachable_code)] {{ unreachable!(\"try/catch returns on every path\") }}\n", indent));
+                    }
                 },
                 Statement::Throw(expr) => {
                     if self.in_try_block {
@@ -1912,6 +1937,23 @@ impl RustGenerator {
         self.gen_expression(arg)
     }
 
+    /// Whether every path through a block leaves it via `return` or `throw`. Mirrors the
+    /// typechecker's rule; the codegen needs it to know when a try/catch cannot fall through.
+    fn block_always_returns(block: &Block) -> bool {
+        match block.statements.last() {
+            None => false,
+            Some(Statement::Return(_)) | Some(Statement::Throw(_)) => true,
+            Some(Statement::If { then_block, else_block: Some(else_b), .. }) => {
+                Self::block_always_returns(then_block) && Self::block_always_returns(else_b)
+            }
+            Some(Statement::TryCatch { try_block, catch_block, .. }) => {
+                Self::block_always_returns(try_block) && Self::block_always_returns(catch_block)
+            }
+            Some(Statement::UnsafeBlock(b)) => Self::block_always_returns(b),
+            _ => false,
+        }
+    }
+
     /// Names bound *inside* a block — locals, loop variables, and the parameters of any nested
     /// lambda. None of these are values captured from the enclosing scope, so they must not be
     /// cloned into a handler closure (a nested lambda's own parameter is not a free variable of the
@@ -2009,12 +2051,17 @@ impl RustGenerator {
     /// against its plain (non-Result) return type.
     fn gen_lambda_body(&mut self, body: &LambdaBody) -> String {
         let prev = self.in_result_function;
+        // A `return` inside a lambda belongs to the lambda, so neither the enclosing function's
+        // Result-ness nor an enclosing try block may leak into it.
+        let prev_try = self.in_try_block;
         self.in_result_function = false;
+        self.in_try_block = false;
         let out = match body {
             LambdaBody::Expression(e) => self.gen_expression(e),
             LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
         };
         self.in_result_function = prev;
+        self.in_try_block = prev_try;
         out
     }
 
@@ -3906,7 +3953,9 @@ mod tests {
         let mut gen = RustGenerator::new();
         let code = gen.generate(&program);
         assert!(code.contains("'varg_try:"));
-        assert!(code.contains("if let Err(mut err)"));
+        // The catch arm moved from `if let Err(..)` into a match, so a `return` in the try body
+        // can carry its value out of the catch_unwind closure.
+        assert!(code.contains("Err(mut err) =>"), "catch must bind the error: {code}");
         assert!(code.contains("break 'varg_try Err("));
     }
 
@@ -4752,7 +4801,7 @@ mod tests {
         let code = gen.generate(&program);
         assert!(code.contains("break 'varg_try Err("));
         assert!(code.contains("something went wrong"));
-        assert!(code.contains("if let Err(mut err) = _varg_try_res"));
+        assert!(code.contains("Err(mut err) =>"), "catch must bind the error: {code}");
     }
 
     #[test]
@@ -6799,8 +6848,11 @@ mod tests {
             },
         ]};
         let code = gen.gen_block(&block, 1);
-        assert!(code.contains("Result<(), String>"), "Missing Result type: {}", code);
-        assert!(code.contains("Ok(())"), "Missing Ok: {}", code);
+        // The try closure now yields `Result<Option<RET>, String>` (RET inferred) so that a
+        // `return` inside the try body can carry its value out; it is no longer pinned to
+        // `Result<(), String>`, which made `return` a type error.
+        assert!(code.contains("catch_unwind"), "try must catch panics: {}", code);
+        assert!(code.contains("Result::<_, String>::Ok(None)"), "Missing fall-through Ok: {}", code);
         assert!(code.contains("Err(mut err)"), "Missing Err binding: {}", code);
     }
 
@@ -7182,7 +7234,9 @@ mod tests {
                 }
             }
         "#);
-        assert!(code.contains("Result<(), String>"), "Missing try result type");
+        // The try closure is no longer annotated `Result<(), String>` — it yields
+        // `Result<Option<RET>, String>` with RET inferred, so a `return` inside try works.
+        assert!(code.contains("catch_unwind"), "try must still catch panics: {code}");
         assert!(code.contains("Err(mut err)"), "Missing catch binding");
     }
 

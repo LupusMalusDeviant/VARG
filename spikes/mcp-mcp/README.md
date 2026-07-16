@@ -3,7 +3,7 @@
 Beantwortet die Frage: **lässt sich ein MCP-Router (Kind-MCPs zur Laufzeit an-/abklemmen,
 Tools aggregieren, Calls weiterleiten, dazu eine UI) in Varg bauen?**
 
-**Antwort: ja** — nachdem sieben Compiler-/Runtime-Lücken geschlossen wurden, die der Spike
+**Antwort: ja** — nachdem acht Compiler-/Runtime-Lücken geschlossen wurden, die der Spike
 aufgedeckt hat (siehe unten). Kein npm, kein Netz: die Kind-MCPs sind selbst Varg-Programme.
 
 ## Ausführen
@@ -60,7 +60,7 @@ dass Argumente **typerhaltend** über den Hop gehen.
 ## Aufgedeckte und geschlossene Lücken
 
 Der Spike war weniger „schreib den Router" als ein Test, ob Varg das überhaupt ausdrücken kann.
-Sieben Dinge standen im Weg — alle im Compiler/Runtime gefixt, nicht im Spike umschifft:
+Acht Dinge standen im Weg — alle im Compiler/Runtime gefixt, nicht im Spike umschifft:
 
 1. **`McpConnection` war kein Handle.** Jeder andere zustandsbehaftete Handle der Runtime
    (Vector-Store, Workflow, MCP-*Server*) ist `Arc<Mutex<_>>`; die Client-Verbindung war ein nacktes
@@ -84,13 +84,15 @@ Sieben Dinge standen im Weg — alle im Compiler/Runtime gefixt, nicht im Spike 
    registrieren (= Attach zur Laufzeit) scheiterte: der Parameter des inneren Lambdas wurde vom
    äußeren Handler als Capture behandelt und geklont (`let args = args.clone();` → „not found in
    this scope"). Gebundene Namen innerer Lambdas zählen jetzt korrekt nicht als freie Variablen.
+8. **`try/catch` + `return` war generell kaputt** (nicht nur im Handler): der try-Body wird für
+   `catch_unwind` in eine Closure gewickelt, also verließ ein `return` nur die Closure → Typfehler.
+   Zusätzlich zählte der Typechecker `try/catch` gar nicht als returnend („not all code paths
+   return"). Die Closure trägt den Rückgabewert jetzt heraus (`Ok(Some(v))`, Typ von Rust inferiert).
+   Damit funktioniert im Handler auch **`?`**: es propagiert in die try-Closure → wird zum `catch`.
 
 ## Bekannte Grenzen (nicht umschifft, sondern benannt)
 
 - **Route-Handler erreichen `self` nicht** (`Fn`-Closures). Deshalb wird die Seite einmal vorab
   gerendert und vom Handler gecaptured.
-- **`?` und `try/catch` funktionieren nicht in einem Handler.** Der Handler ist kein `Result`, und
-  der `try`-Body wird zu einer Closure mit eigenem Rückgabetyp — ein `return http_response(...)`
-  darin passt nicht. Fehlerbehandlung läuft deshalb über `res.is_err()` / `res.unwrap()`.
 - Der Router registriert Kind-Tools mit fixem Namespace und kennt nur das math-Kind beim Attach;
   ein echtes Produkt würde Kind-Liste, Namenskonflikte, Schema-Merge und Neustarts behandeln.

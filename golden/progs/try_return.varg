@@ -1,0 +1,35 @@
+agent T {
+    // return from inside a try, and from inside its catch — both used to be impossible:
+    // the try body is compiled into a closure, so `return` never left it.
+    private string pick(int n) {
+        try {
+            if (n > 0) {
+                return "positive";
+            }
+            throw "not positive";
+        } catch (e) {
+            return "caught: " + e;
+        }
+    }
+
+    // A catch that falls through must still continue after the try.
+    private string fallthrough(int n) {
+        var note = "start";
+        try {
+            if (n < 0) {
+                throw "negative";
+            }
+            note = "ok";
+        } catch (e) {
+            note = "recovered";
+        }
+        return note;
+    }
+
+    public void Run() {
+        print(pick(5));
+        print(pick(-1));
+        print(fallthrough(1));
+        print(fallthrough(-1));
+    }
+}
