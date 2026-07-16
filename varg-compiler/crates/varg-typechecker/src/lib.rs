@@ -1211,6 +1211,112 @@ impl TypeChecker {
     }
 
     /// Plan 58: Check if a block always returns a value on all code paths
+    /// Does this handler lambda reach into `self`? Returns the field/method name if so.
+    ///
+    /// Bare builtin calls are parsed as a method call on a synthetic `self`, so merely seeing
+    /// `self` means nothing. A genuine access is a field read (`self.x`) or a call to a method of
+    /// the agent being checked — that is what cannot cross into a handler closure.
+    fn self_use_in_lambda(&self, lambda: &Expression) -> Option<String> {
+        let (params, body) = match lambda {
+            Expression::Lambda { params, body, .. } => (params, body),
+            _ => return None,
+        };
+        // A parameter named `self` would shadow the agent — nothing to report then.
+        if params.iter().any(|p| p.name == "self") {
+            return None;
+        }
+        match body.as_ref() {
+            LambdaBody::Expression(e) => self.self_use_in_expr(e),
+            LambdaBody::Block(b) => self.self_use_in_block(b),
+        }
+    }
+
+    fn self_use_in_block(&self, block: &Block) -> Option<String> {
+        block.statements.iter().find_map(|s| self.self_use_in_stmt(s))
+    }
+
+    fn self_use_in_stmt(&self, stmt: &Statement) -> Option<String> {
+        match stmt {
+            Statement::Let { value, .. } | Statement::Const { value, .. }
+            | Statement::Assign { value, .. } => self.self_use_in_expr(value),
+            Statement::Expr(e) | Statement::Print(e) | Statement::Return(Some(e))
+            | Statement::Throw(e) | Statement::Stream(e) => self.self_use_in_expr(e),
+            Statement::PropertyAssign { target, property, value } => {
+                if matches!(target, Expression::Identifier(n) if n == "self") {
+                    return Some(property.clone());
+                }
+                self.self_use_in_expr(target).or_else(|| self.self_use_in_expr(value))
+            }
+            Statement::If { condition, then_block, else_block } => {
+                self.self_use_in_expr(condition)
+                    .or_else(|| self.self_use_in_block(then_block))
+                    .or_else(|| else_block.as_ref().and_then(|b| self.self_use_in_block(b)))
+            }
+            Statement::While { condition, body } => {
+                self.self_use_in_expr(condition).or_else(|| self.self_use_in_block(body))
+            }
+            Statement::Foreach { collection, body, .. } => {
+                self.self_use_in_expr(collection).or_else(|| self.self_use_in_block(body))
+            }
+            Statement::TryCatch { try_block, catch_block, .. } => {
+                self.self_use_in_block(try_block).or_else(|| self.self_use_in_block(catch_block))
+            }
+            Statement::UnsafeBlock(b) => self.self_use_in_block(b),
+            _ => None,
+        }
+    }
+
+    fn self_use_in_expr(&self, expr: &Expression) -> Option<String> {
+        match expr {
+            // `self.field`
+            Expression::PropertyAccess { caller, property_name } => {
+                if matches!(&**caller, Expression::Identifier(n) if n == "self") {
+                    return Some(property_name.clone());
+                }
+                self.self_use_in_expr(caller)
+            }
+            Expression::MethodCall { caller, method_name, args } => {
+                // A call on the synthetic `self` is only a real self-access when the name is a
+                // method of the current agent — otherwise it is just a bare builtin call.
+                if matches!(&**caller, Expression::Identifier(n) if n == "self") {
+                    if let Some(agent) = &self.current_agent_name {
+                        let is_own_method = self.method_signatures.get(&agent[..])
+                            .map_or(false, |m| m.contains_key(&method_name[..]));
+                        if is_own_method {
+                            return Some(format!("{}()", method_name));
+                        }
+                    }
+                }
+                self.self_use_in_expr(caller)
+                    .or_else(|| args.iter().find_map(|a| self.self_use_in_expr(a)))
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                self.self_use_in_expr(left).or_else(|| self.self_use_in_expr(right))
+            }
+            Expression::UnaryOp { operand, .. } => self.self_use_in_expr(operand),
+            Expression::Await(e) | Expression::TryPropagate(e) => self.self_use_in_expr(e),
+            Expression::OrDefault { expr, default } => {
+                self.self_use_in_expr(expr).or_else(|| self.self_use_in_expr(default))
+            }
+            Expression::ArrayLiteral(v) | Expression::TupleLiteral(v) => {
+                v.iter().find_map(|e| self.self_use_in_expr(e))
+            }
+            Expression::IndexAccess { caller, index } => {
+                self.self_use_in_expr(caller).or_else(|| self.self_use_in_expr(index))
+            }
+            Expression::InterpolatedString(parts) => parts.iter().find_map(|p| match p {
+                InterpolationPart::Expression(e) => self.self_use_in_expr(e),
+                _ => None,
+            }),
+            // A nested lambda has the same restriction, so look inside it too.
+            Expression::Lambda { body, .. } => match body.as_ref() {
+                LambdaBody::Expression(e) => self.self_use_in_expr(e),
+                LambdaBody::Block(b) => self.self_use_in_block(b),
+            },
+            _ => None,
+        }
+    }
+
     fn block_always_returns(block: &Block) -> bool {
         if block.statements.is_empty() {
             return false;
@@ -1432,6 +1538,31 @@ impl TypeChecker {
                             // is left to the general path (methods may have default params, so a
                             // strict len comparison here would reject valid shorter calls).
                             return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
+                        }
+                    }
+                }
+                // Handler lambdas become `Fn + Send + Sync + 'static` closures in the generated
+                // Rust, so they cannot touch `self`. Sharing the agent would need snapshot
+                // semantics (silently mutating a copy) or a lock the enclosing method already
+                // holds — so this stays a real restriction, and the job here is to say so clearly
+                // instead of letting it surface as rustc's "cannot borrow *self as mutable, as Fn
+                // closures cannot mutate their captured variables".
+                const HANDLER_BUILTINS: &[(&str, usize)] = &[
+                    ("http_route", 3), ("ws_route", 2), ("mcp_server_register", 3),
+                    ("workflow_set_handler", 2), ("orchestrator_run_all", 1),
+                    ("fan_out", 1), ("fan_in", 1), ("llm_stream_to", 2),
+                    ("event_on", 1), ("pipeline_add_step", 1),
+                ];
+                if let Some((_, idx)) = HANDLER_BUILTINS.iter().find(|(n, _)| *n == method_name) {
+                    if let Some(lambda) = args.get(*idx) {
+                        if let Some(what) = self.self_use_in_lambda(lambda) {
+                            return Err(TypeError::TypeMismatch {
+                                expected: format!(
+                                    "a `{}` handler that does not use `self` — compute `{}` before the handler and let it capture the result",
+                                    method_name, what
+                                ),
+                                found: format!("handler using `self.{}`", what),
+                            });
                         }
                     }
                 }
@@ -9891,6 +10022,78 @@ mod tests {
         let errs = c.check_program(&program).unwrap_err();
         assert!(errs.iter().any(|e| matches!(&e.error, TypeError::MissingReturn { .. })),
             "a catch that falls through must still be reported");
+    }
+
+
+    // ===== `self` inside a handler is rejected with a usable message =====
+
+    fn agent_with_page_and(run_body: Vec<Statement>) -> Program {
+        let page = MethodDecl {
+            name: "page".to_string(), is_public: false, is_async: false, annotations: vec![],
+            type_params: vec![], constraints: vec![], args: vec![],
+            return_ty: Some(TypeNode::String),
+            body: Some(Block { statements: vec![Statement::Return(Some(Expression::String("hi".into())))] }),
+        };
+        let run = MethodDecl {
+            name: "Run".to_string(), is_public: true, is_async: false, annotations: vec![],
+            type_params: vec![], constraints: vec![], args: vec![],
+            return_ty: Some(TypeNode::Void),
+            body: Some(Block { statements: run_body }),
+        };
+        Program { no_std: false, docs: Default::default(), items: vec![Item::Agent(AgentDef {
+            name: "A".to_string(), is_system: false, is_public: true, target_annotation: None,
+            annotations: vec![], implements: vec![], fields: vec![], methods: vec![page, run],
+        })] }
+    }
+
+    fn route_with_handler_body(body: Expression) -> Vec<Statement> {
+        vec![
+            Statement::Let { name: "h".to_string(), ty: None, value: Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "http_serve".to_string(), args: vec![],
+            }},
+            Statement::Expr(Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "http_route".to_string(),
+                args: vec![
+                    Expression::Identifier("h".to_string()),
+                    Expression::String("GET".into()),
+                    Expression::String("/".into()),
+                    Expression::Lambda {
+                        params: vec![FieldDecl { name: "req".to_string(), ty: TypeNode::Custom("Dynamic".into()), default_value: None }],
+                        return_ty: None,
+                        body: Box::new(LambdaBody::Block(Block { statements: vec![Statement::Return(Some(body))] })),
+                    },
+                ],
+            }),
+        ]
+    }
+
+    /// A handler calling an agent method must be rejected here — otherwise it surfaces as rustc's
+    /// "cannot borrow *self as mutable, as Fn closures cannot mutate their captured variables".
+    #[test]
+    fn self_method_in_route_handler_is_rejected_with_a_hint() {
+        let program = agent_with_page_and(route_with_handler_body(Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "page".to_string(), args: vec![],
+        }));
+        let mut c = TypeChecker::new();
+        let errs = c.check_program(&program).unwrap_err();
+        let msg = format!("{:?}", errs);
+        assert!(msg.contains("page()"), "must name the offending member: {msg}");
+        assert!(msg.contains("capture the result"), "must suggest the way out: {msg}");
+    }
+
+    /// Bare builtin calls are also parsed as a call on the synthetic `self` — they must NOT trip it.
+    #[test]
+    fn builtin_calls_in_a_handler_are_not_mistaken_for_self_access() {
+        let program = agent_with_page_and(route_with_handler_body(Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "http_response".to_string(),
+            args: vec![Expression::Int(200), Expression::String("ok".into())],
+        }));
+        let mut c = TypeChecker::new();
+        assert!(c.check_program(&program).is_ok(), "a handler using only builtins must be accepted");
     }
 
 }

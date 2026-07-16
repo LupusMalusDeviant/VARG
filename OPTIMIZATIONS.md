@@ -242,8 +242,16 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      paths return"). Die Closure trägt den Rückgabewert jetzt heraus (`Ok(Some(v))`, RET von Rust
      inferiert), der Typechecker kennt `try/catch`/`throw` als returnend. **Damit geht auch `?` im
      Handler**: es propagiert in die try-Closure → wird zum `catch`. Golden: `try_return.varg`.
-   **Verbleibende benannte Grenze:** Route-Handler erreichen `self` nicht (`Fn`-Closures) — Seite
-   wird vorab gerendert und gecaptured.
+   - ✅ **`self` im Handler: Grenze ehrlich gemacht statt gefaked.** Sie bleibt real — ein geklontes
+     `self` hätte Snapshot-Semantik (stille Mutation einer Kopie), ein `Arc<Mutex<Agent>>` würde
+     deadlocken (die umgebende Methode hält `self` schon, während `http_listen` darin blockiert).
+     Der Typechecker lehnt `self`-Zugriffe in Handler-Lambdas jetzt mit Nennung des Members und dem
+     Ausweg ab („compute `page()` before the handler and let it capture the result"), statt rustcs
+     „cannot borrow `*self` as mutable" durchzureichen. Unterscheidet echte `self`-Zugriffe von
+     bloßen Builtin-Aufrufen (die ebenfalls als `caller: self` geparst werden) — keine False
+     Positives über Spike, Golden und Beispiele.
+   **Verbleibende benannte Grenze:** Route-Handler erreichen `self` nicht — jetzt aber mit klarer
+   Compiler-Meldung statt rustc-Leak.
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

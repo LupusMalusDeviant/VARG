@@ -92,7 +92,11 @@ Acht Dinge standen im Weg — alle im Compiler/Runtime gefixt, nicht im Spike um
 
 ## Bekannte Grenzen (nicht umschifft, sondern benannt)
 
-- **Route-Handler erreichen `self` nicht** (`Fn`-Closures). Deshalb wird die Seite einmal vorab
-  gerendert und vom Handler gecaptured.
+- **Route-Handler erreichen `self` nicht** (`Fn`-Closures) — deshalb wird die Seite einmal vorab
+  gerendert und vom Handler gecaptured. Das bleibt eine echte Grenze: ein geklontes `self` hätte
+  Snapshot-Semantik (`self.x = …` würde stillschweigend eine Kopie ändern), und ein geteiltes
+  `Arc<Mutex<Agent>>` würde deadlocken, weil die umgebende Methode `self` schon hält. Statt das zu
+  faken, **lehnt der Typechecker es jetzt mit einer brauchbaren Meldung ab** statt es als rustc-
+  Fehler („cannot borrow `*self` as mutable…") durchzureichen.
 - Der Router registriert Kind-Tools mit fixem Namespace und kennt nur das math-Kind beim Attach;
   ein echtes Produkt würde Kind-Liste, Namenskonflikte, Schema-Merge und Neustarts behandeln.
