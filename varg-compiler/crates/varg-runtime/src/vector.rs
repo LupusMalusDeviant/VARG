@@ -47,6 +47,10 @@ pub struct VectorStore {
     pub entries: Vec<VectorEntry>,
     /// SQLite connection for persistence (None = pure in-memory)
     db: Option<Connection>,
+    /// Built HNSW index (feature `ann`). Held here so `vector_build_index` actually persists it —
+    /// searches reuse it instead of rebuilding per query.
+    #[cfg(feature = "ann")]
+    ann: Option<ann_impl::AnnIndex>,
 }
 
 // Manual Debug since Connection doesn't implement Debug
@@ -103,6 +107,8 @@ pub fn __varg_vector_store_open(name: &str) -> VectorStoreHandle {
             name: name.to_string(),
             entries: Vec::new(),
             db: None,
+            #[cfg(feature = "ann")]
+            ann: None,
         }));
     }
 
@@ -116,6 +122,8 @@ pub fn __varg_vector_store_open(name: &str) -> VectorStoreHandle {
         name: name.to_string(),
         entries,
         db: Some(conn),
+        #[cfg(feature = "ann")]
+        ann: None,
     }))
 }
 
@@ -359,109 +367,139 @@ pub fn __varg_vector_search_text(store: &VectorStoreHandle, query_text: &str, to
         .collect()
 }
 
-// ── Wave 33: LSH Approximate Nearest-Neighbor Index ───────────────────────
+// ── Approximate Nearest-Neighbour Index (HNSW) ────────────────────────────
 //
-// Random-projection LSH: project each vector onto k hyperplanes,
-// encode as a bit-mask → bucket. Search only same bucket + neighbors.
+// Replaces the old random-projection LSH, which had two defects beyond weak recall:
+// `vector_build_index` discarded the index it built, and `vector_search_fast` rebuilt the whole
+// index on *every* query — making the "fast" path both approximate AND slower than a plain scan.
+//
+// Now: `vector_build_index` builds a real HNSW index and stores it on the handle; `search_fast`
+// reuses it. Cosine ranking is preserved by L2-normalising vectors, where Euclidean order is
+// equivalent to cosine order. Without the `ann` feature the store still answers `search_fast`
+// exactly (brute force) — correct, just linear.
 
-const LSH_PLANES: usize = 16; // 16 bits → 65536 possible buckets
-
-fn lcg_f32(state: &mut u64) -> f32 {
-    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    // Map to [-1, 1]
-    (*state as f32 / u64::MAX as f32) * 2.0 - 1.0
+/// L2-normalise so Euclidean distance ranks identically to cosine similarity.
+fn normalize(v: &[f32]) -> Vec<f32> {
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm == 0.0 { return v.to_vec(); }
+    v.iter().map(|x| x / norm).collect()
 }
 
-/// Generate k random hyperplane vectors (each of `dim` dimensions).
-fn make_planes(dim: usize, k: usize, seed: u64) -> Vec<Vec<f32>> {
-    let mut state = seed;
-    (0..k)
-        .map(|_| (0..dim).map(|_| lcg_f32(&mut state)).collect())
-        .collect()
-}
-
-fn lsh_hash(vec: &[f32], planes: &[Vec<f32>]) -> u64 {
-    let mut h = 0u64;
-    for (i, plane) in planes.iter().enumerate() {
-        let dot: f32 = vec.iter().zip(plane.iter()).map(|(a, b)| a * b).sum();
-        if dot >= 0.0 { h |= 1 << i; }
-    }
-    h
-}
-
-pub struct LshIndex {
-    planes: Vec<Vec<f32>>,
-    buckets: HashMap<u64, Vec<String>>, // hash → entry ids
-}
-
-impl LshIndex {
-    fn build(store: &VectorStore) -> Self {
-        let dim = store.entries.first().map(|e| e.embedding.len()).unwrap_or(128);
-        let planes = make_planes(dim, LSH_PLANES, 42);
-        let mut buckets: HashMap<u64, Vec<String>> = HashMap::new();
-        for entry in &store.entries {
-            let h = lsh_hash(&entry.embedding, &planes);
-            buckets.entry(h).or_default().push(entry.id.clone());
-        }
-        LshIndex { planes, buckets }
-    }
-
-    fn search(&self, query: &[f32], store: &VectorStore, top_k: usize) -> Vec<(String, f32)> {
-        let h = lsh_hash(query, &self.planes);
-        // Collect candidates: same bucket + 1-bit Hamming neighbours
-        let mut candidate_ids = std::collections::HashSet::new();
-        if let Some(ids) = self.buckets.get(&h) {
-            candidate_ids.extend(ids.iter().cloned());
-        }
-        for i in 0..LSH_PLANES {
-            let neighbour = h ^ (1 << i);
-            if let Some(ids) = self.buckets.get(&neighbour) {
-                candidate_ids.extend(ids.iter().cloned());
-            }
-        }
-        // Score candidates
-        let mut scored: Vec<(String, f32)> = candidate_ids
-            .iter()
-            .filter_map(|id| {
-                store.entries.iter().find(|e| &e.id == id).map(|e| {
-                    (id.clone(), cosine_similarity(query, &e.embedding))
-                })
-            })
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
-        scored
-    }
-}
-
-/// Build an in-memory LSH index for fast approximate search.
-/// Returns an opaque JSON-encoded index handle (serialized to string for simplicity).
-pub fn __varg_vector_build_index(store: &VectorStoreHandle) -> String {
-    let s = store.lock().unwrap_or_else(|e| e.into_inner());
-    let idx = LshIndex::build(&s);
-    let bucket_counts: Vec<(String, usize)> = idx.buckets.iter()
-        .map(|(k, v)| (k.to_string(), v.len()))
+/// Exact top-k by cosine similarity — the fallback and the correctness baseline.
+fn exact_top_k(store: &VectorStore, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
+    let mut scored: Vec<(String, f32)> = store.entries.iter()
+        .map(|e| (e.id.clone(), cosine_similarity(query, &e.embedding)))
         .collect();
-    serde_json::json!({
-        "buckets": bucket_counts.len(),
-        "indexed": s.entries.len()
-    }).to_string()
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_k);
+    scored
 }
 
-/// Approximate nearest-neighbour search using the LSH index.
-/// Falls back to linear scan when the index covers < 50% of entries.
+#[cfg(feature = "ann")]
+mod ann_impl {
+    use super::{normalize, VectorStore};
+    use instant_distance::{Builder, HnswMap, Point, Search};
+
+    #[derive(Clone, Debug)]
+    pub struct VecPoint(pub Vec<f32>);
+
+    impl Point for VecPoint {
+        fn distance(&self, other: &Self) -> f32 {
+            self.0.iter()
+                .zip(other.0.iter())
+                .map(|(a, b)| { let d = a - b; d * d })
+                .sum::<f32>()
+                .sqrt()
+        }
+    }
+
+    pub struct AnnIndex {
+        pub map: HnswMap<VecPoint, String>,
+        /// Entry count the index was built from — used to detect staleness after upserts/deletes.
+        pub indexed_count: usize,
+    }
+
+    pub fn build(store: &VectorStore) -> Option<AnnIndex> {
+        if store.entries.is_empty() { return None; }
+        let mut points = Vec::with_capacity(store.entries.len());
+        let mut values = Vec::with_capacity(store.entries.len());
+        for e in &store.entries {
+            points.push(VecPoint(normalize(&e.embedding)));
+            values.push(e.id.clone());
+        }
+        let map = Builder::default().build(points, values);
+        Some(AnnIndex { map, indexed_count: store.entries.len() })
+    }
+
+    /// Approximate top-k ids, nearest first.
+    pub fn search(idx: &AnnIndex, query: &[f32], top_k: usize) -> Vec<String> {
+        let q = VecPoint(normalize(query));
+        let mut search = Search::default();
+        idx.map.search(&q, &mut search)
+            .take(top_k)
+            .map(|item| item.value.clone())
+            .collect()
+    }
+}
+
+/// Build the ANN index for fast search and store it on the handle.
+/// Returns a JSON summary: how many entries were indexed and which backend is in use.
+pub fn __varg_vector_build_index(store: &VectorStoreHandle) -> String {
+    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+    let indexed = s.entries.len();
+    #[cfg(feature = "ann")]
+    {
+        s.ann = ann_impl::build(&s);
+        let built = s.ann.is_some();
+        return serde_json::json!({
+            "backend": "hnsw",
+            "indexed": indexed,
+            "built": built
+        }).to_string();
+    }
+    #[cfg(not(feature = "ann"))]
+    {
+        let _ = &mut s;
+        serde_json::json!({
+            "backend": "exact",
+            "indexed": indexed,
+            "built": false
+        }).to_string()
+    }
+}
+
+/// Nearest-neighbour search. Uses the HNSW index when one has been built and is still current;
+/// otherwise falls back to an exact scan (correct, linear) rather than silently returning
+/// worse results from a stale index.
 pub fn __varg_vector_search_fast(
     store: &VectorStoreHandle,
     query: &[f32],
     top_k: i64,
 ) -> Vec<String> {
     let s = store.lock().unwrap_or_else(|e| e.into_inner());
-    let idx = LshIndex::build(&s);
-    idx.search(query, &s, top_k as usize)
+    let k = top_k.max(0) as usize;
+
+    #[cfg(feature = "ann")]
+    {
+        if let Some(idx) = &s.ann {
+            if idx.indexed_count == s.entries.len() {
+                let ids = ann_impl::search(idx, query, k);
+                // Report the true cosine score for each hit, ordered best-first.
+                let mut scored: Vec<(String, f32)> = ids.into_iter()
+                    .filter_map(|id| s.entries.iter().find(|e| e.id == id)
+                        .map(|e| (id, cosine_similarity(query, &e.embedding))))
+                    .collect();
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                return scored.into_iter()
+                    .map(|(id, score)| serde_json::json!({"id": id, "score": score}).to_string())
+                    .collect();
+            }
+        }
+    }
+
+    exact_top_k(&s, query, k)
         .into_iter()
-        .map(|(id, score)| {
-            serde_json::json!({"id": id, "score": score}).to_string()
-        })
+        .map(|(id, score)| serde_json::json!({"id": id, "score": score}).to_string())
         .collect()
 }
 
@@ -695,8 +733,76 @@ mod tests {
 
     // ── LSH Index tests ───────────────────────────────────────────────────
 
+    /// The built index must be *kept* on the handle — the previous LSH implementation discarded it
+    /// and rebuilt per query, which made "fast" search slower than a plain scan.
+    #[cfg(feature = "ann")]
     #[test]
-    fn test_lsh_build_index_empty_store() {
+    fn test_ann_index_is_persisted_on_the_handle() {
+        let store = __varg_vector_store_open(":memory:");
+        for i in 0..20 {
+            let v: Vec<f32> = (0..16).map(|j| ((i * 16 + j) as f32).sin()).collect();
+            __varg_vector_store_upsert(&store, &format!("d{i}"), &v, &std::collections::HashMap::new());
+        }
+        assert!(store.lock().unwrap().ann.is_none(), "no index before build");
+        let info = __varg_vector_build_index(&store);
+        let v: serde_json::Value = serde_json::from_str(&info).unwrap();
+        assert_eq!(v["backend"], "hnsw");
+        assert_eq!(v["built"], true);
+        let s = store.lock().unwrap();
+        assert!(s.ann.is_some(), "index must be retained for reuse");
+        assert_eq!(s.ann.as_ref().unwrap().indexed_count, 20);
+    }
+
+    /// Recall check: the HNSW hit must agree with the exact answer on a well-separated set.
+    #[cfg(feature = "ann")]
+    #[test]
+    fn test_ann_search_matches_exact_top1() {
+        let store = __varg_vector_store_open(":memory:");
+        // 50 well-separated one-hot-ish vectors.
+        for i in 0..50 {
+            let mut v = vec![0.0f32; 50];
+            v[i] = 1.0;
+            __varg_vector_store_upsert(&store, &format!("d{i}"), &v, &std::collections::HashMap::new());
+        }
+        __varg_vector_build_index(&store);
+        // Query close to d17.
+        let mut q = vec![0.0f32; 50];
+        q[17] = 0.9;
+        q[3] = 0.1;
+        let results = __varg_vector_search_fast(&store, &q, 1);
+        let top: serde_json::Value = serde_json::from_str(&results[0]).unwrap();
+        assert_eq!(top["id"].as_str().unwrap(), "d17", "HNSW top-1 must match the exact nearest");
+    }
+
+    /// After mutating the store the index is stale; search must stay correct by falling back to an
+    /// exact scan rather than answering from an out-of-date index.
+    #[cfg(feature = "ann")]
+    #[test]
+    fn test_ann_stale_index_falls_back_to_exact() {
+        let store = __varg_vector_store_open(":memory:");
+        for i in 0..10 {
+            let mut v = vec![0.0f32; 10];
+            v[i] = 1.0;
+            __varg_vector_store_upsert(&store, &format!("d{i}"), &v, &std::collections::HashMap::new());
+        }
+        __varg_vector_build_index(&store);
+        // Add a new best match AFTER indexing — the index doesn't know about it.
+        let mut newv = vec![0.0f32; 10];
+        newv[0] = 1.0;
+        newv[1] = 0.05;
+        __varg_vector_store_upsert(&store, "newest", &newv, &std::collections::HashMap::new());
+
+        let mut q = vec![0.0f32; 10];
+        q[0] = 1.0;
+        q[1] = 0.06;
+        let results = __varg_vector_search_fast(&store, &q, 1);
+        let top: serde_json::Value = serde_json::from_str(&results[0]).unwrap();
+        assert_eq!(top["id"].as_str().unwrap(), "newest",
+            "stale index must not hide an entry added after the build");
+    }
+
+    #[test]
+    fn test_ann_build_index_empty_store() {
         let store = __varg_vector_store_open(":memory:");
         let info = __varg_vector_build_index(&store);
         let v: serde_json::Value = serde_json::from_str(&info).unwrap();
@@ -704,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lsh_build_index_with_entries() {
+    fn test_ann_build_index_with_entries() {
         let store = __varg_vector_store_open(":memory:");
         let v1: Vec<f32> = (0..128).map(|i| i as f32 / 128.0).collect();
         let v2: Vec<f32> = (0..128).map(|i| (127 - i) as f32 / 128.0).collect();
@@ -716,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lsh_search_fast_returns_results() {
+    fn test_ann_search_fast_returns_results() {
         let store = __varg_vector_store_open(":memory:");
         for i in 0..10 {
             let v: Vec<f32> = (0..64).map(|j| (i * 64 + j) as f32 / 1000.0).collect();
@@ -735,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lsh_search_most_similar_first() {
+    fn test_ann_search_most_similar_first() {
         let store = __varg_vector_store_open(":memory:");
         let target: Vec<f32> = (0..32).map(|i| i as f32).collect();
         let similar: Vec<f32> = target.iter().map(|v| v + 0.01).collect();

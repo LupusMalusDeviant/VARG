@@ -24,9 +24,12 @@ tensor      = ["dep:ndarray"]
 dataframe   = ["dep:polars"]
 duckdb      = ["dep:duckdb"]
 fts         = ["dep:tantivy"]
+# Real HNSW approximate-nearest-neighbour index for the vector store. Without it the store still
+# works and searches exactly (brute force) — correct, just linear.
+ann         = ["dep:instant-distance"]
 # Wave 35: full = all features — used to pre-compile the runtime .rlib once.
 full        = ["net", "server", "db", "llm", "ws", "pdf", "readline",
-               "crypto", "encoding", "tensor", "dataframe", "duckdb", "fts"]
+               "crypto", "encoding", "tensor", "dataframe", "duckdb", "fts", "ann"]
 # WASM-safe subset: only pure-Rust modules (serde, serde_json, rand).
 # Heavy deps (rusqlite, axum, reqwest, tungstenite) are excluded.
 wasm-safe = []
@@ -58,3 +61,4 @@ ndarray     = { version = "0.16",                             optional = true }
 polars      = { version = "0.46", features = ["lazy", "csv", "parquet", "strings", "dtype-full"], optional = true }
 duckdb      = { version = "1.1",  features = ["bundled"],     optional = true }
 tantivy     = { version = "0.22",                             optional = true }
+instant-distance = { version = "0.6", optional = true }

@@ -420,6 +420,10 @@ const FEATURE_MAP: &[(&str, &str)] = &[
     // because a single call needs both features.
     ("__varg_registry_download",   "net"),
     ("__varg_registry_download",   "crypto"),
+    // Vector ANN: pull in the HNSW index when a program builds/uses one. Without `ann` the store
+    // still answers correctly via an exact scan, just linearly.
+    ("__varg_vector_build_index",  "ann"),
+    ("__varg_vector_search_fast",  "ann"),
     // Real (semantic) embeddings call OpenAI/Gemini/Ollama over HTTP → need reqwest (`net`).
     // Without net the runtime still works, using the local lexical fallback.
     ("__varg_embed",               "net"),
