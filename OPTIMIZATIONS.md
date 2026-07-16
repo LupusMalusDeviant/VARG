@@ -183,9 +183,16 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      **inkrementell** (das alte `llm_stream` sammelte erst alles ⇒ kein Live-Output). Streaming-Kern
      von HTTP getrennt ⇒ mit aufgezeichneten SSE-Zeilen testbar (OpenAI/Anthropic/Ollama). Gegen einen
      lokalen Fake-Provider end-to-end verifiziert.
-   **Verbliebene bekannte Kleinigkeiten:** Float-Array-Literale emittieren `Vec<f64>`, die Vector-API
-   erwartet `&[f32]` (⇒ literale Embeddings gehen nicht, `embed()` schon); `json_get` erwartet einen
-   geparsten Wert (`json_parse` zuerst).
+   **Stufe 10 (die zwei Kleinigkeiten — erledigt):**
+   - ✅ **Literale Embeddings**: `vector_store_upsert/search/search_fast` nehmen jetzt sowohl `f32`
+     (aus `embed()`) als auch `f64` (Varg-Float-Array-Literale kompilieren zu `Vec<f64>`) — via
+     `ToF32Vec`-Konvertierung statt harter `&[f32]`-Signatur. `vector_store_upsert(vs, "x", [1.0, 0.0, 0.0], {})`
+     läuft.
+   - ✅ **JSON-Accessoren beidseitig**: die Familie widersprach sich — `json_get*` verlangte einen
+     **geparsten Wert**, `json_keys`/`json_values`/`json_has` dagegen einen **rohen String**; was man
+     auch hatte, die Hälfte lehnte ab. Jetzt nimmt alles `impl AsJson` (Wert **oder** JSON-String),
+     zentral in `varg-runtime/src/json.rs` statt als Inline-Codegen. `json_get(s, "/a/b")` ohne
+     `json_parse` funktioniert, `json_has(parsed, "k")` ebenfalls (war vorher schlicht kaputt).
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

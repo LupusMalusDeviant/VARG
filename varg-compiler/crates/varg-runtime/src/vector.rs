@@ -127,13 +127,41 @@ pub fn __varg_vector_store_open(name: &str) -> VectorStoreHandle {
     }))
 }
 
+/// Accepts an embedding as either `f32` (what `embed()` returns) or `f64` (what a Varg float array
+/// literal like `[1.0, 0.0]` compiles to). Without this, literal embeddings could not be passed to
+/// the vector API at all — only `embed()` results.
+pub trait ToF32Vec {
+    fn to_f32_vec(&self) -> Vec<f32>;
+}
+impl ToF32Vec for Vec<f32> {
+    fn to_f32_vec(&self) -> Vec<f32> { self.clone() }
+}
+impl ToF32Vec for [f32] {
+    fn to_f32_vec(&self) -> Vec<f32> { self.to_vec() }
+}
+impl ToF32Vec for Vec<f64> {
+    fn to_f32_vec(&self) -> Vec<f32> { self.iter().map(|v| *v as f32).collect() }
+}
+impl ToF32Vec for [f64] {
+    fn to_f32_vec(&self) -> Vec<f32> { self.iter().map(|v| *v as f32).collect() }
+}
+// Fixed-size arrays (`&[1.0, 2.0, 3.0]`) don't coerce to a slice through a generic param.
+impl<const N: usize> ToF32Vec for [f32; N] {
+    fn to_f32_vec(&self) -> Vec<f32> { self.to_vec() }
+}
+impl<const N: usize> ToF32Vec for [f64; N] {
+    fn to_f32_vec(&self) -> Vec<f32> { self.iter().map(|v| *v as f32).collect() }
+}
+
 /// Upsert a vector with ID, embedding, and metadata
-pub fn __varg_vector_store_upsert(
+pub fn __varg_vector_store_upsert<E: ToF32Vec + ?Sized>(
     store: &VectorStoreHandle,
     id: &str,
-    embedding: &[f32],
+    embedding: &E,
     metadata: &HashMap<String, String>,
 ) {
+    let embedding = embedding.to_f32_vec();
+    let embedding: &[f32] = &embedding;
     let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
 
     // Write-through to SQLite if persisted
@@ -161,11 +189,13 @@ pub fn __varg_vector_store_upsert(
 
 /// Search for top_k nearest vectors by cosine similarity
 /// Returns list of maps with _id, _score, and all metadata fields
-pub fn __varg_vector_store_search(
+pub fn __varg_vector_store_search<Q: ToF32Vec + ?Sized>(
     store: &VectorStoreHandle,
-    query: &[f32],
+    query: &Q,
     top_k: i64,
 ) -> Vec<HashMap<String, String>> {
+    let query = query.to_f32_vec();
+    let query: &[f32] = &query;
     let s = store.lock().unwrap_or_else(|e| e.into_inner());
     let mut scored: Vec<(&VectorEntry, f32)> = s.entries
         .iter()
@@ -471,11 +501,13 @@ pub fn __varg_vector_build_index(store: &VectorStoreHandle) -> String {
 /// Nearest-neighbour search. Uses the HNSW index when one has been built and is still current;
 /// otherwise falls back to an exact scan (correct, linear) rather than silently returning
 /// worse results from a stale index.
-pub fn __varg_vector_search_fast(
+pub fn __varg_vector_search_fast<Q: ToF32Vec + ?Sized>(
     store: &VectorStoreHandle,
-    query: &[f32],
+    query: &Q,
     top_k: i64,
 ) -> Vec<String> {
+    let query = query.to_f32_vec();
+    let query: &[f32] = &query;
     let s = store.lock().unwrap_or_else(|e| e.into_inner());
     let k = top_k.max(0) as usize;
 

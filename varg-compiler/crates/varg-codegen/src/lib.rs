@@ -2610,27 +2610,29 @@ impl RustGenerator {
                 } else if method_name == "json_parse" {
                     // Return Value directly (null on parse error) so json_get/pointer work without unwrap
                     format!("serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Null)", arg_strs[0])
+                // The json accessors take either an already-parsed value or a raw JSON string, so
+                // `json_get(s, "/a")` no longer needs a `json_parse` hop first. A leading '/' in the
+                // path selects a JSON pointer, otherwise it's a single object key.
                 } else if method_name == "json_get" {
-                    // Path starting with '/' is a JSON pointer (nested, e.g. "/main/temp");
-                    // otherwise a single object key. (Was .get() only, so documented pointer
-                    // paths silently returned empty.)
-                    format!("{{ let __j = &{}; let __p: String = {}; (if __p.starts_with('/') {{ __j.pointer(&__p) }} else {{ __j.get(__p.as_str()) }}).and_then(|v| v.as_str()).unwrap_or_default().to_string() }}", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::json::__varg_json_get(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_int" {
-                    format!("{{ let __j = &{}; let __p: String = {}; (if __p.starts_with('/') {{ __j.pointer(&__p) }} else {{ __j.get(__p.as_str()) }}).and_then(|v| v.as_i64()).unwrap_or(0) }}", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::json::__varg_json_get_int(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_bool" {
-                    format!("{{ let __j = &{}; let __p: String = {}; (if __p.starts_with('/') {{ __j.pointer(&__p) }} else {{ __j.get(__p.as_str()) }}).and_then(|v| v.as_bool()).unwrap_or(false) }}", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::json::__varg_json_get_bool(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_get_array" {
-                    format!("{{ let __j = &{}; let __p: String = {}; (if __p.starts_with('/') {{ __j.pointer(&__p) }} else {{ __j.get(__p.as_str()) }}).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>()).unwrap_or_default() }}", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::json::__varg_json_get_array(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_stringify" {
                     format!("serde_json::to_string(&{}).unwrap_or_default()", arg_strs[0])
                 } else if method_name == "json_stringify_pretty" {
                     format!("serde_json::to_string_pretty(&{}).unwrap_or_default()", arg_strs[0])
+                // Mirror of the above: these only accepted a raw string, so a value that had already
+                // been through json_parse was rejected. Now both shapes work here as well.
                 } else if method_name == "json_keys" {
-                    format!("serde_json::from_str::<serde_json::Value>(&{}).ok().and_then(|v| v.as_object().map(|o| o.keys().map(|k| k.to_string()).collect::<Vec<String>>())).unwrap_or_default()", arg_strs[0])
+                    format!("varg_runtime::json::__varg_json_keys(&{})", arg_strs[0])
                 } else if method_name == "json_values" {
-                    format!("serde_json::from_str::<serde_json::Value>(&{}).ok().and_then(|v| v.as_object().map(|o| o.values().map(|v| serde_json::to_string(v).unwrap_or_default()).collect::<Vec<String>>())).unwrap_or_default()", arg_strs[0])
+                    format!("varg_runtime::json::__varg_json_values(&{})", arg_strs[0])
                 } else if method_name == "json_has" {
-                    format!("serde_json::from_str::<serde_json::Value>(&{}).ok().and_then(|v| v.as_object().map(|o| o.contains_key({}.as_str()))).unwrap_or(false)", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::json::__varg_json_has(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_merge" {
                     format!("{{ let mut __a = serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Object(serde_json::Map::new())); if let (Some(am), Ok(serde_json::Value::Object(bm))) = (__a.as_object_mut(), serde_json::from_str::<serde_json::Value>(&{})) {{ for (k,v) in bm {{ am.insert(k,v); }} }} serde_json::to_string(&__a).unwrap_or_default() }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_set" {
@@ -7781,8 +7783,10 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("get"), "json_get should use .get(): {}", code);
-        assert!(code.contains("as_str"), "json_get should extract as string: {}", code);
+        // The lookup/extraction now lives in the runtime helper (which accepts a parsed value
+        // or a raw JSON string); the codegen's job is just to route to it with both args.
+        assert!(code.contains("__varg_json_get("), "json_get should call the runtime helper: {}", code);
+        assert!(code.contains("json") && code.contains("/user/name"), "both args passed: {}", code);
     }
 
     #[test]
@@ -7794,8 +7798,8 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("get"), "json_get_int should use .get(): {}", code);
-        assert!(code.contains("as_i64"), "json_get_int should extract as i64: {}", code);
+        assert!(code.contains("__varg_json_get_int("), "json_get_int should call the runtime helper: {}", code);
+        assert!(code.contains("/age"), "path arg passed: {}", code);
     }
 
     #[test]
@@ -7807,9 +7811,8 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("get"), "json_get_array should use .get(): {}", code);
-        assert!(code.contains("as_array"), "json_get_array should extract as array: {}", code);
-        assert!(code.contains("Vec<String>"), "json_get_array should produce Vec<String>: {}", code);
+        assert!(code.contains("__varg_json_get_array("), "json_get_array should call the runtime helper: {}", code);
+        assert!(code.contains("/tags"), "path arg passed: {}", code);
     }
 
     #[test]

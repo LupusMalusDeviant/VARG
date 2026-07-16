@@ -24,6 +24,7 @@ pub fn __varg_install_panic_hook() {
 }
 
 // ── Always-on modules (pure Rust, no heavy deps) ──────────────────────────────
+pub mod json;          // JSON accessors accepting a parsed value or a raw JSON string
 pub mod db;            // legacy stub
 pub mod regex_utils;   // Regex builtins: regex_match, regex_find_all, regex_replace
 pub use regex_utils::*;
