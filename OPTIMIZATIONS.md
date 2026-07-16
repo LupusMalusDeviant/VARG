@@ -215,9 +215,17 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
    - ✅ **`foreach` verbraucht die Kollektion nicht mehr**, wenn sie später nochmal benutzt wird
      (fragt die vorhandene Last-Use-Analyse). Nebenfund: der Usage-Walker besuchte `or`, Lambda,
      Match, Interpolation u. a. **gar nicht** → Verwendungen unterzählt (speist auch Move-vs-Clone).
-   **Benannte Grenzen:** UI-getriebenes *Attach* fehlt (keine gemeinsame mutierbare Registry für neue
-   Verbindungen; Detach geht); Route-Handler erreichen `self` nicht (`Fn`) — Seite wird vorab
-   gerendert und gecaptured.
+   - ✅ **Verschachtelte Lambdas verloren ihre Bindungen** — der Parameter eines inneren Lambdas
+     wurde vom äußeren Handler als Capture gewertet und geklont (`let args = args.clone();` →
+     „not found in this scope"). Das blockierte genau den Fall *Tool aus einem HTTP-Handler heraus
+     registrieren* = **Attach zur Laufzeit**. Gebundene Namen innerer Lambdas sind jetzt keine freien
+     Variablen mehr. (Der Bug stammte aus dem Capture-Cloning oben — beim Nachfassen gefunden.)
+   **Damit auch UI-getriebenes Attach:** der Router startet nur mit `echo`; `POST /attach` spawnt das
+   math-Kind **zur Laufzeit** und exponiert seine Tools, `POST /detach` entfernt sie, Re-Attach
+   funktioniert. Live über HTTP verifiziert.
+   **Verbleibende benannte Grenzen:** Route-Handler erreichen `self` nicht (`Fn`) — Seite wird vorab
+   gerendert und gecaptured; **`?`/`try-catch` funktionieren nicht in einem Handler** (Handler ist
+   kein `Result`, `try`-Body wird eigene Closure) → Fehlerbehandlung via `res.is_err()`/`unwrap()`.
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

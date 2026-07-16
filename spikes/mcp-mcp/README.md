@@ -3,7 +3,7 @@
 Beantwortet die Frage: **lässt sich ein MCP-Router (Kind-MCPs zur Laufzeit an-/abklemmen,
 Tools aggregieren, Calls weiterleiten, dazu eine UI) in Varg bauen?**
 
-**Antwort: ja** — nachdem sechs Compiler-/Runtime-Lücken geschlossen wurden, die der Spike
+**Antwort: ja** — nachdem sieben Compiler-/Runtime-Lücken geschlossen wurden, die der Spike
 aufgedeckt hat (siehe unten). Kein npm, kein Netz: die Kind-MCPs sind selbst Varg-Programme.
 
 ## Ausführen
@@ -20,7 +20,7 @@ VARGC=../../varg-compiler/target/release/vargc.exe ./run.sh --ui   # Control-UI 
 | `child_echo.varg` | Kind-MCP, 1 Tool (`echo`) |
 | `child_math.varg` | Kind-MCP, 2 Tools (`double`, `square`) mit **numerischem** Argument |
 | `mcp_mcp.varg` | Router: attach → aggregate → forward → hot-unplug (deterministisch) |
-| `mcp_mcp_ui.varg` | Router + HTTP-Control-Plane (`/`, `/tools`, `/call`, `POST /detach`) |
+| `mcp_mcp_ui.varg` | Router + HTTP-Control-Plane (`/`, `/tools`, `/call`, `POST /attach`, `POST /detach`) |
 
 ## Was der Spike beweist
 
@@ -39,17 +39,19 @@ has math.double: false
 echo.echo   -> ... "echo-mcp says: {\"msg\":\"still here\"}"   ← Nachbar lebt weiter
 ```
 
-UI (live über HTTP verifiziert):
+UI (live über HTTP verifiziert) — der Router startet **nur mit echo**, das math-Kind wird zur
+Laufzeit an- und abgeklemmt:
 
 ```
-GET  /tools   → echo.echo, math.double, math.square
-GET  /call    → proxyt durch den Router bis ins Kind
-POST /detach  → {"detached":"math"}
-GET  /tools   → nur noch echo.echo          ← Hotswap per HTTP
+start        → echo.echo
+POST /attach → echo.echo, math.double, math.square   ← Kind zur Laufzeit gespawnt
+GET  /call   → "42"                                   ← Forwarding durchs frische Kind
+POST /detach → echo.echo
+re-attach    → echo.echo, math.double, math.square   ← wiederholbar
 ```
 
-Damit sind alle vier Kern-Eigenschaften belegt: **Aggregation**, **Forwarding**,
-**Hot-Unplug zur Laufzeit**, **UI-Control-Plane**.
+Damit sind alle Kern-Eigenschaften belegt: **Aggregation**, **Forwarding**, **Attach und
+Hot-Unplug zur Laufzeit** (wiederholbar, UI-getrieben) und die **UI-Control-Plane**.
 
 `math.double` mit `{"n":21}` → `42` ist der wichtigste Datenpunkt: hätte der Router die Argumente
 als String-Map weitergereicht, käme `n="21"` an und `json_get_int` lieferte `0`. Die `42` beweist,
@@ -58,7 +60,7 @@ dass Argumente **typerhaltend** über den Hop gehen.
 ## Aufgedeckte und geschlossene Lücken
 
 Der Spike war weniger „schreib den Router" als ein Test, ob Varg das überhaupt ausdrücken kann.
-Sechs Dinge standen im Weg — alle im Compiler/Runtime gefixt, nicht im Spike umschifft:
+Sieben Dinge standen im Weg — alle im Compiler/Runtime gefixt, nicht im Spike umschifft:
 
 1. **`McpConnection` war kein Handle.** Jeder andere zustandsbehaftete Handle der Runtime
    (Vector-Store, Workflow, MCP-*Server*) ist `Arc<Mutex<_>>`; die Client-Verbindung war ein nacktes
@@ -78,13 +80,17 @@ Sechs Dinge standen im Weg — alle im Compiler/Runtime gefixt, nicht im Spike u
    Last-Use-Analyse des Codegens existierte bereits — `foreach` fragte sie nur nicht. Nebenbei fand
    sich, dass der Usage-Walker `or`, Lambda, Match, Interpolation u. a. **gar nicht besuchte**, also
    Verwendungen unterzählte — was auch die Move-vs-Clone-Entscheidung speist.
+7. **Verschachtelte Lambdas verloren ihre Bindungen.** Ein Tool *aus einem HTTP-Handler heraus* zu
+   registrieren (= Attach zur Laufzeit) scheiterte: der Parameter des inneren Lambdas wurde vom
+   äußeren Handler als Capture behandelt und geklont (`let args = args.clone();` → „not found in
+   this scope"). Gebundene Namen innerer Lambdas zählen jetzt korrekt nicht als freie Variablen.
 
 ## Bekannte Grenzen (nicht umschifft, sondern benannt)
 
-- **Attach zur Laufzeit über die UI** geht noch nicht: ein Handler kann eine neue Verbindung öffnen,
-  aber es gibt keine gemeinsame, mutierbare Registry, in der er sie ablegen könnte. Detach geht
-  (der Handler hält den Server-Handle). Ein Varg-seitiges `Map<string, Handle>` wäre dafür nötig.
 - **Route-Handler erreichen `self` nicht** (`Fn`-Closures). Deshalb wird die Seite einmal vorab
   gerendert und vom Handler gecaptured.
-- Der Router registriert Kind-Tools mit fixem Namespace; ein echtes Produkt würde Konflikte,
-  Schema-Merge und Kind-Neustarts behandeln.
+- **`?` und `try/catch` funktionieren nicht in einem Handler.** Der Handler ist kein `Result`, und
+  der `try`-Body wird zu einer Closure mit eigenem Rückgabetyp — ein `return http_response(...)`
+  darin passt nicht. Fehlerbehandlung läuft deshalb über `res.is_err()` / `res.unwrap()`.
+- Der Router registriert Kind-Tools mit fixem Namespace und kennt nur das math-Kind beim Attach;
+  ein echtes Produkt würde Kind-Liste, Namenskonflikte, Schema-Merge und Neustarts behandeln.

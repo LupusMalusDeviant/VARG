@@ -1846,7 +1846,10 @@ impl RustGenerator {
         let mut counts: HashMap<String, usize> = HashMap::new();
         let mut declared: HashSet<String> = HashSet::new();
         match body {
-            LambdaBody::Expression(e) => self.count_usages_in_expr(e, &mut counts),
+            LambdaBody::Expression(e) => {
+                self.count_usages_in_expr(e, &mut counts);
+                Self::collect_bound_in_expr(e, &mut declared);
+            }
             LambdaBody::Block(b) => {
                 for stmt in &b.statements {
                     self.count_usages_in_stmt(stmt, &mut counts);
@@ -1892,22 +1895,83 @@ impl RustGenerator {
         self.gen_expression(arg)
     }
 
-    /// Names a block declares (recursively) — these are locals, not values captured from outside.
+    /// Names bound *inside* a block — locals, loop variables, and the parameters of any nested
+    /// lambda. None of these are values captured from the enclosing scope, so they must not be
+    /// cloned into a handler closure (a nested lambda's own parameter is not a free variable of the
+    /// outer one).
     fn collect_declared_in_block(block: &Block, out: &mut HashSet<String>) {
         for stmt in &block.statements {
             Self::collect_declared_in_stmt(stmt, out);
         }
     }
 
+    /// Find lambdas nested in an expression and record their parameters (and their bodies' locals)
+    /// as bound.
+    fn collect_bound_in_expr(expr: &Expression, out: &mut HashSet<String>) {
+        match expr {
+            Expression::Lambda { params, body, .. } => {
+                for p in params { out.insert(p.name.clone()); }
+                match body.as_ref() {
+                    LambdaBody::Expression(e) => Self::collect_bound_in_expr(e, out),
+                    LambdaBody::Block(b) => Self::collect_declared_in_block(b, out),
+                }
+            }
+            Expression::MethodCall { caller, args, .. } => {
+                Self::collect_bound_in_expr(caller, out);
+                for a in args { Self::collect_bound_in_expr(a, out); }
+            }
+            Expression::NamedCall { caller, named_args, .. } => {
+                Self::collect_bound_in_expr(caller, out);
+                for (_, v) in named_args { Self::collect_bound_in_expr(v, out); }
+            }
+            Expression::GenericCall { args, .. } => {
+                for a in args { Self::collect_bound_in_expr(a, out); }
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                Self::collect_bound_in_expr(left, out);
+                Self::collect_bound_in_expr(right, out);
+            }
+            Expression::UnaryOp { operand, .. } => Self::collect_bound_in_expr(operand, out),
+            Expression::Await(e) | Expression::TryPropagate(e) => Self::collect_bound_in_expr(e, out),
+            Expression::OrDefault { expr, default } => {
+                Self::collect_bound_in_expr(expr, out);
+                Self::collect_bound_in_expr(default, out);
+            }
+            Expression::ArrayLiteral(elems) | Expression::TupleLiteral(elems) => {
+                for e in elems { Self::collect_bound_in_expr(e, out); }
+            }
+            Expression::MapLiteral(pairs) => {
+                for (k, v) in pairs {
+                    Self::collect_bound_in_expr(k, out);
+                    Self::collect_bound_in_expr(v, out);
+                }
+            }
+            Expression::PropertyAccess { caller, .. } => Self::collect_bound_in_expr(caller, out),
+            Expression::IndexAccess { caller, index } => {
+                Self::collect_bound_in_expr(caller, out);
+                Self::collect_bound_in_expr(index, out);
+            }
+            _ => {}
+        }
+    }
+
     fn collect_declared_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
         match stmt {
-            Statement::Let { name, .. } | Statement::Const { name, .. } => {
+            Statement::Let { name, value, .. } | Statement::Const { name, value, .. } => {
                 out.insert(name.clone());
+                Self::collect_bound_in_expr(value, out);
             }
-            Statement::Foreach { item_name, value_name, body, .. } => {
+            Statement::Foreach { item_name, value_name, collection, body } => {
                 out.insert(item_name.clone());
                 if let Some(v) = value_name { out.insert(v.clone()); }
+                Self::collect_bound_in_expr(collection, out);
                 Self::collect_declared_in_block(body, out);
+            }
+            // Statements that merely carry an expression can still contain a nested lambda whose
+            // parameters are bound, not captured.
+            Statement::Expr(e) | Statement::Print(e) | Statement::Return(Some(e))
+            | Statement::Throw(e) | Statement::Stream(e) | Statement::Assign { value: e, .. } => {
+                Self::collect_bound_in_expr(e, out);
             }
             Statement::For { init, body, .. } => {
                 Self::collect_declared_in_stmt(init, out);

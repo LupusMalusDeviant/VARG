@@ -1,21 +1,24 @@
 // MCP-MCP with a control UI.
 //
-// Same router as mcp_mcp.varg, but instead of a scripted lifecycle it serves an HTTP control
-// plane: a page listing the aggregated tools, a JSON endpoint, and a detach button that
-// hot-unplugs a child's tools at runtime. The route handlers reach the live MCP server handle.
+// Starts with only the echo child attached. The math child is attached and detached *at runtime*
+// from the UI: /attach spawns it and re-exposes its tools, /detach drops them and closes it.
+// The route handlers reach the live MCP server handle and the child connections.
 
 agent RouterUI {
     private string page() {
         return "<!doctype html><meta charset=utf-8><title>MCP-MCP</title>"
             + "<style>body{font:14px system-ui;margin:2rem;max-width:40rem}"
-            + "li{margin:.2rem 0}button{padding:.4rem .8rem}</style>"
-            + "<h1>MCP-MCP</h1><p>Aggregated tools from the attached child MCPs.</p>"
-            + "<ul id=t></ul><button onclick=\"detach()\">Detach math child</button>"
+            + "li{margin:.2rem 0}button{padding:.4rem .8rem;margin-right:.5rem}</style>"
+            + "<h1>MCP-MCP</h1><p>Tools aggregated from the attached child MCPs.</p>"
+            + "<ul id=t></ul>"
+            + "<button onclick=\"go('/attach')\">Attach math child</button>"
+            + "<button onclick=\"go('/detach')\">Detach math child</button>"
             + "<p id=s></p><script>"
             + "async function load(){const r=await fetch('/tools');const j=await r.json();"
-            + "document.getElementById('t').innerHTML=j.tools.map(x=>'<li><code>'+x+'</code></li>').join('');"
-            + "document.getElementById('s').textContent=j.tools.length+' tool(s) exposed';}"
-            + "async function detach(){await fetch('/detach',{method:'POST'});load();}"
+            + "const n=j.result.tools;document.getElementById('t').innerHTML="
+            + "n.map(x=>'<li><code>'+x.name+'</code></li>').join('');"
+            + "document.getElementById('s').textContent=n.length+' tool(s) exposed';}"
+            + "async function go(u){await fetch(u,{method:'POST'});load();}"
             + "load();setInterval(load,1000);</script>";
     }
 
@@ -23,6 +26,7 @@ agent RouterUI {
         unsafe {
             var srv = mcp_server_new("mcp-mcp", "1.0");
 
+            // The echo child is attached at startup and stays.
             var echo = mcp_connect("./child_echo.exe", [])?;
             var echoTools = mcp_list_tools(echo)?;
             foreach (t in echoTools) {
@@ -32,42 +36,55 @@ agent RouterUI {
                 });
             }
 
-            var math = mcp_connect("./child_math.exe", [])?;
-            var mathTools = mcp_list_tools(math)?;
-            foreach (t in mathTools) {
-                var tool = t.name;
-                mcp_server_register(srv, "math." + tool, t.description, (args) => {
-                    return mcp_call_tool(math, tool, args) or "{\"error\":\"forward failed\"}";
-                });
-            }
-
             var http = http_serve();
 
-            // Route handlers are `Fn` closures and cannot reach `self`, so render once up-front
-            // and let the handler capture the finished page.
+            // Handlers are `Fn` closures and cannot reach `self`, so render the page once up-front.
             var html = page();
             http_route(http, "GET", "/", (req) => {
                 return http_response(200, html);
             });
 
-            // Live view of what the router currently exposes.
             http_route(http, "GET", "/tools", (req) => {
                 var rpc = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}";
-                var resp = mcp_server_handle_request(srv, rpc);
-                return http_response_json(200, resp);
+                return http_response_json(200, mcp_server_handle_request(srv, rpc));
             });
 
-            // Hot-unplug the math child: its tools leave the exposed surface immediately.
+            // Attach at runtime: spawn the child here, in the request handler, and re-expose its
+            // tools. Each tool's forwarding handler captures this fresh connection.
+            http_route(http, "POST", "/attach", (req) => {
+                if (mcp_server_has_tool(srv, "math.double")) {
+                    return http_response_json(200, "{\"already\":\"attached\"}");
+                }
+                var res = mcp_connect("./child_math.exe", []);
+                if (res.is_err()) {
+                    return http_response_json(500, "{\"error\":\"spawn failed\"}");
+                }
+                var conn = res.unwrap();
+                var listed = mcp_list_tools(conn);
+                if (listed.is_err()) {
+                    return http_response_json(500, "{\"error\":\"list failed\"}");
+                }
+                foreach (t in listed.unwrap()) {
+                    var tool = t.name;
+                    mcp_server_register(srv, "math." + tool, t.description, (args) => {
+                        return mcp_call_tool(conn, tool, args) or "{\"error\":\"forward failed\"}";
+                    });
+                }
+                return http_response_json(200, "{\"attached\":\"math\"}");
+            });
+
+            // Detach: the tools leave the exposed surface immediately. The child's connection is
+            // dropped with its handlers, which kills the process.
             http_route(http, "POST", "/detach", (req) => {
                 mcp_server_remove_tool(srv, "math.double");
                 mcp_server_remove_tool(srv, "math.square");
                 return http_response_json(200, "{\"detached\":\"math\"}");
             });
 
-            // Proxy a tool call from the UI: /call?name=math.double&n=21
+            // Proxy a call through the router to a child.
             http_route(http, "GET", "/call", (req) => {
                 var rpc = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":"
-                    + "{\"name\":\"echo.echo\",\"arguments\":{\"msg\":\"from ui\"}}}";
+                    + "{\"name\":\"math.double\",\"arguments\":{\"n\":21}}}";
                 return http_response_json(200, mcp_server_handle_request(srv, rpc));
             });
 
