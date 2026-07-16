@@ -369,7 +369,7 @@ impl TypeChecker {
             "workflow_ready_steps", "workflow_is_complete", "workflow_get_output",
             "workflow_step_count", "workflow_status",
             // Wave 34: Package Registry
-            "registry_open", "registry_install", "registry_uninstall",
+            "registry_open", "registry_install", "registry_download", "registry_uninstall",
             "registry_is_installed", "registry_version", "registry_list", "registry_search",
             // LLM Extended (Wave 30-34)
             "llm_structured", "llm_stream", "sse_read", "llm_embed_batch",
@@ -2074,6 +2074,12 @@ impl TypeChecker {
                 } else if method_name == "registry_install" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (registry, name, version)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Bool)
+                } else if method_name == "registry_download" {
+                    // Fetches the artifact over HTTP and installs it only if the SHA-256 matches.
+                    // Network access → capability-gated like every other outbound call.
+                    self.check_ocap(&CapabilityType::NetworkAccess, "registry_download")?;
+                    if args.len() != 5 { return Err(TypeError::TypeMismatch { expected: "5 arguments (registry, name, version, url, sha256)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "registry_uninstall" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (registry, name)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Bool)

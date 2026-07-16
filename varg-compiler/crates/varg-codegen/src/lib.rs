@@ -2465,6 +2465,10 @@ impl RustGenerator {
                     format!("varg_runtime::registry::__varg_registry_open(&{})", arg_strs[0])
                 } else if method_name == "registry_install" {
                     format!("varg_runtime::registry::__varg_registry_install(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "registry_download" {
+                    // registry_download(reg, name, version, url, sha256) → Result<path, error>
+                    format!("varg_runtime::registry::__varg_registry_download(&{}, &{}, &{}, &{}, &{})",
+                        arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3], arg_strs[4])
                 } else if method_name == "registry_uninstall" {
                     format!("varg_runtime::registry::__varg_registry_uninstall(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "registry_is_installed" {

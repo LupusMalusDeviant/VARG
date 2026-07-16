@@ -79,6 +79,73 @@ pub fn __varg_registry_list(h: &RegistryHandle) -> Vec<String> {
     h.lock().unwrap_or_else(|e| e.into_inner()).list()
 }
 
+// ── Real package download with checksum verification ──────────────────────────
+//
+// `registry_install` only records name→version metadata. `registry_download` actually fetches the
+// artifact over HTTP and refuses to install it unless its SHA-256 matches the expected digest —
+// an unverified download is how a package registry becomes a supply-chain hole, so a mismatch is a
+// hard error and nothing is written or recorded.
+
+/// Hex SHA-256 of a byte slice.
+#[cfg(feature = "crypto")]
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Verify `bytes` against `expected_sha256` (hex, case-insensitive), then write the artifact into
+/// the registry cache and record it as installed. Returns the written path.
+///
+/// Split out from the HTTP call so the security-critical path is testable without a network.
+#[cfg(feature = "crypto")]
+pub fn install_verified_bytes(
+    h: &RegistryHandle,
+    name: &str,
+    version: &str,
+    bytes: &[u8],
+    expected_sha256: &str,
+) -> Result<String, String> {
+    let actual = sha256_hex(bytes);
+    if !actual.eq_ignore_ascii_case(expected_sha256.trim()) {
+        return Err(format!(
+            "checksum mismatch for {}@{}: expected {}, got {} — refusing to install",
+            name, version, expected_sha256.trim(), actual
+        ));
+    }
+    let mut reg = h.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = reg.cache_path.clone();
+    if cache == ":memory_reg:" {
+        // In-memory registry: verification still applies, but nothing is written to disk.
+        reg.install(name, version);
+        return Ok(String::new());
+    }
+    std::fs::create_dir_all(&cache).map_err(|e| format!("cannot create cache dir '{}': {}", cache, e))?;
+    let path = format!("{}/{}-{}.pkg", cache, name, version);
+    std::fs::write(&path, bytes).map_err(|e| format!("cannot write '{}': {}", path, e))?;
+    reg.install(name, version);
+    Ok(path)
+}
+
+/// Download a package over HTTP and install it only if its SHA-256 matches `expected_sha256`.
+#[cfg(all(feature = "net", feature = "crypto"))]
+pub fn __varg_registry_download(
+    h: &RegistryHandle,
+    name: &str,
+    version: &str,
+    url: &str,
+    expected_sha256: &str,
+) -> Result<String, String> {
+    let resp = reqwest::blocking::get(url)
+        .map_err(|e| format!("download failed for '{}': {}", url, e))?;
+    if !resp.status().is_success() {
+        return Err(format!("download failed for '{}': HTTP {}", url, resp.status()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("reading '{}' failed: {}", url, e))?;
+    install_verified_bytes(h, name, version, &bytes, expected_sha256)
+}
+
 /// Search the known package catalog (stub — real registry would HTTP-query an index).
 pub fn __varg_registry_search(query: &str) -> Vec<String> {
     let catalog = [
@@ -98,6 +165,58 @@ mod tests {
     use super::*;
 
     fn mem() -> RegistryHandle { __varg_registry_open(":memory_reg:") }
+
+    // ── Checksum-verified download ────────────────────────────────────────
+    // Exercises the security-critical path without a network: only the HTTP GET is omitted.
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        // Well-known SHA-256 of "abc".
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn install_verified_bytes_accepts_matching_checksum() {
+        let r = mem();
+        let data = b"package-contents";
+        let sha = sha256_hex(data);
+        assert!(install_verified_bytes(&r, "pkg", "1.0.0", data, &sha).is_ok());
+        assert!(__varg_registry_is_installed(&r, "pkg"));
+        // Hex comparison is case-insensitive.
+        assert!(install_verified_bytes(&r, "pkg2", "1.0.0", data, &sha.to_uppercase()).is_ok());
+        assert!(__varg_registry_is_installed(&r, "pkg2"));
+    }
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn install_verified_bytes_rejects_tampered_payload_and_does_not_install() {
+        let r = mem();
+        let expected = sha256_hex(b"original");
+        // Payload was swapped out — must be refused, and nothing recorded.
+        let err = install_verified_bytes(&r, "evil", "1.0.0", b"tampered", &expected).unwrap_err();
+        assert!(err.contains("checksum mismatch"), "got: {}", err);
+        assert!(!__varg_registry_is_installed(&r, "evil"), "must not install on mismatch");
+    }
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn install_verified_bytes_writes_artifact_to_cache() {
+        let dir = std::env::temp_dir().join("varg_registry_dl_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let r = __varg_registry_open(dir.to_str().unwrap());
+        let data = b"real-bytes";
+        let sha = sha256_hex(data);
+        let path = install_verified_bytes(&r, "tool", "2.1.0", data, &sha).expect("should install");
+        assert!(path.ends_with("tool-2.1.0.pkg"), "path: {}", path);
+        assert_eq!(std::fs::read(&path).unwrap(), data, "artifact bytes must be written verbatim");
+        assert!(__varg_registry_is_installed(&r, "tool"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_registry_install_and_list() {
