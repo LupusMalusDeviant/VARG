@@ -16,7 +16,7 @@ pub struct McpToolInfo {
 }
 
 /// MCP server connection (via child process stdio)
-pub struct McpConnection {
+pub struct McpConnectionInner {
     pub command: String,
     pub args: Vec<String>,
     pub is_connected: bool,
@@ -26,13 +26,13 @@ pub struct McpConnection {
     next_id: u64,
 }
 
-impl std::fmt::Debug for McpConnection {
+impl std::fmt::Debug for McpConnectionInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("McpConnection").field("command", &self.command).field("is_connected", &self.is_connected).finish()
+        f.debug_struct("McpConnectionInner").field("command", &self.command).field("is_connected", &self.is_connected).finish()
     }
 }
 
-impl Drop for McpConnection {
+impl Drop for McpConnectionInner {
     fn drop(&mut self) {
         if let Some(ref mut child) = self.child {
             let _ = child.kill();
@@ -71,7 +71,7 @@ fn read_matching_response<R: BufRead>(reader: &mut R, expected_id: u64) -> Resul
 }
 
 /// Send a JSON-RPC request and read the response
-fn send_request(conn: &mut McpConnection, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+fn send_request(conn: &mut McpConnectionInner, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
     conn.next_id += 1;
     let request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -99,7 +99,7 @@ fn send_request(conn: &mut McpConnection, method: &str, params: serde_json::Valu
 }
 
 /// Send a JSON-RPC notification (no response expected)
-fn send_notification(conn: &mut McpConnection, method: &str, params: serde_json::Value) -> Result<(), String> {
+fn send_notification(conn: &mut McpConnectionInner, method: &str, params: serde_json::Value) -> Result<(), String> {
     let notification = serde_json::json!({
         "jsonrpc": "2.0",
         "method": method,
@@ -112,6 +112,20 @@ fn send_notification(conn: &mut McpConnection, method: &str, params: serde_json:
     stdin.write_all(line.as_bytes()).map_err(|e| format!("Failed to write notification: {}", e))?;
     stdin.flush().map_err(|e| format!("Failed to flush: {}", e))?;
     Ok(())
+}
+
+/// A shared, thread-safe MCP connection.
+///
+/// Every other stateful handle in the runtime (vector store, workflow, MCP *server*) is an
+/// `Arc<Mutex<_>>`; the client connection used to be a bare struct requiring `&mut`. That made it
+/// impossible to use from a tool handler — those are `Fn` + Send + Sync closures, which cannot
+/// mutably borrow a captured value. A router that forwards calls to a child MCP needs exactly that,
+/// so the connection is now a handle like the rest.
+pub type McpConnection = std::sync::Arc<std::sync::Mutex<McpConnectionInner>>;
+
+/// Lock a connection, recovering from a poisoned mutex rather than cascading the panic.
+fn lock(conn: &McpConnection) -> std::sync::MutexGuard<'_, McpConnectionInner> {
+    conn.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Connect to an MCP server by spawning a child process
@@ -127,7 +141,7 @@ pub fn __varg_mcp_connect(cmd: &str, args: &[String]) -> Result<McpConnection, S
     let stdin = child.stdin.take().ok_or("Failed to capture MCP stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to capture MCP stdout")?;
 
-    let mut conn = McpConnection {
+    let mut conn = McpConnectionInner {
         command: cmd.to_string(),
         args: args.to_vec(),
         is_connected: true,
@@ -152,11 +166,12 @@ pub fn __varg_mcp_connect(cmd: &str, args: &[String]) -> Result<McpConnection, S
     // Send initialized notification
     let _ = send_notification(&mut conn, "notifications/initialized", serde_json::json!({}));
 
-    Ok(conn)
+    Ok(std::sync::Arc::new(std::sync::Mutex::new(conn)))
 }
 
 /// List available tools from an MCP server
-pub fn __varg_mcp_list_tools(conn: &mut McpConnection) -> Result<Vec<McpToolInfo>, String> {
+pub fn __varg_mcp_list_tools(conn: &McpConnection) -> Result<Vec<McpToolInfo>, String> {
+    let conn = &mut *lock(conn);
     if !conn.is_connected {
         return Err("MCP server not connected".to_string());
     }
@@ -176,19 +191,52 @@ pub fn __varg_mcp_list_tools(conn: &mut McpConnection) -> Result<Vec<McpToolInfo
 }
 
 /// Call a tool on an MCP server
-pub fn __varg_mcp_call_tool(
-    conn: &mut McpConnection,
+/// Tool arguments: either a `{name: value}` map, or a raw JSON object string.
+///
+/// The map form stringifies every value (`{"n": 42}` would go out as `{"n": "42"}`), which is fine
+/// when you build the args yourself but lossy for a **proxy**: a router forwarding a caller's
+/// arguments must pass them through verbatim, types intact. The string form does exactly that.
+pub trait ToToolArgs {
+    fn to_arguments(&self) -> serde_json::Value;
+}
+
+impl ToToolArgs for HashMap<String, String> {
+    fn to_arguments(&self) -> serde_json::Value {
+        self.iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect::<serde_json::Map<String, serde_json::Value>>()
+            .into()
+    }
+}
+
+impl ToToolArgs for String {
+    fn to_arguments(&self) -> serde_json::Value {
+        // Forward a JSON object as-is; anything else becomes an empty object rather than
+        // silently sending a non-object where the protocol requires one.
+        match serde_json::from_str::<serde_json::Value>(self) {
+            Ok(v @ serde_json::Value::Object(_)) => v,
+            _ => serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+}
+
+impl ToToolArgs for str {
+    fn to_arguments(&self) -> serde_json::Value {
+        self.to_string().to_arguments()
+    }
+}
+
+pub fn __varg_mcp_call_tool<P: ToToolArgs + ?Sized>(
+    conn: &McpConnection,
     tool_name: &str,
-    params: &HashMap<String, String>,
+    params: &P,
 ) -> Result<String, String> {
+    let conn = &mut *lock(conn);
     if !conn.is_connected {
         return Err("MCP server not connected".to_string());
     }
 
-    let arguments: serde_json::Value = params.iter()
-        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-        .collect::<serde_json::Map<String, serde_json::Value>>()
-        .into();
+    let arguments: serde_json::Value = params.to_arguments();
 
     let result = send_request(conn, "tools/call", serde_json::json!({
         "name": tool_name,
@@ -209,7 +257,8 @@ pub fn __varg_mcp_call_tool(
 }
 
 /// Disconnect from MCP server
-pub fn __varg_mcp_disconnect(conn: &mut McpConnection) {
+pub fn __varg_mcp_disconnect(conn: &McpConnection) {
+    let conn = &mut *lock(conn);
     conn.is_connected = false;
     if let Some(ref mut child) = conn.child {
         let _ = child.kill();
@@ -275,7 +324,7 @@ mod tests {
     #[test]
     fn test_mcp_disconnect_not_connected() {
         // Verify disconnect is safe even without a real connection
-        let mut conn = McpConnection {
+        let mut conn = McpConnectionInner {
             command: "test".to_string(),
             args: vec![],
             is_connected: false,
@@ -284,13 +333,14 @@ mod tests {
             reader: None,
             next_id: 0,
         };
-        __varg_mcp_disconnect(&mut conn);
-        assert!(!conn.is_connected);
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        __varg_mcp_disconnect(&conn);
+        assert!(!lock(&conn).is_connected);
     }
 
     #[test]
     fn test_mcp_list_tools_not_connected() {
-        let mut conn = McpConnection {
+        let mut conn = McpConnectionInner {
             command: "test".to_string(),
             args: vec![],
             is_connected: false,
@@ -299,12 +349,13 @@ mod tests {
             reader: None,
             next_id: 0,
         };
-        assert!(__varg_mcp_list_tools(&mut conn).is_err());
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        assert!(__varg_mcp_list_tools(&conn).is_err());
     }
 
     #[test]
     fn test_mcp_call_tool_not_connected() {
-        let mut conn = McpConnection {
+        let mut conn = McpConnectionInner {
             command: "test".to_string(),
             args: vec![],
             is_connected: false,
@@ -313,6 +364,38 @@ mod tests {
             reader: None,
             next_id: 0,
         };
-        assert!(__varg_mcp_call_tool(&mut conn, "test", &HashMap::new()).is_err());
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        assert!(__varg_mcp_call_tool(&conn, "test", &HashMap::new()).is_err());
     }
+
+    // ── Tool argument forwarding ──────────────────────────────────────────
+
+    #[test]
+    fn map_args_are_sent_as_strings() {
+        let mut m = HashMap::new();
+        m.insert("msg".to_string(), "hi".to_string());
+        let v = m.to_arguments();
+        assert_eq!(v["msg"], serde_json::json!("hi"));
+    }
+
+    /// A proxy must forward the caller's arguments verbatim — types intact. The map form would
+    /// turn 42 into "42" and drop nesting; the string form must not.
+    #[test]
+    fn raw_json_args_are_forwarded_verbatim() {
+        let raw = r#"{"n": 42, "flag": true, "nested": {"a": [1, 2]}, "s": "text"}"#.to_string();
+        let v = raw.to_arguments();
+        assert_eq!(v["n"], serde_json::json!(42), "numbers must stay numbers");
+        assert_eq!(v["flag"], serde_json::json!(true), "bools must stay bools");
+        assert_eq!(v["nested"], serde_json::json!({"a": [1, 2]}), "nesting must survive");
+        assert_eq!(v["s"], serde_json::json!("text"));
+    }
+
+    #[test]
+    fn non_object_args_become_an_empty_object() {
+        // The protocol wants an object; a bare array/scalar/garbage must not be sent through.
+        assert_eq!("[1,2]".to_string().to_arguments(), serde_json::json!({}));
+        assert_eq!("\"just a string\"".to_string().to_arguments(), serde_json::json!({}));
+        assert_eq!("not json".to_string().to_arguments(), serde_json::json!({}));
+    }
+
 }

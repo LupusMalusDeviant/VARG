@@ -1,0 +1,74 @@
+// MCP-MCP — an MCP server that fronts other MCP servers.
+//
+// It spawns child MCPs, aggregates their tools under a namespace, forwards calls to the right
+// child, and can hot-unplug a child at runtime so its tools disappear from the exposed surface.
+//
+// Driven here through `mcp_server_handle_request` with real JSON-RPC, so the whole path
+// (router tool -> handler -> child process -> reply) is exercised in one deterministic process.
+
+agent Router {
+    // Ask the exposed MCP server for its tool list, JSON-RPC style.
+    private string listTools(McpServerHandle srv) {
+        var req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}";
+        var resp = mcp_server_handle_request(srv, req);
+        var names = json_get_array(resp, "/result/tools");
+        return names.len().to_string();
+    }
+
+    // Call one aggregated tool through the router, JSON-RPC style.
+    private string callTool(McpServerHandle srv, string name, string argsJson) {
+        var req = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\""
+            + name + "\",\"arguments\":" + argsJson + "}}";
+        var resp = mcp_server_handle_request(srv, req);
+        return resp;
+    }
+
+    public void Run() {
+        unsafe {
+            var srv = mcp_server_new("mcp-mcp", "1.0");
+
+            // ── attach: spawn each child and re-expose its tools under "<child>.<tool>" ──
+            var echo = mcp_connect("./child_echo.exe", [])?;
+            var echoTools = mcp_list_tools(echo)?;
+            foreach (t in echoTools) {
+                var tool = t.name;
+                mcp_server_register(srv, "echo." + tool, t.description, (args) => {
+                    return mcp_call_tool(echo, tool, args) or "{\"error\":\"forward failed\"}";
+                });
+            }
+
+            var math = mcp_connect("./child_math.exe", [])?;
+            var mathTools = mcp_list_tools(math)?;
+            foreach (t in mathTools) {
+                var tool = t.name;
+                mcp_server_register(srv, "math." + tool, t.description, (args) => {
+                    return mcp_call_tool(math, tool, args) or "{\"error\":\"forward failed\"}";
+                });
+            }
+
+            print("attached: 2 children");
+            print("aggregated tools: " + mcp_server_tool_count(srv));
+            print("has math.double: " + mcp_server_has_tool(srv, "math.double"));
+
+            // ── forward: a call through the router reaches the child and comes back ──
+            print("echo.echo   -> " + callTool(srv, "echo.echo", "{\"msg\":\"hi\"}"));
+            // n stays a number across the hop: 21*2 = 42 (a stringifying forward would yield 0).
+            print("math.double -> " + callTool(srv, "math.double", "{\"n\":21}"));
+            print("math.square -> " + callTool(srv, "math.square", "{\"n\":7}"));
+
+            // ── hot-unplug: drop the math child's tools and close it ──
+            foreach (t in mathTools) {
+                mcp_server_remove_tool(srv, "math." + t.name);
+            }
+            mcp_disconnect(math);
+
+            print("detached: math");
+            print("aggregated tools: " + mcp_server_tool_count(srv));
+            print("has math.double: " + mcp_server_has_tool(srv, "math.double"));
+            // The surviving child still answers after its sibling was unplugged.
+            print("echo.echo   -> " + callTool(srv, "echo.echo", "{\"msg\":\"still here\"}"));
+
+            mcp_disconnect(echo);
+        }
+    }
+}

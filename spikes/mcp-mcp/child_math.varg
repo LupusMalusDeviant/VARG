@@ -1,0 +1,21 @@
+// A second child MCP with TWO tools taking a numeric argument. Two tools force the router to
+// register several handlers against one connection; the numeric arg proves the router forwards
+// argument types verbatim (a stringifying forward would make `n` arrive as "5" and compute 0).
+agent MathMcp {
+    public void Run() {
+        unsafe {
+            var srv = mcp_server_new("math-mcp", "1.0");
+            mcp_server_register(srv, "double", "Doubles n", (args) => {
+                var n = json_get_int(args, "n");
+                var r = n * 2;
+                return r.to_string();
+            });
+            mcp_server_register(srv, "square", "Squares n", (args) => {
+                var n = json_get_int(args, "n");
+                var r = n * n;
+                return r.to_string();
+            });
+            mcp_server_run(srv);
+        }
+    }
+}

@@ -1195,6 +1195,64 @@ impl RustGenerator {
             Expression::ArrayLiteral(elems) | Expression::TupleLiteral(elems) => { for e in elems { self.count_usages_in_expr(e, counts); } }
             Expression::UnaryOp { operand, .. } => self.count_usages_in_expr(operand, counts),
             Expression::Await(e) | Expression::TryPropagate(e) => self.count_usages_in_expr(e, counts),
+            // Below were missing, so any variable used only inside one of these was invisible to
+            // the walker — it under-counted usages (which also drives the move-vs-clone last-use
+            // decision) and hid captures from handler-closure cloning.
+            Expression::OrDefault { expr, default } => {
+                self.count_usages_in_expr(expr, counts);
+                self.count_usages_in_expr(default, counts);
+            }
+            Expression::MapLiteral(pairs) => {
+                for (k, v) in pairs {
+                    self.count_usages_in_expr(k, counts);
+                    self.count_usages_in_expr(v, counts);
+                }
+            }
+            Expression::InterpolatedString(parts) => {
+                for p in parts {
+                    if let InterpolationPart::Expression(e) = p {
+                        self.count_usages_in_expr(e, counts);
+                    }
+                }
+            }
+            Expression::Cast { expr, .. } => self.count_usages_in_expr(expr, counts),
+            Expression::Range { start, end, .. } => {
+                self.count_usages_in_expr(start, counts);
+                self.count_usages_in_expr(end, counts);
+            }
+            Expression::IfExpr { condition, then_block, else_block } => {
+                self.count_usages_in_expr(condition, counts);
+                for s in &then_block.statements { self.count_usages_in_stmt(s, counts); }
+                for s in &else_block.statements { self.count_usages_in_stmt(s, counts); }
+            }
+            Expression::MatchExpr { subject, arms } => {
+                self.count_usages_in_expr(subject, counts);
+                for arm in arms {
+                    if let Some(g) = &arm.guard { self.count_usages_in_expr(g, counts); }
+                    for s in &arm.body.statements { self.count_usages_in_stmt(s, counts); }
+                }
+            }
+            Expression::StructLiteral { fields, .. } => {
+                for (_, v) in fields { self.count_usages_in_expr(v, counts); }
+            }
+            Expression::EnumConstruct { args, .. } => {
+                for a in args { self.count_usages_in_expr(a, counts); }
+            }
+            Expression::Lambda { body, .. } => match body.as_ref() {
+                LambdaBody::Expression(e) => self.count_usages_in_expr(e, counts),
+                LambdaBody::Block(b) => {
+                    for s in &b.statements { self.count_usages_in_stmt(s, counts); }
+                }
+            },
+            Expression::Retry { body, fallback, .. } => {
+                for s in &body.statements { self.count_usages_in_stmt(s, counts); }
+                if let Some(fb) = fallback {
+                    for s in &fb.statements { self.count_usages_in_stmt(s, counts); }
+                }
+            }
+            Expression::Spawn { args, .. } => {
+                for a in args { self.count_usages_in_expr(a, counts); }
+            }
             _ => {}
         }
     }
@@ -1460,6 +1518,15 @@ impl RustGenerator {
                     let coll_code = self.gen_expression(collection);
                     // Can't move out of self-fields behind &mut self — clone them
                     let coll_code = self.clone_self_field_if_needed(&coll_code);
+                    // `for x in coll` moves the collection. If the program uses it again after the
+                    // loop, iterate a clone instead — otherwise a second pass over the same list
+                    // fails with "use of moved value", which is not what `foreach` implies.
+                    let coll_code = match collection {
+                        Expression::Identifier(name) if !self.is_last_use(name) => {
+                            format!("{}.clone()", coll_code)
+                        }
+                        _ => coll_code,
+                    };
                     if let Some(val_name) = value_name {
                         // Wave 16: Map iteration — for (k, v) in map
                         out.push_str(&format!("{}for (mut {}, mut {}) in {} {{\n", indent, item_name, val_name, coll_code));
@@ -1730,15 +1797,15 @@ impl RustGenerator {
                 let pname = esc_ident(&params[0].name);
                 // Register as a string var so string builtins in the body lower correctly.
                 self.string_vars.insert(params[0].name.clone());
-                let body_str = match body.as_ref() {
-                    LambdaBody::Expression(e) => self.gen_expression(e),
-                    LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
-                };
+                let body_str = self.gen_lambda_body(body.as_ref());
+                // Clone what the body captures so registering several handlers that share a
+                // connection/store doesn't move it into the first one.
+                let clones = self.gen_captured_clones(body.as_ref(), params);
                 // The runtime handler type is `Fn(&str) -> String`; bind an owned `String` copy
                 // inside so the body's string builtins operate on an owned value.
                 return format!(
-                    "std::sync::Arc::new(move |__inp: &str| -> String {{ let {p}: String = __inp.to_string(); {b} }})",
-                    p = pname, b = body_str
+                    "{{ {c}std::sync::Arc::new(move |__inp: &str| -> String {{ let {p}: String = __inp.to_string(); {b} }}) }}",
+                    c = clones, p = pname, b = body_str
                 );
             }
         }
@@ -1758,17 +1825,116 @@ impl RustGenerator {
             if params.len() == 1 {
                 let pname = esc_ident(&params[0].name);
                 self.map_vars.insert(params[0].name.clone());
-                let body_str = match body.as_ref() {
-                    LambdaBody::Expression(e) => self.gen_expression(e),
-                    LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
-                };
+                let body_str = self.gen_lambda_body(body.as_ref());
+                let clones = self.gen_captured_clones(body.as_ref(), params);
                 return format!(
-                    "std::sync::Arc::new(move |__data: &std::collections::HashMap<String, String>| -> String {{ let {p} = __data.clone(); {b} }})",
-                    p = pname, b = body_str
+                    "{{ {c}std::sync::Arc::new(move |__data: &std::collections::HashMap<String, String>| -> String {{ let {p} = __data.clone(); {b} }}) }}",
+                    c = clones, p = pname, b = body_str
                 );
             }
         }
         format!("std::sync::Arc::new({})", self.gen_expression(arg))
+    }
+
+    /// `let x = x.clone();` bindings for every value a handler lambda captures.
+    ///
+    /// Handler closures are `move`, so each registration would otherwise *consume* what it
+    /// captures: registering two tools that both talk to the same MCP connection failed with
+    /// "use of moved value". Handles are `Arc`-based, so cloning them into each closure is cheap
+    /// and is what lets several handlers share one connection/store.
+    fn gen_captured_clones(&self, body: &LambdaBody, params: &[FieldDecl]) -> String {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut declared: HashSet<String> = HashSet::new();
+        match body {
+            LambdaBody::Expression(e) => self.count_usages_in_expr(e, &mut counts),
+            LambdaBody::Block(b) => {
+                for stmt in &b.statements {
+                    self.count_usages_in_stmt(stmt, &mut counts);
+                }
+                Self::collect_declared_in_block(b, &mut declared);
+            }
+        }
+        let mut names: Vec<&String> = counts.keys()
+            .filter(|n| {
+                n.as_str() != "self"
+                    && !params.iter().any(|p| &p.name == *n)
+                    // Names the body declares itself are locals, not captures.
+                    && !declared.contains(n.as_str())
+                    && !self.known_functions.contains(n.as_str())
+                    && !self.known_agents.contains_key(n.as_str())
+                    && !self.known_enums.contains_key(n.as_str())
+                    && !self.variant_to_enum.contains_key(n.as_str())
+                    && !self.known_contract_methods.contains_key(n.as_str())
+                    // Internal bindings the closure introduces itself.
+                    && !n.starts_with("__")
+            })
+            .collect();
+        names.sort(); // deterministic output
+        names.iter()
+            .map(|n| format!("let {n} = {n}.clone(); ", n = esc_ident(n)))
+            .collect()
+    }
+
+    /// Generate a handler lambda for a runtime callback that must own what it captures
+    /// (`Fn(..) + Send + Sync + 'static`), e.g. http_route / ws_route.
+    ///
+    /// The plain lambda codegen emits a borrowing `|p| ..` closure, so any handler touching state
+    /// outside itself failed with "closure may outlive the current function". Emitting `move` plus
+    /// cloned captures is what lets a route handler actually reach a server/connection handle —
+    /// without it, web handlers could only be stateless.
+    fn gen_move_handler(&mut self, arg: &Expression) -> String {
+        if let Expression::Lambda { params, body, .. } = arg {
+            let param_strs: Vec<String> = params.iter().map(|p| esc_ident(&p.name)).collect();
+            let body_str = self.gen_lambda_body(body.as_ref());
+            let clones = self.gen_captured_clones(body.as_ref(), params);
+            return format!("{{ {c}move |{p}| {b} }}", c = clones, p = param_strs.join(", "), b = body_str);
+        }
+        self.gen_expression(arg)
+    }
+
+    /// Names a block declares (recursively) — these are locals, not values captured from outside.
+    fn collect_declared_in_block(block: &Block, out: &mut HashSet<String>) {
+        for stmt in &block.statements {
+            Self::collect_declared_in_stmt(stmt, out);
+        }
+    }
+
+    fn collect_declared_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+        match stmt {
+            Statement::Let { name, .. } | Statement::Const { name, .. } => {
+                out.insert(name.clone());
+            }
+            Statement::Foreach { item_name, value_name, body, .. } => {
+                out.insert(item_name.clone());
+                if let Some(v) = value_name { out.insert(v.clone()); }
+                Self::collect_declared_in_block(body, out);
+            }
+            Statement::For { init, body, .. } => {
+                Self::collect_declared_in_stmt(init, out);
+                Self::collect_declared_in_block(body, out);
+            }
+            Statement::If { then_block, else_block, .. } => {
+                Self::collect_declared_in_block(then_block, out);
+                if let Some(eb) = else_block { Self::collect_declared_in_block(eb, out); }
+            }
+            Statement::While { body, .. } => Self::collect_declared_in_block(body, out),
+            _ => {}
+        }
+    }
+
+    /// Generate a lambda body. A lambda is its own function scope, so the *enclosing* function's
+    /// Result-ness must not leak into it: without this, a `return x` inside a lambda written in a
+    /// method that uses `?` was emitted as `return Ok(x)`, and the closure failed to compile
+    /// against its plain (non-Result) return type.
+    fn gen_lambda_body(&mut self, body: &LambdaBody) -> String {
+        let prev = self.in_result_function;
+        self.in_result_function = false;
+        let out = match body {
+            LambdaBody::Expression(e) => self.gen_expression(e),
+            LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
+        };
+        self.in_result_function = prev;
+        out
     }
 
     /// B5: register string-typed parameters so `is_string_expr` recognises them inside the
@@ -2216,10 +2382,7 @@ impl RustGenerator {
                     let filter_closure = match &args[0] {
                         Expression::Lambda { params, body, .. } => {
                             let param_name = params.first().map(|p| p.name.as_str()).unwrap_or("__x").to_string();
-                            let body_str = match body.as_ref() {
-                                LambdaBody::Expression(expr) => self.gen_expression(expr),
-                                LambdaBody::Block(block) => format!("{{\n{}}}", self.gen_block(block, 1)),
-                            };
+                            let body_str = self.gen_lambda_body(body.as_ref());
                             // T-stage2: filter on references and clone only the survivors
                             // (`.iter().filter(..).cloned()`), not every element up front. The
                             // closure receives `&&T`, so bind the owned value with `(**ref)`.
@@ -2814,7 +2977,10 @@ impl RustGenerator {
                     "varg_runtime::server::__varg_http_server()".to_string()
                 } else if method_name == "http_route" {
                     // http_route(server, method, path, handler)
-                    format!("varg_runtime::server::__varg_http_route(&mut {}, &{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[3])
+                    {
+                    let h = self.gen_move_handler(&args[3]);
+                    format!("varg_runtime::server::__varg_http_route(&mut {}, &{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2], h)
+                }
                 } else if method_name == "http_listen" {
                     // http_listen(cap, server, addr) → async
                     format!("varg_runtime::server::__varg_http_listen({}, &{}).await", arg_strs[0], arg_strs[1])
@@ -2856,11 +3022,11 @@ impl RustGenerator {
                 } else if method_name == "mcp_connect" {
                     format!("varg_runtime::mcp::__varg_mcp_connect(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "mcp_list_tools" {
-                    format!("varg_runtime::mcp::__varg_mcp_list_tools(&mut {})", arg_strs[0])
+                    format!("varg_runtime::mcp::__varg_mcp_list_tools(&{})", arg_strs[0])
                 } else if method_name == "mcp_call_tool" {
-                    format!("varg_runtime::mcp::__varg_mcp_call_tool(&mut {}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                    format!("varg_runtime::mcp::__varg_mcp_call_tool(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "mcp_disconnect" {
-                    format!("varg_runtime::mcp::__varg_mcp_disconnect(&mut {})", arg_strs[0])
+                    format!("varg_runtime::mcp::__varg_mcp_disconnect(&{})", arg_strs[0])
                 // ===== Wave 20: Knowledge Graph Builtins =====
                 } else if method_name == "graph_open" {
                     format!("varg_runtime::graph::__varg_graph_open(&{})", arg_strs[0])
@@ -2906,7 +3072,10 @@ impl RustGenerator {
                 // ===== SSE Server (channel-based) =====
                 } else if method_name == "ws_route" {
                     // ws_route(server, path, handler) — server-side WebSocket upgrade route.
-                    format!("varg_runtime::server::__varg_ws_route(&mut {}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                    {
+                    let h = self.gen_move_handler(&args[2]);
+                    format!("varg_runtime::server::__varg_ws_route(&mut {}, &{}, {})", arg_strs[0], arg_strs[1], h)
+                }
                 } else if method_name == "sse_open" {
                     // Registers a route on the server → needs &mut (was &, which never compiled).
                     format!("varg_runtime::server::__varg_sse_open(&mut {}, &{})", arg_strs[0], arg_strs[1])
@@ -3129,12 +3298,7 @@ impl RustGenerator {
                         }
                     })
                     .collect();
-                let body_str = match body.as_ref() {
-                    LambdaBody::Expression(expr) => self.gen_expression(expr),
-                    LambdaBody::Block(block) => {
-                        format!("{{\n{}}}", self.gen_block(block, 1))
-                    },
-                };
+                let body_str = self.gen_lambda_body(body.as_ref());
                 format!("|{}| {}", param_strs.join(", "), body_str)
             },
             Expression::Query(q) => {
@@ -9465,10 +9629,36 @@ mod tests {
             body: Box::new(LambdaBody::Expression(Expression::Identifier("input".to_string()))),
         };
         let out = gen.gen_str_handler(&lambda);
-        assert!(out.starts_with("std::sync::Arc::new(move |__inp: &str| -> String"),
+        // The closure is wrapped in a block so captured values can be cloned in ahead of it.
+        assert!(out.contains("std::sync::Arc::new(move |__inp: &str| -> String"),
             "handler must be an Arc<Fn(&str)->String>: {out}");
         assert!(out.contains("let input: String = __inp.to_string();"),
             "handler must bind an owned String param: {out}");
+    }
+
+    /// Handler closures are `move`, so two handlers sharing a value (e.g. one MCP connection routed
+    /// to several tools) used to fail with "use of moved value". Captured values are cloned in.
+    #[test]
+    fn test_codegen_str_handler_clones_captured_values() {
+        let mut gen = RustGenerator::new();
+        let lambda = Expression::Lambda {
+            params: vec![FieldDecl { name: "args".to_string(), ty: TypeNode::Custom("Dynamic".to_string()), default_value: None }],
+            return_ty: None,
+            body: Box::new(LambdaBody::Expression(Expression::MethodCall {
+                caller: Box::new(Expression::Identifier("self".to_string())),
+                method_name: "mcp_call_tool".to_string(),
+                args: vec![
+                    Expression::Identifier("conn".to_string()),
+                    Expression::String("echo".to_string()),
+                    Expression::Identifier("args".to_string()),
+                ],
+            })),
+        };
+        let out = gen.gen_str_handler(&lambda);
+        assert!(out.contains("let conn = conn.clone();"),
+            "captured connection must be cloned into the closure: {out}");
+        // The lambda's own parameter is not a capture and must not be cloned.
+        assert!(!out.contains("let args = args.clone();"), "param must not be cloned: {out}");
     }
 
     #[test]

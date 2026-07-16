@@ -193,6 +193,31 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      auch hatte, die Hälfte lehnte ab. Jetzt nimmt alles `impl AsJson` (Wert **oder** JSON-String),
      zentral in `varg-runtime/src/json.rs` statt als Inline-Codegen. `json_get(s, "/a/b")` ohne
      `json_parse` funktioniert, `json_has(parsed, "k")` ebenfalls (war vorher schlicht kaputt).
+
+   **Stufe 11 (MCP-MCP-Spike — `spikes/mcp-mcp/`):** ein MCP-Router (Kind-MCPs attachen, Tools
+   aggregieren, Calls weiterleiten, zur Laufzeit hot-unpluggen, + HTTP-Control-UI) ist in Varg
+   **baubar** — end-to-end verifiziert, Kind-MCPs selbst in Varg (kein npm/Netz). Der Spike war
+   primär ein Ausdrucksfähigkeits-Test und legte sechs Lücken offen, alle im Compiler/Runtime
+   geschlossen (nicht im Spike umschifft):
+   - ✅ **`McpConnection` ist jetzt ein Handle** (`Arc<Mutex<_>>`) wie jeder andere zustandsbehaftete
+     Runtime-Handle. Als nacktes `&mut`-Struct war es aus einem Tool-Handler (`Fn`+Send+Sync)
+     unbenutzbar — also aus genau dem, was ein Router braucht.
+   - ✅ **`mcp_call_tool` reicht rohe Argumente verbatim weiter** (`ToToolArgs`: Map **oder** JSON-
+     String). Vorher nur `HashMap<String,String>` **mit Stringifizierung jedes Werts** (`{"n":42}` →
+     `{"n":"42"}`) — für einen Proxy tödlich.
+   - ✅ **`return` in Lambdas wird nicht mehr `Ok(...)`-gewrappt**, wenn die umgebende Methode `?`
+     nutzt (Flag leckte in den Lambda-Scope).
+   - ✅ **Handler-Closures klonen ihre Captures** — zwei Tools desselben Kindes scheiterten an
+     „use of moved value".
+   - ✅ **`http_route`/`ws_route`-Handler können capturen** — sie wurden als borrowende Closure
+     emittiert („closure may outlive the current function"), Web-Handler waren damit faktisch auf
+     zustandslos beschränkt (die UI wäre unmöglich gewesen). Jetzt `move` + geklonte Captures.
+   - ✅ **`foreach` verbraucht die Kollektion nicht mehr**, wenn sie später nochmal benutzt wird
+     (fragt die vorhandene Last-Use-Analyse). Nebenfund: der Usage-Walker besuchte `or`, Lambda,
+     Match, Interpolation u. a. **gar nicht** → Verwendungen unterzählt (speist auch Move-vs-Clone).
+   **Benannte Grenzen:** UI-getriebenes *Attach* fehlt (keine gemeinsame mutierbare Registry für neue
+   Verbindungen; Detach geht); Route-Handler erreichen `self` nicht (`Fn`) — Seite wird vorab
+   gerendert und gecaptured.
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

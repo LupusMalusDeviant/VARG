@@ -1,0 +1,12 @@
+// A minimal child MCP server, written in Varg, speaking JSON-RPC over stdio.
+agent EchoMcp {
+    public void Run() {
+        unsafe {
+            var srv = mcp_server_new("echo-mcp", "1.0");
+            mcp_server_register(srv, "echo", "Echoes its arguments back", (args) => {
+                return "echo-mcp says: " + args;
+            });
+            mcp_server_run(srv);
+        }
+    }
+}

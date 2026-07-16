@@ -1,0 +1,6 @@
+# Build artefacts — the spike compiles its own child MCPs.
+*.exe
+*.rs
+.vargc_cache/
+*.log
+*.pid
