@@ -326,6 +326,7 @@ impl TypeChecker {
             "http_response", "http_response_json",
             "pipeline_new", "pipeline_add_step", "pipeline_run", "pipeline_step_count",
             "orchestrator_new", "orchestrator_add_task", "orchestrator_run_all", "orchestrator_results", "orchestrator_task_count", "orchestrator_completed_count",
+            "fan_out", "fan_in",
             "self_improver_new", "self_improver_record_success", "self_improver_record_failure", "self_improver_recall", "self_improver_success_rate", "self_improver_iterations", "self_improver_stats",
             // Wave 28: System Primitives
             "args", "stdin_read", "stdin_read_line", "is_dir", "is_file", "path_resolve",
@@ -2329,18 +2330,15 @@ impl TypeChecker {
                 } else if method_name == "ws_close" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (socket)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
-                } else if method_name == "sse_stream" {
-                    self.check_ocap(&CapabilityType::NetworkAccess, "sse_stream")?;
-                    // B11: runtime signature is `__varg_sse_stream()` — enforce 0 args so the
-                    // codegen never indexes a missing argument.
-                    if !args.is_empty() { return Err(TypeError::TypeMismatch { expected: "0 arguments".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("SseWriter".to_string()))
-                } else if method_name == "sse_send" {
-                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (writer, event, data)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::String)))
-                } else if method_name == "sse_close" {
-                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (writer)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Void)
+                } else if method_name == "sse_stream" || method_name == "sse_send" || method_name == "sse_close" {
+                    // These were wired to a placeholder writer that *discarded* the event and
+                    // returned Ok — you got success and nothing was ever sent. Real server-side SSE
+                    // is sse_open/sse_push/sse_shutdown on an http_serve() handle. Rejecting these
+                    // with a pointer beats silently doing nothing.
+                    return Err(TypeError::TypeMismatch {
+                        expected: "sse_open(server, path) + sse_push(sender, data) — real server-side SSE".to_string(),
+                        found: format!("`{}` (removed: it silently discarded events)", method_name),
+                    });
                 // ===== F41-8: MCP Client Builtins =====
                 } else if method_name == "mcp_connect" {
                     self.check_ocap(&CapabilityType::SystemAccess, "mcp_connect")?;
@@ -2543,6 +2541,15 @@ impl TypeChecker {
                 } else if method_name == "orchestrator_add_task" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (orch, id, input)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
+                } else if method_name == "fan_out" {
+                    // Runs the handler over every input on its own thread and collects the results.
+                    // The runtime had this all along, but no arm and no codegen existed — it was
+                    // unreachable from Varg.
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (inputs, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "fan_in" {
+                    if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (results, reducer)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
                 } else if method_name == "orchestrator_run_all" {
                     // B11: previously only whitelisted, with no explicit arm and no codegen —
                     // it type-checked but emitted a call to a non-existent method. Wire it:

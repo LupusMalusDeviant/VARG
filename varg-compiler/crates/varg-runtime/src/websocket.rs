@@ -80,29 +80,8 @@ pub fn __varg_ws_close(ws: &mut VargWebSocket) {
     }
 }
 
-/// SSE Writer for server-side events (placeholder — real SSE server needs axum integration)
-pub struct VargSseWriter {
-    pub is_open: bool,
-}
-
-/// Create an SSE stream writer
-pub fn __varg_sse_stream() -> VargSseWriter {
-    VargSseWriter { is_open: true }
-}
-
-/// Send an SSE event
-pub fn __varg_sse_send(writer: &VargSseWriter, event: &str, data: &str) -> Result<(), String> {
-    if !writer.is_open {
-        return Err("SSE stream closed".to_string());
-    }
-    let _ = (event, data);
-    Ok(())
-}
-
-/// Close an SSE stream
-pub fn __varg_sse_close(writer: &mut VargSseWriter) {
-    writer.is_open = false;
-}
+// The placeholder SSE writer that used to live here discarded every event and returned Ok.
+// Real server-side SSE is `sse_open`/`sse_push`/`sse_shutdown` in `server.rs` (axum-backed).
 
 #[cfg(test)]
 mod tests {
@@ -144,15 +123,5 @@ mod tests {
         };
         __varg_ws_close(&mut ws);
         assert!(!ws.is_connected);
-    }
-
-    #[test]
-    fn test_sse_lifecycle() {
-        let mut writer = __varg_sse_stream();
-        assert!(writer.is_open);
-        assert!(__varg_sse_send(&writer, "update", "data1").is_ok());
-        __varg_sse_close(&mut writer);
-        assert!(!writer.is_open);
-        assert!(__varg_sse_send(&writer, "update", "data2").is_err());
     }
 }

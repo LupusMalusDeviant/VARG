@@ -1817,6 +1817,23 @@ impl RustGenerator {
         )
     }
 
+    /// Generate the `&[String] -> String` reducer closure that `fan_in` expects. Same shape as
+    /// gen_str_handler, but the param is bound to an owned `Vec<String>` so list builtins work.
+    fn gen_list_handler(&mut self, arg: &Expression) -> String {
+        if let Expression::Lambda { params, body, .. } = arg {
+            if params.len() == 1 {
+                let pname = esc_ident(&params[0].name);
+                let body_str = self.gen_lambda_body(body.as_ref());
+                let clones = self.gen_captured_clones(body.as_ref(), params);
+                return format!(
+                    "{{ {c}std::sync::Arc::new(move |__inp: &[String]| -> String {{ let {p}: Vec<String> = __inp.to_vec(); {b} }}) }}",
+                    c = clones, p = pname, b = body_str
+                );
+            }
+        }
+        format!("std::sync::Arc::new({})", self.gen_expression(arg))
+    }
+
     /// R5: generate the `&HashMap<String,String> -> String` event handler closure that
     /// `event_on` expects. Like gen_str_handler, the lambda param is given a concrete type
     /// (an owned map copy) so the body type-checks.
@@ -3073,15 +3090,8 @@ impl RustGenerator {
                     format!("varg_runtime::websocket::__varg_ws_receive(&mut {})", arg_strs[0])
                 } else if method_name == "ws_close" {
                     format!("varg_runtime::websocket::__varg_ws_close(&mut {})", arg_strs[0])
-                // ===== F41-4: SSE Builtins =====
-                } else if method_name == "sse_stream" {
-                    // B11: the runtime writer takes no arguments. Emitting `(&arg0)` produced
-                    // non-compiling Rust (or an index panic when correctly called with none).
-                    format!("varg_runtime::websocket::__varg_sse_stream()")
-                } else if method_name == "sse_send" {
-                    format!("varg_runtime::websocket::__varg_sse_send(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
-                } else if method_name == "sse_close" {
-                    format!("varg_runtime::websocket::__varg_sse_close(&mut {})", arg_strs[0])
+                // (sse_stream/sse_send/sse_close removed — they discarded events; the typechecker
+                // now points at the real sse_open/sse_push server-side API.)
                 // ===== F41-8: MCP Protocol Builtins =====
                 } else if method_name == "mcp_connect" {
                     format!("varg_runtime::mcp::__varg_mcp_connect(&{}, &{})", arg_strs[0], arg_strs[1])
@@ -3236,6 +3246,14 @@ impl RustGenerator {
                     format!("varg_runtime::orchestration::__varg_orchestrator_new(&{})", arg_strs[0])
                 } else if method_name == "orchestrator_add_task" {
                     format!("varg_runtime::orchestration::__varg_orchestrator_add_task(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "fan_out" {
+                    // fan_out(inputs, (input) => result) — one thread per input, results collected.
+                    let handler = self.gen_str_handler(&args[1]);
+                    format!("varg_runtime::orchestration::__varg_fan_out(&{}, {})", arg_strs[0], handler)
+                } else if method_name == "fan_in" {
+                    // fan_in(results, (results) => merged)
+                    let reducer = self.gen_list_handler(&args[1]);
+                    format!("varg_runtime::orchestration::__varg_fan_in(&{}, {})", arg_strs[0], reducer)
                 } else if method_name == "orchestrator_run_all" {
                     // B11/R5: wrap the Varg handler lambda into Arc<dyn Fn(&str)->String + Send + Sync>
                     // with a typed String param (see gen_str_handler).

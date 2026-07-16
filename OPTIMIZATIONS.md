@@ -223,6 +223,19 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
    **Damit auch UI-getriebenes Attach:** der Router startet nur mit `echo`; `POST /attach` spawnt das
    math-Kind **zur Laufzeit** und exponiert seine Tools, `POST /detach` entfernt sie, Re-Attach
    funktioniert. Live über HTTP verifiziert.
+   **Stufe 12 (Aufräum-Sweep — „was lauert noch?"):**
+   - ✅ **`sse_stream`/`sse_send`/`sse_close` entfernt.** Sie zeigten auf einen Platzhalter, der das
+     Event **wegwarf und `Ok` zurückgab** — Erfolg gemeldet, nie etwas gesendet. Ein Unittest prüfte
+     genau dieses Ok/Err und gab damit falsche Sicherheit. Der Typechecker weist sie jetzt mit einem
+     Zeiger auf das echte `sse_open`/`sse_push` ab; Platzhalter + Lügen-Test gelöscht.
+   - ✅ **`fan_out`/`fan_in` verdrahtet.** Lagen fertig in der Runtime (echte Thread-Parallelität),
+     waren aus Varg aber **gar nicht erreichbar** (kein Typechecker-Arm, kein Codegen). Verifiziert:
+     4×300 ms laufen in <900 ms, Reihenfolge erhalten.
+   - ✅ **`--features server` allein kompilierte nicht** (Test nutzte reqwest ohne `net`-Gate) und
+     `normalize` war ohne `ann` toter Code (Warnung bei jedem Default-Build). Beides gefixt, dazu ein
+     **CI-Job, der jedes Feature einzeln kompiliert** — die Lücke, die default/full strukturell nicht
+     sehen können.
+
    **Verbleibende benannte Grenzen:** Route-Handler erreichen `self` nicht (`Fn`) — Seite wird vorab
    gerendert und gecaptured; **`?`/`try-catch` funktionieren nicht in einem Handler** (Handler ist
    kein `Result`, `try`-Body wird eigene Closure) → Fehlerbehandlung via `res.is_err()`/`unwrap()`.
