@@ -243,35 +243,75 @@ pub fn __varg_llm_infer_stream(prompt: &str, model: &str) {
     __varg_llm_fetch_stream(&provider, &provider.chat_endpoint(), &body);
 }
 
-/// Provider-aware streaming fetch — uses provider-specific chunk parsing
-fn __varg_llm_fetch_stream(provider: &LlmProvider, url: &str, body: &str) {
-    use std::io::{BufRead, BufReader, Write};
+/// Read an already-open stream, handing every parsed token to `on_token` **as it arrives**.
+///
+/// Split from the HTTP call so the incremental behaviour is testable without a live provider:
+/// feed it a `Cursor` over recorded SSE lines and observe the callbacks.
+fn consume_stream<R: std::io::BufRead, F: FnMut(String)>(
+    provider: &LlmProvider,
+    reader: R,
+    mut on_token: F,
+) {
+    for line in reader.lines().filter_map(Result::ok) {
+        if line.is_empty() { continue; }
+        if let Some(content) = provider.parse_stream_chunk(&line) {
+            if !content.is_empty() {
+                on_token(content);
+            }
+        }
+    }
+}
 
+/// POST the streaming request and return the response reader.
+fn open_stream(provider: &LlmProvider, body: String) -> Result<impl std::io::BufRead, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .connect_timeout(std::time::Duration::from_secs(30))
         .build()
-        .unwrap_or_else(|_| reqwest::blocking::Client::new());
-    let mut builder = client.post(url);
-    for (k, v) in &provider.headers() {
-        builder = builder.header(k.as_str(), v.as_str());
+        .map_err(|e| format!("llm stream client error: {e}"))?;
+    let mut req = client.post(&provider.chat_endpoint());
+    for (k, v) in provider.headers() {
+        req = req.header(k, v);
     }
-    builder = builder.body(body.to_string());
+    let resp = req.body(body).send()
+        .map_err(|e| format!("llm stream request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("llm stream failed: HTTP {}", resp.status()));
+    }
+    Ok(std::io::BufReader::new(resp))
+}
 
-    match builder.send() {
-        Ok(response) => {
-            let reader = BufReader::new(response);
-            for line in reader.lines().filter_map(Result::ok) {
-                if line.is_empty() { continue; }
-                if let Some(content) = provider.parse_stream_chunk(&line) {
-                    print!("{}", content);
-                    std::io::stdout().flush().unwrap();
-                }
-            }
-        }
+/// Provider-aware streaming fetch — prints tokens to stdout as they arrive.
+fn __varg_llm_fetch_stream(provider: &LlmProvider, _url: &str, body: &str) {
+    use std::io::Write;
+    match open_stream(provider, body.to_string()) {
+        Ok(reader) => consume_stream(provider, reader, |content| {
+            print!("{}", content);
+            let _ = std::io::stdout().flush();
+        }),
         Err(e) => eprintln!("[Varg LLM] Stream error: {}", e),
     }
     println!();
+}
+
+/// Stream tokens to a handler **as they arrive**, returning the full text once complete.
+///
+/// This is the incremental counterpart to `__varg_llm_stream`, which only hands back chunks after
+/// the whole response has been collected — useless for live output.
+pub fn __varg_llm_stream_to<F>(prompt: &str, model: &str, on_token: F) -> Result<String, String>
+where
+    F: Fn(String),
+{
+    let provider = LlmProvider::detect();
+    let model_str = if model.is_empty() { provider.default_model() } else { model.to_string() };
+    let body = provider.build_body(&model_str, &single_prompt_messages(prompt), true);
+    let reader = open_stream(&provider, body)?;
+    let mut full = String::new();
+    consume_stream(&provider, reader, |token| {
+        full.push_str(&token);
+        on_token(token);
+    });
+    Ok(full)
 }
 
 // ─── Wave 31: Structured Output ──────────────────────────────────────────
@@ -331,36 +371,13 @@ pub fn __varg_llm_structured_typed<T: serde::de::DeserializeOwned>(provider: &st
 /// Collect all LLM stream chunks into a Vec<String>.
 /// Enables: `for chunk in llm_stream(prompt, model) { ... }`
 pub fn __varg_llm_stream(prompt: &str, model: &str) -> Vec<String> {
-    use std::io::{BufRead, BufReader};
     let provider = LlmProvider::detect();
     let model_str = if model.is_empty() { provider.default_model() } else { model.to_string() };
-    let messages_json = single_prompt_messages(prompt);
-    let body = provider.build_body(&model_str, &messages_json, true);
-
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => { eprintln!("[Varg LLM] llm_stream client error: {e}"); return Vec::new(); }
-    };
-
-    let mut req = client.post(&provider.chat_endpoint());
-    for (k, v) in provider.headers() {
-        req = req.header(k, v);
-    }
-    req = req.body(body);
+    let body = provider.build_body(&model_str, &single_prompt_messages(prompt), true);
 
     let mut chunks = Vec::new();
-    match req.send() {
-        Ok(resp) => {
-            let reader = BufReader::new(resp);
-            for line in reader.lines().filter_map(Result::ok) {
-                if let Some(c) = provider.parse_stream_chunk(&line) {
-                    if !c.is_empty() { chunks.push(c); }
-                }
-            }
-        }
+    match open_stream(&provider, body) {
+        Ok(reader) => consume_stream(&provider, reader, |c| chunks.push(c)),
         Err(e) => eprintln!("[Varg LLM] llm_stream error: {e}"),
     }
     chunks
@@ -1036,4 +1053,78 @@ mod tests {
         assert_eq!(body["temperature"], 1.0);
         assert_eq!(body["max_tokens"], 2048);
     }
+
+    // ── Incremental token streaming ───────────────────────────────────────
+    // consume_stream is the shared core of llm_stream / llm_stream_to / the printing fetch.
+    // Driving it with recorded SSE lines proves tokens are delivered ONE BY ONE as they are read,
+    // rather than only after the whole response has been collected.
+
+    #[test]
+    fn consume_stream_emits_openai_tokens_incrementally() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}
+",
+            "
+",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo \"}}]}
+",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}
+",
+            "data: [DONE]
+",
+        );
+        let mut seen: Vec<String> = Vec::new();
+        consume_stream(&LlmProvider::OpenAI, std::io::Cursor::new(sse), |t| seen.push(t));
+        assert_eq!(seen, vec!["Hel", "lo ", "world"], "each delta must surface as its own token");
+        assert_eq!(seen.concat(), "Hello world");
+    }
+
+    #[test]
+    fn consume_stream_handles_anthropic_content_block_deltas() {
+        let sse = concat!(
+            "data: {\"type\":\"message_start\"}
+",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Ahoy\"}}
+",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"!\"}}
+",
+            "data: {\"type\":\"message_stop\"}
+",
+        );
+        let mut seen: Vec<String> = Vec::new();
+        consume_stream(&LlmProvider::Anthropic, std::io::Cursor::new(sse), |t| seen.push(t));
+        // Only content_block_delta events carry text; the envelope events are ignored.
+        assert_eq!(seen, vec!["Ahoy", "!"]);
+    }
+
+    #[test]
+    fn consume_stream_handles_ollama_lines() {
+        let lines = concat!(
+            "{\"message\":{\"content\":\"foo\"}}
+",
+            "{\"message\":{\"content\":\"bar\"}}
+",
+        );
+        let mut seen: Vec<String> = Vec::new();
+        consume_stream(&LlmProvider::Ollama, std::io::Cursor::new(lines), |t| seen.push(t));
+        assert_eq!(seen, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn consume_stream_skips_blank_and_unparsable_lines() {
+        let sse = concat!(
+            "
+",
+            "garbage-not-json
+",
+            "data: {\"choices\":[{\"delta\":{}}]}
+",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}
+",
+        );
+        let mut seen: Vec<String> = Vec::new();
+        consume_stream(&LlmProvider::OpenAI, std::io::Cursor::new(sse), |t| seen.push(t));
+        assert_eq!(seen, vec!["ok"], "noise must not produce tokens or abort the stream");
+    }
+
 }

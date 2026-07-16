@@ -160,9 +160,32 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
      Edda (KG/Vector/RAG) waren schon durch bestehende Golden-Programme (`agent_memory`,
      `knowledge_graph`, `vector_store`) abgedeckt; es fehlte nur **Komposition (DI)** und **MCP-Tool-
      Hotswap** — beide jetzt zu. Golden-Netz: 17 Programme.
-   **Bewusst offen (Skalierung/Komfort, keine Baubarkeits-Blocker):** serverseitiges WebSocket (SSE-Push
-   deckt UI ab), echter Registry-HTTP-Download, Produktions-ANN im Vector-Store (aktuell Cosine+LSH),
-   Workflow-Runner (Orchestrierung via `orchestrator_run_all`/Pipelines), LLM-Token-Streaming.
+   **Stufe 9 (die fünf Ausbaustufen — alle abgearbeitet):**
+   - ✅ **Serverseitiges WebSocket**: `ws_route(server, path, (msg) => reply)` — echter axum-Upgrade,
+     bidirektional (Gegenstück zum nur-server→client-SSE). Dabei **zwei latente Defekte gefunden**:
+     `VargHttpServerHandle` war aus Varg gar nicht erreichbar (⇒ serverseitiges SSE ließ sich nie
+     kompilieren, trotz vorhandener Runtime; `sse_open` emittierte zudem `&` statt `&mut`) — jetzt auf
+     **einen** Server-Typ vereinheitlicht (Routes + SSE + WS); und ein **async Entry-Point wurde nie
+     awaited** (`instance.Run();` ⇒ Future verworfen, ein `async Run()` mit Server startete stumm nichts).
+     Verifiziert: Varg-WS-Client ↔ Varg-WS-Server (`echo: ping`).
+   - ✅ **Registry-Download mit Checksum**: `registry_download(reg, name, version, url, sha256)` —
+     echter HTTP-Fetch, installiert **nur** bei passendem SHA-256; Mismatch = harter Fehler, nichts
+     wird geschrieben/vermerkt (unverifizierter Download = Supply-Chain-Loch). Verifikationspfad von
+     HTTP getrennt ⇒ ohne Netz testbar (Known-Vector, Tamper-Reject, Cache-Write). OCAP-gated.
+   - ✅ **Produktions-ANN (HNSW)**: LSH war nicht nur schwach — `vector_build_index` **verwarf** den
+     Index und `vector_search_fast` baute ihn **pro Query neu** (⇒ approximativ *und* langsamer als
+     Brute Force). Jetzt echter HNSW (`instant-distance`, Feature `ann`), am Handle gehalten; Stale-
+     Index ⇒ exakter Fallback statt veralteter Treffer. Ohne `ann` exakt (korrekt, linear).
+   - ✅ **Workflow-Runner**: `workflow_set_handler` + `workflow_run` führen den DAG wirklich aus
+     (Dep-Outputs als JSON an den Handler, Panic/fehlender Handler ⇒ failed + Downstream skipped,
+     terminiert sauber). Golden: `workflow_runner.varg`.
+   - ✅ **LLM-Token-Streaming**: `llm_stream_to(prompt, model, (token) => …)` liefert Tokens
+     **inkrementell** (das alte `llm_stream` sammelte erst alles ⇒ kein Live-Output). Streaming-Kern
+     von HTTP getrennt ⇒ mit aufgezeichneten SSE-Zeilen testbar (OpenAI/Anthropic/Ollama). Gegen einen
+     lokalen Fake-Provider end-to-end verifiziert.
+   **Verbliebene bekannte Kleinigkeiten:** Float-Array-Literale emittieren `Vec<f64>`, die Vector-API
+   erwartet `&[f32]` (⇒ literale Embeddings gehen nicht, `embed()` schon); `json_get` erwartet einen
+   geparsten Wert (`json_parse` zuerst).
 2. ✅ **rustc-Fehler → .varg-Konstrukt rückmappen** — Codegen sät `// @varg-ctx <datei> :: <konstrukt>`
    an jeden Funktions-/Methoden-Body; `vargc` fängt fehlgeschlagene Builds ab und übersetzt jede
    `main.rs:NN`-Fehlerstelle in das nächstgelegene Varg-Konstrukt (z. B. „agent Server.handle"),

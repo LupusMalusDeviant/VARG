@@ -2488,6 +2488,8 @@ impl RustGenerator {
                     format!("varg_runtime::llm::__varg_llm_structured(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "llm_stream" {
                     format!("varg_runtime::llm::__varg_llm_stream(&{}, &{})", arg_strs[0], arg_strs[1])
+                } else if method_name == "llm_stream_to" {
+                    format!("varg_runtime::llm::__varg_llm_stream_to(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "sse_read" {
                     format!("varg_runtime::llm::__varg_sse_read(&{})", arg_strs[0])
                 } else if method_name == "llm_embed_batch" {

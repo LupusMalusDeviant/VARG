@@ -372,7 +372,7 @@ impl TypeChecker {
             "registry_open", "registry_install", "registry_download", "registry_uninstall",
             "registry_is_installed", "registry_version", "registry_list", "registry_search",
             // LLM Extended (Wave 30-34)
-            "llm_structured", "llm_stream", "sse_read", "llm_embed_batch",
+            "llm_structured", "llm_stream", "llm_stream_to", "sse_read", "llm_embed_batch",
             // Vector Extended (Wave 34)
             "vector_build_index", "vector_search_fast",
             // SSE Server (Wave 32)
@@ -2112,6 +2112,13 @@ impl TypeChecker {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (prompt, model)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::LlmAccess, "llm_stream")?;
                     Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                } else if method_name == "llm_stream_to" {
+                    // llm_stream_to(prompt, model, (token) => ...) — the handler runs per token as
+                    // it arrives; returns the full text. Unlike llm_stream, which only yields chunks
+                    // once the whole response has been collected.
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (prompt, model, on_token)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    self.check_ocap(&CapabilityType::LlmAccess, "llm_stream_to")?;
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "sse_read" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (stream)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
