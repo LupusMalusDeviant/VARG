@@ -1,0 +1,23 @@
+agent Pipeline {
+    public void Run() {
+        var wf = workflow_new("etl");
+        workflow_add_step(wf, "extract", []);
+        workflow_add_step(wf, "transform", ["extract"]);
+        workflow_add_step(wf, "load", ["transform"]);
+
+        workflow_set_handler(wf, "extract", (inputs) => {
+            return "raw-data";
+        });
+        workflow_set_handler(wf, "transform", (inputs) => {
+            var j = json_parse(inputs);
+            return "transformed(" + json_get(j, "/extract") + ")";
+        });
+        workflow_set_handler(wf, "load", (inputs) => {
+            var j = json_parse(inputs);
+            return "loaded[" + json_get(j, "/transform") + "]";
+        });
+
+        print(workflow_run(wf));
+        print(workflow_get_output(wf, "load"));
+    }
+}

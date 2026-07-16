@@ -15,15 +15,38 @@ pub struct WorkflowStep {
     pub error: Option<String>,
 }
 
+/// A step body: receives a JSON object of its dependencies' outputs, returns this step's output.
+pub type StepHandler = Arc<dyn Fn(String) -> String + Send + Sync>;
+
 pub struct Workflow {
     pub name: String,
     steps: HashMap<String, WorkflowStep>,
     order: Vec<String>,
+    /// Registered step bodies. A workflow without handlers stays a pure tracker (drive it yourself
+    /// via ready_steps/set_output); with handlers, `workflow_run` executes the DAG.
+    handlers: HashMap<String, StepHandler>,
 }
 
 impl Workflow {
     pub fn new(name: &str) -> Self {
-        Workflow { name: name.to_string(), steps: HashMap::new(), order: Vec::new() }
+        Workflow {
+            name: name.to_string(),
+            steps: HashMap::new(),
+            order: Vec::new(),
+            handlers: HashMap::new(),
+        }
+    }
+
+    pub fn set_handler(&mut self, step: &str, handler: StepHandler) {
+        self.handlers.insert(step.to_string(), handler);
+    }
+
+    /// JSON object of this step's dependency outputs: {"dep": "output", ...}
+    fn inputs_for(&self, step: &str) -> String {
+        let map: HashMap<String, String> = self.steps.get(step)
+            .map(|s| s.deps.iter().map(|d| (d.clone(), self.get_output(d))).collect())
+            .unwrap_or_default();
+        serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
     }
 
     pub fn add_step(&mut self, name: &str, deps: Vec<String>) {
@@ -133,6 +156,55 @@ pub fn __varg_workflow_step_count(h: &WorkflowHandle) -> i64 {
 }
 
 pub fn __varg_workflow_status(h: &WorkflowHandle) -> String {
+    h.lock().unwrap_or_else(|e| e.into_inner()).status_report()
+}
+
+/// Register the body of a step. The handler receives a JSON object of its dependencies' outputs
+/// and returns this step's output.
+pub fn __varg_workflow_set_handler<F>(h: &WorkflowHandle, step: &str, handler: F)
+where
+    F: Fn(String) -> String + Send + Sync + 'static,
+{
+    h.lock().unwrap_or_else(|e| e.into_inner()).set_handler(step, Arc::new(handler));
+}
+
+/// Execute the DAG to completion and return the final status report.
+///
+/// Repeatedly takes the steps whose dependencies are all done and runs their handlers, feeding each
+/// one its dependencies' outputs. A step whose handler panics, or which has no handler registered,
+/// is marked failed — which skips everything downstream of it. Terminates when nothing is ready
+/// (complete, or blocked by a failure/cycle).
+///
+/// The workflow lock is deliberately released around each handler call, so a handler may call back
+/// into the workflow builtins without deadlocking.
+pub fn __varg_workflow_run(h: &WorkflowHandle) -> String {
+    loop {
+        let ready = h.lock().unwrap_or_else(|e| e.into_inner()).ready_steps();
+        if ready.is_empty() {
+            break;
+        }
+        for step in ready {
+            // Take what we need, then drop the lock before running user code.
+            let (handler, inputs) = {
+                let w = h.lock().unwrap_or_else(|e| e.into_inner());
+                (w.handlers.get(&step).cloned(), w.inputs_for(&step))
+            };
+            match handler {
+                Some(f) => {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(inputs)));
+                    let mut w = h.lock().unwrap_or_else(|e| e.into_inner());
+                    match result {
+                        Ok(output) => w.set_output(&step, &output),
+                        Err(_) => w.set_failed(&step, "step handler panicked"),
+                    }
+                }
+                None => {
+                    h.lock().unwrap_or_else(|e| e.into_inner())
+                        .set_failed(&step, "no handler registered for step");
+                }
+            }
+        }
+    }
     h.lock().unwrap_or_else(|e| e.into_inner()).status_report()
 }
 
@@ -329,4 +401,85 @@ mod tests {
         assert!(report.contains("failed") || report.contains("1 failed") || report.contains("failed |"),
             "status report must mention failures: {report}");
     }
+
+    // ── Runner ────────────────────────────────────────────────────────────
+    // The module used to be a pure tracker: callers had to poll ready_steps and set outputs
+    // themselves. These cover the runner actually executing the DAG.
+
+    #[test]
+    fn run_executes_steps_in_dependency_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let wf = __varg_workflow_new("pipeline");
+        __varg_workflow_add_step(&wf, "fetch", vec![]);
+        __varg_workflow_add_step(&wf, "parse", vec!["fetch".to_string()]);
+        __varg_workflow_add_step(&wf, "store", vec!["parse".to_string()]);
+
+        let tick = Arc::new(AtomicUsize::new(0));
+        for name in ["fetch", "parse", "store"] {
+            let tick = Arc::clone(&tick);
+            let name_owned = name.to_string();
+            __varg_workflow_set_handler(&wf, name, move |_inputs| {
+                format!("{}@{}", name_owned, tick.fetch_add(1, Ordering::SeqCst))
+            });
+        }
+
+        let report = __varg_workflow_run(&wf);
+        assert!(__varg_workflow_is_complete(&wf));
+        // Each ran exactly once, in topological order.
+        assert_eq!(__varg_workflow_get_output(&wf, "fetch"), "fetch@0");
+        assert_eq!(__varg_workflow_get_output(&wf, "parse"), "parse@1");
+        assert_eq!(__varg_workflow_get_output(&wf, "store"), "store@2");
+        assert!(report.contains("3/3 done"), "report: {report}");
+    }
+
+    #[test]
+    fn run_passes_dependency_outputs_to_the_handler() {
+        let wf = __varg_workflow_new("join");
+        __varg_workflow_add_step(&wf, "a", vec![]);
+        __varg_workflow_add_step(&wf, "b", vec![]);
+        __varg_workflow_add_step(&wf, "merge", vec!["a".to_string(), "b".to_string()]);
+        __varg_workflow_set_handler(&wf, "a", |_| "AAA".to_string());
+        __varg_workflow_set_handler(&wf, "b", |_| "BBB".to_string());
+        __varg_workflow_set_handler(&wf, "merge", |inputs| {
+            let v: serde_json::Value = serde_json::from_str(&inputs).unwrap();
+            format!("{}+{}", v["a"].as_str().unwrap(), v["b"].as_str().unwrap())
+        });
+
+        __varg_workflow_run(&wf);
+        assert_eq!(__varg_workflow_get_output(&wf, "merge"), "AAA+BBB");
+    }
+
+    #[test]
+    fn run_marks_step_failed_when_handler_panics_and_skips_dependents() {
+        let wf = __varg_workflow_new("boom");
+        __varg_workflow_add_step(&wf, "ok", vec![]);
+        __varg_workflow_add_step(&wf, "bad", vec!["ok".to_string()]);
+        __varg_workflow_add_step(&wf, "after", vec!["bad".to_string()]);
+        __varg_workflow_set_handler(&wf, "ok", |_| "fine".to_string());
+        __varg_workflow_set_handler(&wf, "bad", |_| panic!("handler exploded"));
+        __varg_workflow_set_handler(&wf, "after", |_| "never".to_string());
+
+        // Silence the panic hook's output for this deliberate panic.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let report = __varg_workflow_run(&wf);
+        std::panic::set_hook(prev);
+
+        assert_eq!(__varg_workflow_get_output(&wf, "ok"), "fine");
+        assert_eq!(__varg_workflow_get_output(&wf, "after"), "", "dependent must not run");
+        assert!(report.contains("1 failed"), "report: {report}");
+        assert!(report.contains("1 skipped"), "report: {report}");
+        // The run terminates rather than spinning on a step that can never become ready.
+        assert!(__varg_workflow_is_complete(&wf));
+    }
+
+    #[test]
+    fn run_fails_a_step_that_has_no_handler() {
+        let wf = __varg_workflow_new("missing");
+        __varg_workflow_add_step(&wf, "orphan", vec![]);
+        let report = __varg_workflow_run(&wf);
+        assert!(report.contains("1 failed"), "report: {report}");
+        assert!(__varg_workflow_is_complete(&wf));
+    }
+
 }

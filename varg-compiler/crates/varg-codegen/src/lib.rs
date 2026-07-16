@@ -2460,6 +2460,10 @@ impl RustGenerator {
                     format!("varg_runtime::workflow::__varg_workflow_step_count(&{})", arg_strs[0])
                 } else if method_name == "workflow_status" {
                     format!("varg_runtime::workflow::__varg_workflow_status(&{})", arg_strs[0])
+                } else if method_name == "workflow_set_handler" {
+                    format!("varg_runtime::workflow::__varg_workflow_set_handler(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "workflow_run" {
+                    format!("varg_runtime::workflow::__varg_workflow_run(&{})", arg_strs[0])
                 // ===== Wave 34: Package Registry =====
                 } else if method_name == "registry_open" {
                     format!("varg_runtime::registry::__varg_registry_open(&{})", arg_strs[0])

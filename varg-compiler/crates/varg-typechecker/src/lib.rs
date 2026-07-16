@@ -367,7 +367,7 @@ impl TypeChecker {
             // Wave 34: Workflow / DAG
             "workflow_new", "workflow_add_step", "workflow_set_output", "workflow_set_failed",
             "workflow_ready_steps", "workflow_is_complete", "workflow_get_output",
-            "workflow_step_count", "workflow_status",
+            "workflow_step_count", "workflow_status", "workflow_set_handler", "workflow_run",
             // Wave 34: Package Registry
             "registry_open", "registry_install", "registry_download", "registry_uninstall",
             "registry_is_installed", "registry_version", "registry_list", "registry_search",
@@ -2065,6 +2065,14 @@ impl TypeChecker {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (workflow)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Int)
                 } else if method_name == "workflow_status" {
+                    if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (workflow)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::String)
+                } else if method_name == "workflow_set_handler" {
+                    // workflow_set_handler(wf, step, (inputs_json) => output)
+                    if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (workflow, step, handler)".to_string(), found: format!("{} arguments", args.len()) }); }
+                    Ok(TypeNode::Void)
+                } else if method_name == "workflow_run" {
+                    // Executes the DAG to completion; returns the final status report.
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (workflow)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
                 // ===== Wave 34: Package Registry =====
