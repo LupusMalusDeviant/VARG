@@ -1,0 +1,14 @@
+OK   path_stem
+OK   path_extension
+OK   path_parent
+OK   path_join_shape
+OK   base64_encode
+OK   base64_decode
+OK   base64_roundtrip
+OK   path_exists_false
+OK   path_exists_true
+OK   fs_read
+OK   fs_append
+OK   base64_encode_file
+OK   is_file
+OK   delete_file

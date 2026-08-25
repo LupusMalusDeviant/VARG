@@ -2774,9 +2774,10 @@ impl TypeChecker {
                     Ok(caller_ty)
                 // ===== Wave 12: String Parsing Methods =====
                 } else if method_name == "parse_int" {
-                    Ok(TypeNode::Int)
+                    // Fallible: a malformed input used to become a silent 0.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::Error)))
                 } else if method_name == "parse_float" {
-                    Ok(TypeNode::Float)
+                    Ok(TypeNode::Result(Box::new(TypeNode::Float), Box::new(TypeNode::Error)))
                 } else if method_name == "to_string" {
                     Ok(TypeNode::String)
                 // ===== Wave 12: Collection Methods =====
@@ -3325,9 +3326,35 @@ impl TypeChecker {
         }
     }
 
+    /// Follow a `type X = Y;` alias to the type it names.
+    ///
+    /// Aliases were registered but never consulted, so declaring `UserId u = 21;` after
+    /// `type UserId = int;` failed with "expected `Custom("UserId")`, found `Int`" — the alias
+    /// was effectively a new, uninhabitable nominal type. Chains are followed with a bounded
+    /// number of hops so a self-referential alias cannot spin.
+    fn resolve_alias(&self, ty: &TypeNode) -> TypeNode {
+        let mut cur = ty.clone();
+        for _ in 0..16 {
+            let next = match &cur {
+                TypeNode::Custom(name) => self.type_aliases.get(name).cloned(),
+                _ => None,
+            };
+            match next {
+                Some(t) if t != cur => cur = t,
+                _ => break,
+            }
+        }
+        cur
+    }
+
     fn types_match(&self, expected: &TypeNode, actual: &TypeNode) -> bool {
         if expected == actual {
             return true;
+        }
+        // An alias is transparent: compare what it stands for.
+        let (ex_res, ac_res) = (self.resolve_alias(expected), self.resolve_alias(actual));
+        if (&ex_res, &ac_res) != (expected, actual) {
+            return self.types_match(&ex_res, &ac_res);
         }
         
         match (expected, actual) {
@@ -7070,14 +7097,20 @@ mod tests {
             method_name: "parse_int".to_string(),
             args: vec![],
         };
-        assert_eq!(checker.infer_expression_type(&expr_int).unwrap(), TypeNode::Int);
+        assert_eq!(
+            checker.infer_expression_type(&expr_int).unwrap(),
+            TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::Error))
+        );
 
         let expr_float = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("s".to_string())),
             method_name: "parse_float".to_string(),
             args: vec![],
         };
-        assert_eq!(checker.infer_expression_type(&expr_float).unwrap(), TypeNode::Float);
+        assert_eq!(
+            checker.infer_expression_type(&expr_float).unwrap(),
+            TypeNode::Result(Box::new(TypeNode::Float), Box::new(TypeNode::Error))
+        );
     }
 
     #[test]

@@ -1,0 +1,67 @@
+/// End-to-end coverage for the math builtins, plus the bounded checks for the
+/// non-deterministic ones (random_int / random_float / uuid), which are asserted by invariant
+/// rather than by value so the golden output stays stable.
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        print check("floor", $"{floor(3.7)}", "3");
+        print check("floor_neg", $"{floor(-3.2)}", "-4");
+        print check("ceil", $"{ceil(3.2)}", "4");
+        print check("ceil_neg", $"{ceil(-3.7)}", "-3");
+        print check("round_up", $"{round(3.5)}", "4");
+        print check("round_down", $"{round(3.4)}", "3");
+        print check("pow", $"{pow(2.0, 10.0)}", "1024");
+        print check("sqrt", $"{sqrt(16.0)}", "4");
+        print check("min", $"{min(3, 7)}", "3");
+        print check("max", $"{max(3, 7)}", "7");
+        print check("abs_int", $"{abs(-5)}", "5");
+        print check("abs_expr", $"{abs(3 - 10)}", "7");
+
+        // Precedence over an expression argument: these lower to a method call on the argument.
+        print check("floor_expr", $"{floor(7.0 / 2.0)}", "3");
+        print check("ceil_expr", $"{ceil(7.0 / 2.0)}", "4");
+        print check("pow_expr", $"{pow(1.0 + 1.0, 3.0)}", "8");
+
+        // Fallible parsing.
+        var ok = parse_int("42") or -1;
+        print check("parse_int_ok", $"{ok}", "42");
+        var bad = parse_int("nope") or -1;
+        print check("parse_int_bad", $"{bad}", "-1");
+        var okf = parse_float("2.5") or -1.0;
+        print check("parse_float_ok", $"{okf}", "2.5");
+        var badf = parse_float("nope") or -1.0;
+        print check("parse_float_bad", $"{badf}", "-1");
+
+        // Non-deterministic: assert the contract, not the value.
+        var r = random_int(1, 7);
+        var r_in_range = r >= 1 && r <= 7;
+        print check("random_int_range", yn(r_in_range), "true");
+        var rf = random_float();
+        var rf_in_range = rf >= 0.0 && rf <= 1.0;
+        print check("random_float_range", yn(rf_in_range), "true");
+        var id1 = uuid();
+        var id2 = uuid();
+        var id_len_ok = id1.length() == 36;
+        var id_unique = id1 != id2;
+        print check("uuid_length", yn(id_len_ok), "true");
+        print check("uuid_unique", yn(id_unique), "true");
+
+        // Token estimate is a documented heuristic (chars/4).
+        var est = estimate_tokens("12345678");
+        print check("estimate_tokens", $"{est}", "2");
+
+        // time_add / time_diff are pure arithmetic on epoch millis.
+        var base_ms = 1000;
+        var later = time_add(base_ms, 60000);
+        print check("time_add", $"{later}", "61000");
+        print check("time_diff", $"{time_diff(later, base_ms)}", "60000");
+    }
+}

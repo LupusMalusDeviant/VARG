@@ -1,0 +1,39 @@
+/// Data-carrying enums were matchable but not constructible: `Shape.Circle(5)` was emitted
+/// verbatim into the Rust output. Also covers `find` (its predicate takes a reference, so a
+/// lambda written against the element type did not compile) and type aliases (registered but
+/// never resolved, making `type Id = int` an uninhabitable nominal type).
+enum Shape { Circle(int), Rect(int, int), Unit }
+
+type Id = int;
+
+fn area(Shape s) -> int {
+    match s {
+        Circle(r) => { return 3 * r * r; }
+        Rect(w, h) => { return w * h; }
+        Unit => { return 1; }
+    }
+    return -1;
+}
+
+fn double(Id id) -> Id { return id * 2; }
+
+agent Main {
+    public void Run() {
+        print area(Shape.Circle(5));
+        print area(Shape.Rect(2, 7));
+        print area(Shape.Unit);
+
+        var shapes = [Shape.Circle(1), Shape.Rect(3, 3)];
+        var total = 0;
+        for s in shapes { total += area(s); }
+        print total;
+
+        Id u = 21;
+        print double(u);
+
+        var nums = [1, 5, 12, 3];
+        print nums.find((n) => n > 10);
+        print nums.find((n) => n > 100);
+        print nums.len();
+    }
+}

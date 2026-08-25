@@ -28,9 +28,18 @@ pub fn __varg_tensor_eye(n: i64) -> TensorHandle {
     Arc::new(a)
 }
 
-pub fn __varg_tensor_from_list(data: &[f32], shape: &[i64]) -> TensorHandle {
+/// Build a tensor from a flat list.
+///
+/// Takes anything convertible to `Vec<f32>` rather than a hard `&[f32]`: Varg float literals
+/// compile to `f64`, so the documented `tensor_from_list([1.0, 2.0], [2])` could not be called
+/// from Varg at all. This is the same fix the vector store already carries — hence the shared
+/// `ToF32Vec` trait rather than a second conversion.
+pub fn __varg_tensor_from_list<D: crate::vector::ToF32Vec + ?Sized>(
+    data: &D,
+    shape: &[i64],
+) -> TensorHandle {
     let s: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-    Arc::new(ArrayD::from_shape_vec(IxDyn(&s), data.to_vec())
+    Arc::new(ArrayD::from_shape_vec(IxDyn(&s), data.to_f32_vec())
         .expect("tensor_from_list: data length must match product of shape dims"))
 }
 
@@ -64,8 +73,13 @@ pub fn __varg_tensor_sub(a: &TensorHandle, b: &TensorHandle) -> TensorHandle {
     Arc::new(a.as_ref() - b.as_ref())
 }
 
-pub fn __varg_tensor_mul_scalar(t: &TensorHandle, s: f32) -> TensorHandle {
-    Arc::new(t.mapv(|v| v * s))
+// The tensor API speaks f64 at the Varg boundary even though ndarray stores f32 internally.
+// Varg's `float` is f64, so f32 in these signatures meant `tensor_mul_scalar(t, 2.0)` did not
+// compile and the reductions' results could not be combined with any other Varg float — the
+// builtin signature table has always claimed Float (f64) for them.
+pub fn __varg_tensor_mul_scalar(t: &TensorHandle, s: f64) -> TensorHandle {
+    let s32 = s as f32;
+    Arc::new(t.mapv(|v| v * s32))
 }
 
 pub fn __varg_tensor_matmul(a: &TensorHandle, b: &TensorHandle) -> TensorHandle {
@@ -76,33 +90,34 @@ pub fn __varg_tensor_matmul(a: &TensorHandle, b: &TensorHandle) -> TensorHandle 
     Arc::new(a2.dot(&b2).into_dyn())
 }
 
-pub fn __varg_tensor_dot(a: &TensorHandle, b: &TensorHandle) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+pub fn __varg_tensor_dot(a: &TensorHandle, b: &TensorHandle) -> f64 {
+    let acc: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    acc as f64
 }
 
 // ── Reductions ────────────────────────────────────────────────────────────────
 
-pub fn __varg_tensor_sum(t: &TensorHandle) -> f32 {
-    t.sum()
+pub fn __varg_tensor_sum(t: &TensorHandle) -> f64 {
+    t.sum() as f64
 }
 
-pub fn __varg_tensor_mean(t: &TensorHandle) -> f32 {
+pub fn __varg_tensor_mean(t: &TensorHandle) -> f64 {
     if t.is_empty() { return 0.0; }
-    t.sum() / t.len() as f32
+    (t.sum() / t.len() as f32) as f64
 }
 
-pub fn __varg_tensor_max(t: &TensorHandle) -> f32 {
-    t.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+pub fn __varg_tensor_max(t: &TensorHandle) -> f64 {
+    t.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64
 }
 
-pub fn __varg_tensor_min(t: &TensorHandle) -> f32 {
-    t.iter().cloned().fold(f32::INFINITY, f32::min)
+pub fn __varg_tensor_min(t: &TensorHandle) -> f64 {
+    t.iter().cloned().fold(f32::INFINITY, f32::min) as f64
 }
 
 // ── Conversion ────────────────────────────────────────────────────────────────
 
-pub fn __varg_tensor_to_list(t: &TensorHandle) -> Vec<f32> {
-    t.iter().cloned().collect()
+pub fn __varg_tensor_to_list(t: &TensorHandle) -> Vec<f64> {
+    t.iter().map(|v| *v as f64).collect()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

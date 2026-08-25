@@ -1,0 +1,6 @@
+worker: on_start
+worker: processed alpha (#1)
+worker: processed beta (#2)
+worker: fell through to mailbox
+main: pong:main
+main: done

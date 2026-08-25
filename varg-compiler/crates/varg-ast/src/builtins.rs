@@ -30,7 +30,7 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         | "fetch" | "http_download_base64" => TypeNode::String,
 
         // ── Int ───────────────────────────────────────────────────────────────────
-        "len" | "length" | "count" | "count_occurrences" | "parse_int" | "sum"
+        "len" | "length" | "count" | "count_occurrences" | "sum"
         | "time_millis" | "time_add" | "time_diff" | "channel_len" | "event_count"
         | "vector_store_count" | "json_get_int" | "estimate_tokens" | "random_int"
         | "proc_pid" | "orchestrator_task_count" | "orchestrator_completed_count"
@@ -38,7 +38,7 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         | "memory_episode_count" | "trace_span_count" => TypeNode::Int,
 
         // ── Float ─────────────────────────────────────────────────────────────────
-        "sqrt" | "floor" | "ceil" | "round" | "pow" | "parse_float" | "random_float"
+        "sqrt" | "floor" | "ceil" | "round" | "pow" | "random_float"
         | "tensor_sum" | "tensor_mean" | "tensor_min" | "tensor_max" | "tensor_dot" => TypeNode::Float,
 
         // ── Bool ──────────────────────────────────────────────────────────────────
@@ -53,6 +53,13 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         // bare String (see the String group above) despite looking fallible.
         "fs_read" | "exec" | "env" =>
             TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)),
+
+        // ── Result<Int/Float, Error> ─────────────────────────────────────────────
+        // `parse_int`/`parse_float` are genuinely fallible. They used to lower to
+        // `.unwrap_or(0)`, so a malformed input silently became 0 and flowed on as a wrong
+        // number. Typing them as Result forces the caller to use `?` or `or`.
+        "parse_int" => TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::Error)),
+        "parse_float" => TypeNode::Result(Box::new(TypeNode::Float), Box::new(TypeNode::Error)),
 
         _ => return None,
     };
@@ -122,4 +129,5 @@ mod tests {
             );
         }
     }
+
 }

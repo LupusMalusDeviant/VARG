@@ -1,0 +1,52 @@
+/// End-to-end coverage for shell execution and process management behind SystemAccess.
+///
+/// The child process is `sort`, which exists on both Windows and POSIX and behaves the same way:
+/// it reads stdin until closed, then writes the sorted lines. That keeps this golden program
+/// platform-independent without pinning a shell-specific command.
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            var cap = SystemAccess {};
+
+            var out = exec("echo varg") or "EXEC-FAILED";
+            print check("exec", out.trim(), "varg");
+
+            // `exit N` rather than `echo`: exec_status does not capture the child's stdout, so a
+            // printing command would leak into this program's output and into the golden file.
+            var code = exec_status("exit 0") or -1;
+            print check("exec_status_ok", $"{code}", "0");
+            var bad = exec_status("exit 3") or -1;
+            print check("exec_status_nonzero", $"{bad}", "3");
+
+            var proc = proc_spawn("sort")?;   // fallible: propagate a spawn failure
+            var pid = proc_pid(proc);
+            var pid_ok = pid > 0;
+            print check("proc_pid_positive", yn(pid_ok), "true");
+
+            var alive = proc_is_alive(proc);
+            print check("proc_is_alive", yn(alive), "true");
+
+            proc_write_stdin(proc, "banana\n");
+            proc_write_stdin(proc, "apple\n");
+            proc_close_stdin(proc);
+
+            var first = proc_read_line(proc) or "READ-FAILED";
+            print check("proc_read_line", first.trim(), "apple");
+
+            var status = proc_wait(proc) or -1;
+            print check("proc_wait", $"{status}", "0");
+
+            var still = proc_is_alive(proc);
+            print check("proc_is_alive_after", yn(still), "false");
+        }
+    }
+}

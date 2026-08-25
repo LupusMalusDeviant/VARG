@@ -1,0 +1,87 @@
+/// End-to-end coverage for the stateful runtime handles: channels, event bus, pipeline,
+/// orchestrator, workflow DAG and package registry. These all carry counters that were
+/// documented but never exercised by a running program.
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        // ── Channels ────────────────────────────────────────────────────────
+        var ch = channel_new(10);
+        channel_send(ch, "one");
+        channel_send(ch, "two");
+        print check("channel_len", $"{channel_len(ch)}", "2");
+        print check("channel_recv", channel_recv(ch), "one");
+        print check("channel_len_after", $"{channel_len(ch)}", "1");
+        var closed_before = channel_is_closed(ch);
+        print check("channel_is_closed_false", yn(closed_before), "false");
+        channel_close(ch);
+        var closed_after = channel_is_closed(ch);
+        print check("channel_is_closed_true", yn(closed_after), "true");
+
+        // ── Event bus ───────────────────────────────────────────────────────
+        var bus = event_bus_new("system");
+        event_on(bus, "joined", (data) => {
+            return "handled";
+        });
+        event_emit(bus, "joined", {"name": "alice"});
+        event_emit(bus, "joined", {"name": "bob"});
+        var joined_count = event_count(bus);
+        print check("event_count", $"{joined_count}", "2");
+
+        // ── Pipeline ────────────────────────────────────────────────────────
+        var pipe = pipeline_new("data_pipe");
+        pipeline_add_step(pipe, "upper", (input) => input.to_upper());
+        pipeline_add_step(pipe, "bracket", (input) => $"[{input}]");
+        print check("pipeline_step_count", $"{pipeline_step_count(pipe)}", "2");
+        print check("pipeline_run", pipeline_run(pipe, "hi"), "[HI]");
+
+        // ── Orchestrator ────────────────────────────────────────────────────
+        var orch = orchestrator_new("workers");
+        orchestrator_add_task(orch, "task1", "alpha");
+        orchestrator_add_task(orch, "task2", "beta");
+        print check("orchestrator_task_count", $"{orchestrator_task_count(orch)}", "2");
+        print check("completed_before", $"{orchestrator_completed_count(orch)}", "0");
+        orchestrator_run_all(orch, (input) => {
+            return input.to_upper();
+        });
+        print check("completed_after", $"{orchestrator_completed_count(orch)}", "2");
+
+        // ── Workflow DAG ────────────────────────────────────────────────────
+        var wf = workflow_new("pipeline");
+        workflow_add_step(wf, "fetch", []);
+        workflow_add_step(wf, "parse", ["fetch"]);
+        print check("workflow_step_count", $"{workflow_step_count(wf)}", "2");
+        var complete_before = workflow_is_complete(wf);
+        print check("workflow_incomplete", yn(complete_before), "false");
+        workflow_set_output(wf, "fetch", "raw");
+        workflow_set_output(wf, "parse", "parsed");
+        var complete_after = workflow_is_complete(wf);
+        print check("workflow_complete", yn(complete_after), "true");
+        print check("workflow_get_output", workflow_get_output(wf, "parse"), "parsed");
+        // status_report() summarises the workflow: its name and the per-state counts.
+        var status = workflow_status(wf);
+        var names_workflow = status.contains("pipeline");
+        var counts_done = status.contains("2/2 done");
+        print check("workflow_status_name", yn(names_workflow), "true");
+        print check("workflow_status_counts", yn(counts_done), "true");
+
+        // ── Registry ────────────────────────────────────────────────────────
+        var reg = registry_open("./golden_registry_cache");
+        var before = registry_is_installed(reg, "varg-http");
+        print check("registry_not_installed", yn(before), "false");
+        registry_install(reg, "varg-http", "1.2.0");
+        var after = registry_is_installed(reg, "varg-http");
+        print check("registry_is_installed", yn(after), "true");
+        print check("registry_version", registry_version(reg, "varg-http"), "1.2.0");
+        registry_uninstall(reg, "varg-http");
+        var gone = registry_is_installed(reg, "varg-http");
+        print check("registry_uninstall", yn(gone), "false");
+    }
+}

@@ -1,0 +1,65 @@
+/// End-to-end coverage for the remaining offline builtins: time formatting, ANSI helpers,
+/// environment lookup, directory predicates and the tracer's span counter.
+///
+/// The clock-dependent ones are asserted by invariant, not by value: `time_format` is pinned to a
+/// fixed epoch (it converts in UTC, so this holds in any timezone), while `timestamp()` and
+/// `time_millis()` are checked for shape and monotonicity so the golden output stays stable.
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        // Fixed epoch → deterministic in every timezone (conversion is UTC).
+        print check("time_format_epoch", time_format(0, "%Y-%m-%d"), "1970-01-01");
+        print check("time_format_ms", time_format(86400000, "%Y-%m-%d"), "1970-01-02");
+        print check("time_format_hm", time_format(3661000, "%H:%M:%S"), "01:01:01");
+
+        var now = time_millis();
+        var now_is_recent = now > 1700000000000;
+        print check("time_millis_recent", yn(now_is_recent), "true");
+
+        var ts = timestamp();
+        var ts_shape = ts.contains("T") && ts.length() > 19;
+        print check("timestamp_rfc3339", yn(ts_shape), "true");
+
+        // ANSI helpers: assert the escape shape, not the raw bytes, so the golden file stays
+        // readable and terminal-independent.
+        var red = ansi_color("red");
+        var bold = ansi_bold();
+        var reset = ansi_reset();
+        var red_is_escape = red.length() > 2 && !red.is_empty();
+        print check("ansi_color", yn(red_is_escape), "true");
+        print check("ansi_bold_len", $"{bold.length()}", "4");
+        print check("ansi_reset_len", $"{reset.length()}", "4");
+
+        // Environment: PATH is set on every supported platform; a made-up name is not.
+        var path_val = env("PATH") or "";
+        var path_set = !path_val.is_empty();
+        print check("env_present", yn(path_set), "true");
+        var absent = env("VARG_GOLDEN_DEFINITELY_UNSET") or "MISSING";
+        print check("env_absent", absent, "MISSING");
+
+        unsafe {
+            var cap = FileAccess {};
+            var here = is_dir(".");
+            print check("is_dir_true", yn(here), "true");
+            var not_a_dir = is_dir("./definitely_not_a_directory");
+            print check("is_dir_false", yn(not_a_dir), "false");
+        }
+
+        // Tracer span accounting.
+        var tracer = trace_start("golden_agent");
+        print check("trace_span_count_zero", $"{trace_span_count(tracer)}", "0");
+        var s1 = trace_span(tracer, "step_one");
+        trace_end(tracer, s1);
+        var s2 = trace_span(tracer, "step_two");
+        trace_end(tracer, s2);
+        print check("trace_span_count", $"{trace_span_count(tracer)}", "2");
+    }
+}

@@ -1,0 +1,13 @@
+OK   tensor_sum
+OK   tensor_mean
+OK   tensor_min
+OK   tensor_max
+OK   tensor_dot
+OK   tensor_zeros_sum
+OK   tensor_ones_sum
+OK   tensor_eye_sum
+OK   tensor_shape
+OK   tensor_to_list
+OK   tensor_mul_scalar
+OK   tensor_add
+OK   tensor_sub

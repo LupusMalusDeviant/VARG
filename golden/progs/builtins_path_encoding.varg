@@ -1,0 +1,62 @@
+/// End-to-end coverage for the path helpers, file I/O behind the FileAccess capability, and the
+/// base64 encoding family.
+///
+/// path_join is asserted by shape rather than by literal value: it delegates to std::path, so the
+/// separator differs between Windows and POSIX and a literal expectation would make this golden
+/// program platform-bound.
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        print check("path_stem", path_stem("report.pdf"), "report");
+        print check("path_extension", path_extension("archive.tar.gz"), "gz");
+        print check("path_parent", path_parent("dir/sub/file.txt"), "dir/sub");
+
+        var joined = path_join("dir", "file.txt");
+        var join_ok = joined.ends_with("file.txt") && joined.starts_with("dir");
+        print check("path_join_shape", yn(join_ok), "true");
+
+        // base64 round-trip over a string.
+        var enc = base64_encode("Varg");
+        print check("base64_encode", enc, "VmFyZw==");
+        print check("base64_decode", base64_decode(enc), "Varg");
+        print check("base64_roundtrip", base64_decode(base64_encode("hello world")), "hello world");
+
+        unsafe {
+            var cap = FileAccess {};
+
+            var missing = path_exists("definitely_not_here.txt");
+            print check("path_exists_false", yn(missing), "false");
+
+            fs_write("golden_probe.txt", "line one\n")?;
+            var present = path_exists("golden_probe.txt");
+            print check("path_exists_true", yn(present), "true");
+
+            var back = fs_read("golden_probe.txt") or "READ-FAILED";
+            print check("fs_read", back.trim(), "line one");
+
+            fs_append("golden_probe.txt", "line two\n")?;
+            var both = fs_read("golden_probe.txt") or "";
+            var lines = both.trim().split("\n");
+            print check("fs_append", $"{lines.len()}", "2");
+
+            // base64 of that same file's bytes must decode back to its text.
+            var fenc = base64_encode_file("golden_probe.txt");
+            print check("base64_encode_file", base64_decode(fenc).trim(), "line one\nline two");
+
+            var is_f = is_file("golden_probe.txt");
+            print check("is_file", yn(is_f), "true");
+
+            delete_file("golden_probe.txt")?;
+            var gone = path_exists("golden_probe.txt");
+            print check("delete_file", yn(gone), "false");
+        }
+    }
+}

@@ -1,0 +1,66 @@
+/// End-to-end coverage for the string and number-formatting builtins.
+///
+/// Self-checking on purpose: each line prints OK or FAIL together with the expected value, so a
+/// wrong result shows up in the diff instead of being silently baked into the golden file. That
+/// is the failure mode this net exists for — `abs(-5.0)` returning -5 survived 1194 unit tests
+/// because no program ever checked what it computed.
+fn check(string name, string got, string want) -> string {
+    if got == want {
+        return $"OK   {name}";
+    }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        var s = "  Hello Varg  ";
+        var t = s.trim();
+
+        print check("to_lower", t.to_lower(), "hello varg");
+        print check("to_upper", t.to_upper(), "HELLO VARG");
+        print check("trim_start", s.trim_start(), "Hello Varg  ");
+        print check("trim_end", s.trim_end(), "  Hello Varg");
+        print check("ltrim", s.ltrim(), "Hello Varg  ");
+        print check("rtrim", s.rtrim(), "  Hello Varg");
+        print check("replace", t.replace("Varg", "World"), "Hello World");
+        print check("substring", t.substring(0, 5), "Hello");
+        print check("repeat", "ab".repeat(3), "ababab");
+        print check("char_at", t.char_at(1), "e");
+        print check("pad_left", "7".pad_left(4), "   7");
+        print check("pad_right", "7".pad_right(4), "7   ");
+
+        var sw = t.starts_with("Hello");
+        var ew = t.ends_with("Varg");
+        var ct = t.contains("lo V");
+        var cf = t.contains("zzz");
+        var empty_no = t.is_empty();
+        var blank = "";
+        var empty_yes = blank.is_empty();
+        print check("starts_with", yn(sw), "true");
+        print check("ends_with", yn(ew), "true");
+        print check("contains", yn(ct), "true");
+        print check("contains_false", yn(cf), "false");
+        print check("is_empty_false", yn(empty_no), "false");
+        print check("is_empty_true", yn(empty_yes), "true");
+
+        var n = t.length();
+        print check("length", $"{n}", "10");
+        var dashes = "a-b-c-d";
+        var occ = dashes.count_occurrences("-");
+        print check("count_occurrences", $"{occ}", "3");
+
+        var num = 42;
+        print check("to_string_int", num.to_string(), "42");
+        var big = 255;
+        print check("to_hex", big.to_hex(), "ff");
+        var five = 5;
+        print check("to_binary", five.to_binary(), "101");
+        var pi = 3.14159;
+        print check("to_fixed", pi.to_fixed(2), "3.14");
+    }
+}

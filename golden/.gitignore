@@ -6,3 +6,5 @@ progs/*.rs
 *.graph.db
 *.vector.db
 .vargc_cache/
+golden_registry_cache/
+golden_probe.txt

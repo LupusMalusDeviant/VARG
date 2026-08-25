@@ -1352,6 +1352,13 @@ impl RustGenerator {
                         Some(TypeNode::List(elem_ty)) => {
                             format!(": Vec<{}>", self.gen_type(elem_ty))
                         },
+                        // `int[] xs = [];` parses to Array, not List. Without this arm the
+                        // declared element type was dropped and the empty literal became a bare
+                        // `vec![]`, so rustc could not infer it — an empty array literal was
+                        // unusable even when its type was written out.
+                        Some(TypeNode::Array(elem_ty)) => {
+                            format!(": Vec<{}>", self.gen_type(elem_ty))
+                        },
                         _ => String::new(),
                     };
                     out.push_str(&format!("{}let mut {}{} = {};\n", indent, esc_ident(name), type_annotation, val_str));
@@ -1794,6 +1801,36 @@ impl RustGenerator {
     /// wrapping it in parentheses when it is itself a compound expression whose precedence
     /// could otherwise be lost during flattening. String-concat `Add` is emitted as a
     /// `format!(...)` call and needs no wrapping.
+    /// Marshal the payload of `send`/`request` into the `Vec<String>` the mailbox carries.
+    ///
+    /// Each scalar argument becomes one element. An argument that is *already* a list of strings
+    /// is spread into the payload rather than Display-formatted: the old lowering emitted
+    /// `format!("{}", vec!["x"])`, which does not compile (Vec has no Display) and, for the
+    /// documented `send("process", tasks)` shape, would have flattened a list into one opaque
+    /// string even if it had.
+    fn gen_message_payload(&mut self, args: &[Expression], arg_strs: &[String]) -> String {
+        if args.is_empty() {
+            return "vec![]".to_string();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for (a, rendered) in args.iter().zip(arg_strs.iter()) {
+            let is_list = matches!(
+                self.resolve_type(a),
+                Some(TypeNode::Array(_)) | Some(TypeNode::List(_))
+            ) || matches!(a, Expression::ArrayLiteral(_));
+            if is_list {
+                parts.push(format!("{}.into_iter().map(|__e| format!(\"{{}}\", __e)).collect::<Vec<String>>()", rendered));
+            } else {
+                parts.push(format!("vec![format!(\"{{}}\", {})]", rendered));
+            }
+        }
+        if parts.len() == 1 {
+            parts.pop().unwrap()
+        } else {
+            format!("[{}].concat()", parts.join(", "))
+        }
+    }
+
     fn gen_operand(&mut self, expr: &Expression) -> String {
         let needs_parens = match expr {
             Expression::BinaryOp { operator, left, right } => {
@@ -2254,7 +2291,30 @@ impl RustGenerator {
                 }
             },
             Expression::MethodCall { caller, method_name, args } => {
+                // Dot-notation construction of a data-carrying enum variant: `Shape.Circle(2)`.
+                // Path notation (`Shape::Circle(2)`) parses straight to EnumConstruct, but the dot
+                // form arrives here as a method call and used to be emitted verbatim, producing
+                // `Shape.Circle(2)` in the Rust output — rustc's "expected value, found enum".
+                // Data-carrying enums were therefore matchable but not constructible.
+                if let Expression::Identifier(ref maybe_enum) = **caller {
+                    let is_variant = self.known_enums.get(maybe_enum)
+                        .map(|vs| vs.iter().any(|v| v.name == *method_name))
+                        .unwrap_or(false);
+                    if is_variant {
+                        return self.gen_expression(&Expression::EnumConstruct {
+                            enum_name: maybe_enum.clone(),
+                            variant_name: method_name.clone(),
+                            args: args.clone(),
+                        });
+                    }
+                }
                 let arg_strs: Vec<String> = args.iter().map(|a| self.gen_expression(a)).collect();
+                // Receiver-safe rendering of the same arguments. A builtin written in free-function
+                // form (`abs(x)`, `min(a,b)`, `parse_int(s)`) lowers to a *method call on the
+                // argument* — `x.abs()`. Without parentheses a low-precedence argument binds
+                // wrong: `abs(-5.0)` became `-5.0.abs()` = `-(5.0.abs())` = -5. That compiles and
+                // runs, so it is a silent wrong answer. Use these in any receiver position.
+                let arg_ops: Vec<String> = args.iter().map(|a| self.gen_operand(a)).collect();
                 // Agent construction: `Square(3.0)` is parsed as a bare call on synthetic `self`.
                 // Emit the associated constructor. Checked BEFORE known_functions/user_impl_methods
                 // because the constructor method shares the agent's name and would otherwise be
@@ -2451,28 +2511,34 @@ impl RustGenerator {
                     format!("{}.to_string()", self.gen_expression(caller))
                 } else if method_name == "parse_int" {
                     // When called as free function parse_int(x), parser emits MethodCall{caller:self, args:[x]}
-                    let target = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
-                    format!("{}.parse::<i64>().unwrap_or(0)", target)
+                    let target = if args.is_empty() { self.gen_operand(caller) } else { arg_ops[0].clone() };
+                    format!("__varg_parse_int(&{})", target)
                 } else if method_name == "parse_float" {
-                    let target = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
-                    format!("{}.parse::<f64>().unwrap_or(0.0)", target)
+                    let target = if args.is_empty() { self.gen_operand(caller) } else { arg_ops[0].clone() };
+                    format!("__varg_parse_float(&{})", target)
                 } else if method_name == "abs" {
                     // abs(x) standalone OR x.abs() method form
-                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
-                    format!("{}.abs()", val)
+                    let target = if args.is_empty() { &**caller } else { &args[0] };
+                    let val = if args.is_empty() { self.gen_operand(caller) } else { arg_ops[0].clone() };
+                    // `abs` is the one numeric builtin that must *keep* its operand's width:
+                    // casting to f64 like sqrt/floor would turn `abs(-5)` into a float. But an
+                    // unsuffixed literal (`(-5).abs()`) is an ambiguous `{integer}` to rustc, so
+                    // pin the type from the resolved operand type instead.
+                    let cast = if matches!(self.resolve_type(target), Some(TypeNode::Float)) { "f64" } else { "i64" };
+                    format!("(({}) as {}).abs()", val, cast)
                 } else if method_name == "sort" {
                     format!("{}.sort()", self.gen_expression(caller))
                 } else if method_name == "join" {
                     format!("{}.join(&{})", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "min" {
                     // min(a, b) standalone OR a.min(b) method form
-                    let (a, b) = if args.len() >= 2 { (arg_strs[0].clone(), arg_strs[1].clone()) }
-                                 else { (self.gen_expression(caller), arg_strs[0].clone()) };
+                    let (a, b) = if args.len() >= 2 { (arg_ops[0].clone(), arg_strs[1].clone()) }
+                                 else { (self.gen_operand(caller), arg_strs[0].clone()) };
                     format!("{}.min({})", a, b)
                 } else if method_name == "max" {
                     // max(a, b) standalone OR a.max(b) method form
-                    let (a, b) = if args.len() >= 2 { (arg_strs[0].clone(), arg_strs[1].clone()) }
-                                 else { (self.gen_expression(caller), arg_strs[0].clone()) };
+                    let (a, b) = if args.len() >= 2 { (arg_ops[0].clone(), arg_strs[1].clone()) }
+                                 else { (self.gen_operand(caller), arg_strs[0].clone()) };
                     format!("{}.max({})", a, b)
                 } else if method_name == "sqrt" {
                     // sqrt(x) standalone OR x.sqrt() method form — double-paren prevents `a * b as f64`
@@ -2576,9 +2642,19 @@ impl RustGenerator {
                     // string.lines() → Vec<String>
                     format!("{}.lines().map(|l| l.to_string()).collect::<Vec<_>>()", self.gen_expression(caller))
                 } else if method_name == "find" {
-                    let lambda = self.gen_expression(&args[0]);
+                    // `Iterator::find` hands the predicate a *reference*, so a lambda written
+                    // against the element type (`(n) => n > 10`) did not compile at all. Bind the
+                    // owned value first, exactly as `filter` does, and clone the hit out.
                     let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().find({})", caller_code, lambda)
+                    let find_closure = match &args[0] {
+                        Expression::Lambda { params, body, .. } if params.len() == 1 => {
+                            let param_name = esc_ident(&params[0].name);
+                            let body_str = self.gen_lambda_body(body.as_ref());
+                            format!("|__varg_ref| {{ let {} = (**__varg_ref).clone(); {} }}", param_name, body_str)
+                        }
+                        other => self.gen_expression(other),
+                    };
+                    format!("{}.iter().find({}).cloned()", caller_code, find_closure)
                 // ===== Plan 52: Environment Variables =====
                 } else if method_name == "env" {
                     // env() returns Result<String, VarError> so `or` fallback works correctly
@@ -3063,18 +3139,15 @@ impl RustGenerator {
                 } else if method_name == "send" {
                     // Fire-and-forget: handle.send("Method", args...)
                     let method_arg = &arg_strs[0];
-                    let msg_args: Vec<String> = arg_strs[1..].iter()
-                        .map(|a| format!("format!(\"{{}}\", {})", a))
-                        .collect();
-                    let args_vec = if msg_args.is_empty() { "vec![]".to_string() } else { format!("vec![{}]", msg_args.join(", ")) };
-                    format!("{}.send(({}, {}, None)).unwrap()", self.gen_expression(caller), method_arg, args_vec)
+                    let args_vec = self.gen_message_payload(&args[1..], &arg_strs[1..]);
+                    // A dropped message is worse than a loud one: the receiver thread may already
+                    // be gone (its handle out of scope), and `.unwrap()` would then abort the
+                    // sender instead of the caller learning about it.
+                    format!("{{ if {}.send(({}, {}, None)).is_err() {{ eprintln!(\"[WARN] send(`{{}}`) failed: agent mailbox is closed\", {}); }} }}", self.gen_expression(caller), method_arg, args_vec, method_arg)
                 } else if method_name == "request" {
                     // Request/reply: handle.request("Method", args...)
                     let method_arg = &arg_strs[0];
-                    let msg_args: Vec<String> = arg_strs[1..].iter()
-                        .map(|a| format!("format!(\"{{}}\", {})", a))
-                        .collect();
-                    let args_vec = if msg_args.is_empty() { "vec![]".to_string() } else { format!("vec![{}]", msg_args.join(", ")) };
+                    let args_vec = self.gen_message_payload(&args[1..], &arg_strs[1..]);
                     if self.use_async {
                         format!("{{\n    let (__reply_tx, __reply_rx) = tokio::sync::oneshot::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.await.unwrap()\n}}", self.gen_expression(caller), method_arg, args_vec)
                     } else {
@@ -3459,14 +3532,49 @@ impl RustGenerator {
                     format!("{} {{}}", agent_name)
                 };
 
-                // Generate method dispatch match arms from agent's public methods
+                // Generate method dispatch match arms from the agent's public methods.
+                //
+                // Two shapes have to work, and only the first one did:
+                //   1. direct RPC    — `h.send("Method", a, b)` invokes `Method(a, b)`
+                //   2. actor mailbox — `h.send("process", task)` invokes `on_message("process", task)`
+                // (2) is the documented actor model and it silently fell through to the
+                // `_ => "unknown"` arm: the handler never ran, nothing was reported, the program
+                // exited 0. `on_message` is therefore emitted as the *fallback* arm, not as one
+                // name among the others.
+                //
+                // Argument binding also has to respect the parameter type: a `string[]` parameter
+                // takes the remaining payload as a list, not `args[i]` (a single String, which
+                // does not even compile against the documented
+                // `on_message(string method, string[] args)` signature). Out-of-range indices
+                // yield a default instead of panicking the agent thread on a short message.
+                fn __bind_args(params: &[FieldDecl], method_binding: Option<&str>) -> Vec<String> {
+                    let mut out = Vec::new();
+                    let mut idx: usize = 0;
+                    for (pos, p) in params.iter().enumerate() {
+                        if pos == 0 {
+                            if let Some(m) = method_binding {
+                                out.push(m.to_string());
+                                continue;
+                            }
+                        }
+                        let is_list = matches!(p.ty, TypeNode::Array(_) | TypeNode::List(_));
+                        if is_list {
+                            out.push(format!("args.get({}..).map(|s| s.to_vec()).unwrap_or_default()", idx));
+                            idx = idx.saturating_add(1);
+                        } else {
+                            out.push(format!("args.get({}).cloned().unwrap_or_default()", idx));
+                            idx = idx.saturating_add(1);
+                        }
+                    }
+                    out
+                }
+
                 let dispatch = if let Some(agent_def) = self.known_agents.get(agent_name).cloned() {
+                    let is_lifecycle = |n: &str| n == "on_start" || n == "on_stop" || n == "on_message";
                     let arms: Vec<String> = agent_def.methods.iter()
-                        .filter(|m| m.is_public && m.name != "Init" && m.name != "Destroy")
+                        .filter(|m| m.is_public && m.name != "Init" && m.name != "Destroy" && !is_lifecycle(&m.name))
                         .map(|m| {
-                            let arg_bindings: Vec<String> = m.args.iter().enumerate()
-                                .map(|(i, _)| format!("args[{}].clone()", i))
-                                .collect();
+                            let arg_bindings = __bind_args(&m.args, None);
                             let call = if arg_bindings.is_empty() {
                                 format!("__agent.{}()", m.name)
                             } else {
@@ -3480,20 +3588,56 @@ impl RustGenerator {
                             format!("                \"{}\" => {}", m.name, call_with_result)
                         })
                         .collect();
+
+                    // The mailbox fallback: `on_message`'s first parameter receives the method
+                    // name that was sent, the remaining ones the payload.
+                    let fallback = match agent_def.methods.iter().find(|m| m.name == "on_message") {
+                        Some(m) => {
+                            let arg_bindings = __bind_args(&m.args, Some("method.clone()"));
+                            let call = if arg_bindings.is_empty() {
+                                "__agent.on_message()".to_string()
+                            } else {
+                                format!("__agent.on_message({})", arg_bindings.join(", "))
+                            };
+                            if m.return_ty == Some(TypeNode::Void) || m.return_ty.is_none() {
+                                format!("                _ => {{ {}; \"ok\".to_string() }}", call)
+                            } else {
+                                format!("                _ => format!(\"{{}}\", {})", call)
+                            }
+                        }
+                        // No mailbox at all: an unroutable message is a caller bug, so report it
+                        // on stderr rather than dropping it without a trace.
+                        None => format!(
+                            "                __other => {{ eprintln!(\"[WARN] agent {} has no method `{{}}` and no on_message handler\", __other); \"unknown\".to_string() }}",
+                            agent_name
+                        ),
+                    };
+
                     if arms.is_empty() {
-                        "                _ => \"unknown\".to_string()".to_string()
+                        fallback
                     } else {
-                        format!("{},\n                _ => \"unknown\".to_string()", arms.join(",\n"))
+                        format!("{},\n{}", arms.join(",\n"), fallback)
                     }
                 } else {
                     "                _ => \"ok\".to_string()".to_string()
                 };
 
+                // Lifecycle for the spawned agent. `on_start` runs before the first message is
+                // taken (fields initialised there were previously still zero-valued), `on_stop`
+                // once the mailbox closes.
+                let has_hook = |hook: &str| {
+                    self.known_agents.get(agent_name)
+                        .map(|a| a.methods.iter().any(|m| m.name == hook))
+                        .unwrap_or(false)
+                };
+                let start_call = if has_hook("on_start") { "        __agent.on_start();\n" } else { "" };
+                let stop_call = if has_hook("on_stop") { "        __agent.on_stop();\n" } else { "" };
+
                 if self.use_async {
                     // Plan 27: tokio async spawn
-                    format!("{{\n    let (__tx, mut __rx) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<String>, Option<tokio::sync::oneshot::Sender<String>>)>();\n    tokio::spawn(async move {{\n        let mut __agent = {};\n        while let Some((method, args, reply_tx)) = __rx.recv().await {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n    }});\n    __tx\n}}", agent_init, dispatch)
+                    format!("{{\n    let (__tx, mut __rx) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<String>, Option<tokio::sync::oneshot::Sender<String>>)>();\n    tokio::spawn(async move {{\n        let mut __agent = {};\n{}        while let Some((method, args, reply_tx)) = __rx.recv().await {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n{}    }});\n    __tx\n}}", agent_init, start_call, dispatch, stop_call)
                 } else {
-                    format!("{{\n    let (__tx, __rx) = std::sync::mpsc::channel::<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>();\n    std::thread::spawn(move || {{\n        let mut __agent = {};\n        for (method, args, reply_tx) in __rx {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n    }});\n    __tx\n}}", agent_init, dispatch)
+                    format!("{{\n    let (__tx, __rx) = std::sync::mpsc::channel::<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>();\n    std::thread::spawn(move || {{\n        let mut __agent = {};\n{}        for (method, args, reply_tx) in __rx {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n{}    }});\n    __tx\n}}", agent_init, start_call, dispatch, stop_call)
                 }
             },
             // Plan 24: expr? → try-propagate
@@ -6015,7 +6159,9 @@ mod tests {
             args: vec![],
         };
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("parse::<i64>()"), "Expected parse_int codegen, got: {}", code);
+        // parse_int is fallible: it lowers to a Result-returning helper, not `.unwrap_or(0)`,
+        // which silently turned malformed input into a 0 that flowed on as a real number.
+        assert!(code.contains("__varg_parse_int"), "Expected parse_int codegen, got: {}", code);
     }
 
     #[test]
@@ -6027,7 +6173,51 @@ mod tests {
             args: vec![],
         };
         let code = gen.gen_expression(&expr);
-        assert_eq!(code, "x.abs()");
+        assert_eq!(code, "((x) as i64).abs()");
+    }
+
+    /// `abs(x)` lowers to a method call *on its argument*, so the argument must be
+    /// parenthesised. Unparenthesised, `abs(-5.0)` became `-5.0.abs()`, which Rust reads as
+    /// `-(5.0.abs())` = -5: a wrong number from a program that compiled and ran clean.
+    #[test]
+    fn test_codegen_abs_parenthesises_negative_literal() {
+        let mut gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "abs".to_string(),
+            args: vec![Expression::UnaryOp {
+                operator: UnaryOperator::Negate,
+                operand: Box::new(Expression::Float(5.0)),
+            }],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(
+            code.starts_with("(((-") && code.ends_with(".abs()"),
+            "abs() argument must be parenthesised, got: {}",
+            code
+        );
+    }
+
+    /// The same precedence trap over a binary operand: `abs(3.0 - 9.0)` must not become
+    /// `3.0 - 9.0.abs()`.
+    #[test]
+    fn test_codegen_abs_parenthesises_binary_operand() {
+        let mut gen = RustGenerator::new();
+        let expr = Expression::MethodCall {
+            caller: Box::new(Expression::Identifier("self".to_string())),
+            method_name: "abs".to_string(),
+            args: vec![Expression::BinaryOp {
+                operator: BinaryOperator::Sub,
+                left: Box::new(Expression::Float(3.0)),
+                right: Box::new(Expression::Float(9.0)),
+            }],
+        };
+        let code = gen.gen_expression(&expr);
+        assert!(
+            !code.starts_with("3"),
+            "abs() must not leak its operand outside the call, got: {}",
+            code
+        );
     }
 
     // ---- Plan 43: Iterator Chain Codegen Tests ----

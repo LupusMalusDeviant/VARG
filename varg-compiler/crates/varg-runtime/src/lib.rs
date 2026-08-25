@@ -23,6 +23,22 @@ pub fn __varg_install_panic_hook() {
     }));
 }
 
+/// `parse_int(s)` / `parse_float(s)`. These are fallible: the previous lowering was
+/// `s.parse().unwrap_or(0)`, which turned every malformed input into a silent 0 — a wrong
+/// number that flows on undetected. They now return a Result so `?` and `or` work and a bad
+/// parse has to be dealt with.
+pub fn __varg_parse_int(s: &str) -> Result<i64, String> {
+    s.trim()
+        .parse::<i64>()
+        .map_err(|_| format!("cannot parse `{}` as int", s))
+}
+
+pub fn __varg_parse_float(s: &str) -> Result<f64, String> {
+    s.trim()
+        .parse::<f64>()
+        .map_err(|_| format!("cannot parse `{}` as float", s))
+}
+
 // ── Always-on modules (pure Rust, no heavy deps) ──────────────────────────────
 pub mod json;          // JSON accessors accepting a parsed value or a raw JSON string
 pub mod db;            // legacy stub

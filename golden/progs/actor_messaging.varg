@@ -1,0 +1,40 @@
+/// The actor model end-to-end. Every line here used to compile, run, exit 0 — and do nothing:
+/// `send("process", ..)` fell through the dispatcher's `_ => "unknown"` arm because only a
+/// message literally named after a method was routed, and `on_start`/`on_stop` were emitted but
+/// never called. Silent no-ops, so no test noticed.
+agent Worker {
+    int handled;
+
+    public void on_start() {
+        handled = 0;
+        print "worker: on_start";
+    }
+
+    public void on_message(string method, string[] args) {
+        if method == "process" {
+            handled += 1;
+            print $"worker: processed {args[0]} (#{handled})";
+        }
+        if method == "unknown_op" {
+            print "worker: fell through to mailbox";
+        }
+    }
+
+    // Direct RPC still takes precedence over the mailbox.
+    public string ping(string who) {
+        return $"pong:{who}";
+    }
+}
+
+agent Main {
+    public void Run() {
+        var w = spawn Worker();
+        w.send("process", "alpha");
+        w.send("process", "beta");
+        w.send("unknown_op");
+        var reply = w.request("ping", "main");
+        print $"main: {reply}";
+        sleep(200);
+        print "main: done";
+    }
+}

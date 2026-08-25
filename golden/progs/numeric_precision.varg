@@ -1,0 +1,27 @@
+/// Precedence and fallibility of the free-function numeric builtins.
+/// `abs(x)` lowers to a method call on its argument, so an unparenthesised argument bound wrong:
+/// `abs(-5.0)` became `-5.0.abs()` = `-(5.0.abs())` = -5. It compiled, it ran, it was wrong.
+/// `parse_int` lowered to `.unwrap_or(0)`, so malformed input became a silent 0.
+agent Main {
+    public void Run() {
+        print abs(-5);
+        print abs(-5.0);
+        print abs(3 - 10);
+        print abs(2.0 - 9.5);
+        print abs(-4) + 1;
+        var neg = -7;
+        print abs(neg);
+        print min(3, 7);
+        print max(3 - 1, 7 - 6);
+        print sqrt(9.0 + 7.0);
+
+        var ok = parse_int("42") or -1;
+        print ok;
+        var bad = parse_int("not-a-number") or -1;
+        print bad;
+        var f = parse_float("2.5") or 0.0;
+        print f * 2.0;
+        var badf = parse_float("x") or -1.0;
+        print badf;
+    }
+}

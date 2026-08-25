@@ -1,0 +1,54 @@
+/// End-to-end coverage for the collection builtins and the Option/Result predicates.
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        var nums = [4, 8, 15, 16, 23, 42];
+
+        print check("len", $"{nums.len()}", "6");
+        print check("length", $"{nums.length()}", "6");
+        print check("count", $"{nums.count()}", "6");
+        print check("sum", $"{nums.sum()}", "108");
+        var has15 = nums.contains(15);
+        var has99 = nums.contains(99);
+        print check("contains_true", yn(has15), "true");
+        print check("contains_false", yn(has99), "false");
+        var no_items = nums.is_empty();
+        print check("is_empty_false", yn(no_items), "false");
+        int[] blank = [];
+        print check("is_empty_true", yn(blank.is_empty()), "true");
+
+        // The collection survives every read above.
+        print check("not_consumed", $"{nums.len()}", "6");
+
+        var cfg = {"host": "localhost", "port": "8080"};
+        var has_host = cfg.contains_key("host");
+        var has_zzz = cfg.contains_key("zzz");
+        print check("contains_key_true", yn(has_host), "true");
+        print check("contains_key_false", yn(has_zzz), "false");
+        print check("map_len", $"{cfg.len()}", "2");
+
+        // Option predicates, via find().
+        var hit = nums.find((n) => n > 20);
+        var miss = nums.find((n) => n > 1000);
+        print check("is_some_true", yn(hit.is_some()), "true");
+        print check("is_some_false", yn(miss.is_some()), "false");
+        print check("is_none_true", yn(miss.is_none()), "true");
+        print check("is_none_false", yn(hit.is_none()), "false");
+
+        // Result predicates, via the fallible parsers.
+        var good = parse_int("7");
+        var bad = parse_int("seven");
+        print check("is_ok_true", yn(good.is_ok()), "true");
+        print check("is_ok_false", yn(bad.is_ok()), "false");
+        print check("is_err_true", yn(bad.is_err()), "true");
+        print check("is_err_false", yn(good.is_err()), "false");
+    }
+}

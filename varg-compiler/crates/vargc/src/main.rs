@@ -1574,6 +1574,22 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
         // Diagnostic banner on stderr, not stdout: a Varg binary's stdout must stay clean so
         // it can be used as a composable tool (its output captured/parsed by another program).
         final_rust_source.push_str("    eprintln!(\"[VargOS] Bootstrapping Runtime...\");\n");
+
+        // Lifecycle hooks. `on_start`/`on_stop` are documented agent lifecycle, but nothing
+        // ever called them for the entry agent: a program that initialised its fields in
+        // `on_start` ran against zero-valued fields and never noticed it.
+        let entry_agent_has = |hook: &str| {
+            ast.items.iter().any(|item| {
+                if let varg_ast::ast::Item::Agent(a) = item {
+                    a.name == agent && a.methods.iter().any(|m| m.name == hook)
+                } else { false }
+            })
+        };
+        let has_on_start = entry_agent_has("on_start");
+        let has_on_stop = entry_agent_has("on_stop");
+        if has_on_start {
+            final_rust_source.push_str("    instance.on_start();\n");
+        }
         if let Some(m) = main_method_name {
             // An async entry must be awaited — without this the future is dropped and the body
             // never executes (an `async Run()` that starts a server would exit silently).
@@ -1581,6 +1597,9 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
             final_rust_source.push_str(&format!("    instance.{}(){};\n", m, await_kw));
         } else {
             final_rust_source.push_str("    println!(\"[VargOS] No parameterless 'Run' or 'Main' method found. Exiting.\");\n");
+        }
+        if has_on_stop {
+            final_rust_source.push_str("    instance.on_stop();\n");
         }
     }
     
@@ -1708,6 +1727,12 @@ fn {handler_name}(body: String) -> String {{
     };
 
     // Auto-inject chrono if timestamp()/time_format()/time_parse() builtins are used
+    // `uuid()`/`random_int()`/`random_float()` emit `use rand::Rng;`. Without the crate in
+    // Cargo.toml every program using them died on an unresolved import, so inject it the
+    // same way chrono is injected for the time builtins.
+    let rand_dep = if final_rust_source.contains("rand::") {
+        "rand = \"0.8\"\n"
+    } else { "" };
     let chrono_dep = if final_rust_source.contains("chrono::") {
         "chrono = { version = \"0.4\", features = [\"clock\"] }\n"
     } else { "" };
@@ -1723,13 +1748,14 @@ varg-os-types = {{ path = "{}" }}
 varg-runtime  = {{ path = "{}"{} }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
-{}{}{}"#, varg_name,
+{}{}{}{}"#, varg_name,
         lib_section,
         varg_os_types_path.display().to_string().replace("\\", "/"),
         varg_runtime_path.display().to_string().replace("\\", "/"),
         runtime_features,
         tokio_dep_str,
         chrono_dep,
+        rand_dep,
         extra_deps);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
@@ -2067,6 +2093,12 @@ fn test_varg_file(input_path: &str, debug_mode: bool, coverage: bool) {
     let varg_runtime_path = crates_dir.join("varg-runtime");
 
     let runtime_features = detect_runtime_features(&final_rust_source);
+    // `uuid()`/`random_int()`/`random_float()` emit `use rand::Rng;`. Without the crate in
+    // Cargo.toml every program using them died on an unresolved import, so inject it the
+    // same way chrono is injected for the time builtins.
+    let rand_dep = if final_rust_source.contains("rand::") {
+        "rand = \"0.8\"\n"
+    } else { "" };
     let chrono_dep = if final_rust_source.contains("chrono::") {
         "chrono = { version = \"0.4\", features = [\"clock\"] }\n"
     } else { "" };
@@ -2081,11 +2113,12 @@ varg-os-types = {{ path = "{}" }}
 varg-runtime  = {{ path = "{}"{} }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
-{}"#, varg_name,
+{}{}"#, varg_name,
     varg_os_types_path.display().to_string().replace("\\", "/"),
     varg_runtime_path.display().to_string().replace("\\", "/"),
     runtime_features,
-    chrono_dep);
+    chrono_dep,
+    rand_dep);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml).unwrap();
