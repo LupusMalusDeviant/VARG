@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-25 · Version 1.0.0 · 1206 Compiler-Tests (default) / 1358 (`--features full`) · Golden 32/32 · Builtin-Abdeckung 97,9 %
+> Stand: 2026-08-25 · Version 1.0.0 · 1220 Compiler-Tests (default) / 1372 (`--features full`) · Golden 33/33 · Builtin-Abdeckung 97,9 %
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -434,6 +434,78 @@ stabil · 11 Beispiele + 4 Spike-Programme bauen.
 `int? x` als Parameter: die Call-Site wrappt ein Argument nicht in `Some(...)`, `maybe(5)` bricht
 im generierten Rust. Dieselbe Klasse wie das Contract-Boxing oben, nur für Nullable — nicht in
 diesem Durchgang angefasst.
+
+---
+
+## Semantische Vollständigkeit: die restliche Sprachoberfläche (Stufe 16)
+
+**Methode wie Stufe 13:** 35 frische Sonden über die Bereiche, die noch nie vermessen waren —
+Struct-Literale, Rückgabetypen, Zuweisungen, Operatoren, Index, Match, Contracts, Scope, Casts,
+Schleifen, async. Ausgangslage: **13 gefangen, 20 an rustc durchgereicht, 2 stumm akzeptiert**.
+
+**Ergebnis: 34 von 35 vom Typechecker gefangen, null rustc-Leaks.** Der eine akzeptierte Fall
+(`5 + "x"` → `"5x"`) ist beabsichtigte String-Konkatenation, keine Lücke.
+
+### Der schwerwiegendste Fund: ein Match-Arm mit falschem Variantennamen
+`Gren => …` bei `enum Color { Red, Green, Blue }` kompiliert zu einer **irrefutablen Bindung** —
+sie matcht alles, und jeder Arm darunter ist tot. Ohne `_`-Arm fing die Exhaustivitätsprüfung das
+entstehende Loch; **mit** `_`-Arm wurde sie komplett übersprungen, und der vertippte Arm
+beantwortete stumm jeden anderen Fall:
+
+```
+Red   -> red
+Green -> TYPO-ARM-SWALLOWED-IT     (erwartet: other)
+Blue  -> TYPO-ARM-SWALLOWED-IT     (erwartet: other)
+```
+
+Kompiliert, läuft, Exit 0, falsches Ergebnis — dieselbe Klasse wie `abs(-5.0) = -5`.
+
+Beim Absichern kam heraus, dass der erste Fix nur bei **typisiertem Parameter** griff. Bei der
+weit häufigeren Form `var c = Colour.Red; match c { … }` war weiterhin nichts geprüft: `Colour.Red`
+wurde als Feld-Zugriff inferiert und lieferte keinen Enum-Typ, also lief **jede** enum-abhängige
+Prüfung (Exhaustivität eingeschlossen) ins Leere. Erst die korrekte Typisierung des
+Varianten-Zugriffs schließt das.
+
+### Die zwölf neuen Prüfungen
+| Bereich | Vorher |
+|---------|--------|
+| Struct-Literal: fehlende Felder, falsche Feldtypen | nur *überzählige* Felder wurden geprüft |
+| `return <wert>` aus `void` | explizit übersprungen (`expected != Void`) |
+| `const` neu zuweisen | Const-ness wurde gar nicht verfolgt |
+| Zuweisung an unbekanntes Agent-Feld | ungeprüft |
+| Vergleich/Arithmetik über inkompatible Typen | Ergebnistyp berechnet, Operanden nie geprüft |
+| Index mit falschem Schlüsseltyp | Index-Ausdruck wurde verworfen (`let _index_ty`) |
+| `break`/`continue` außerhalb einer Schleife | keine Schleifen-Tiefe verfolgt |
+| Iteration über einen Skalar | fiel auf `Dynamic` zurück |
+| Ungültiger Cast (`"abc" as int`) | Quelltyp wurde verworfen |
+| `await` auf Nicht-async / vergessenes `await` | Asyncness war in der Signatur nicht gespeichert |
+| **Block-Scoping** | `env` war eine flache Map — Variablen aus `if`/`while`/`unsafe` blieben danach sichtbar |
+| Match-Arm mit Nicht-Variante | s.o. |
+
+### Konservativ und lowering-treu
+Jede Prüfung feuert nur bei **definiten** Typen; alles Unaufgelöste passiert. Zwei Regeln mussten
+an der tatsächlichen Lowering-Semantik nachgeschärft werden, statt an der Intuition:
+- `as string` lowert zu `format!()` und akzeptiert daher **alles** — die erste, breitere
+  Cast-Regel lehnte `42 as string` fälschlich ab und wurde vom Testlauf sofort gestellt.
+- Ein **benannter Catch-All** (`other => …`) ist eine irrefutable Bindung und deckt die Restfälle
+  wie `_`. Er wurde als Variante gezählt und meldete die abgedeckten Varianten als fehlend.
+
+### Ein Test, der den Bug festgeschrieben hatte
+`test_return_void_allows_anything` behauptete „Void methods don't enforce return type". Das war
+keine Freiheit, sondern das Loch: `return 5;` aus `void Run()` erzeugt nicht kompilierbares Rust.
+Test korrigiert und umbenannt.
+
+### Abgesichert
+14 Typechecker-Tests, geschrieben als **Varg-Quelltext** statt AST-Literale (`varg-parser` als
+dev-dependency — kein Zyklus). Jeder Test prüft beide Richtungen: die Ablehnung *und* ein gültiges
+Gegenstück. Dazu das Golden-Programm `semantics` mit 17 Prüfungen für die Akzeptanz-Seite.
+
+### Stand danach
+1220 Unit-Tests (default) / 1372 (`--features full`), 0 Failures · Golden **33/33**, drei Läufe
+stabil · 11 Beispiele + 4 Spike-Programme bauen · Sonde 34/35, keine False Positives.
+
+### Weiterhin offen
+`int? x` als Parameter (Call-Site wrappt nicht in `Some(...)`) — unverändert aus Stufe 15.
 
 ---
 
