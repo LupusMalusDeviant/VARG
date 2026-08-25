@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-25 · Version 1.0.0 · 1197 Compiler-Tests (default) / 1348 (`--features full`) · Golden 31/31 · Builtin-Abdeckung 97,9 %
+> Stand: 2026-08-25 · Version 1.0.0 · 1206 Compiler-Tests (default) / 1358 (`--features full`) · Golden 32/32 · Builtin-Abdeckung 97,9 %
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -311,11 +311,9 @@ Laufzeit-Ergebnis abgesichert, nicht mit einem Codegen-String.
 · Blindprobe 40/43, die 3 Ablehnungen sind gewollt (OCAP-Gate + unbehandelte Results).
 
 ### Weiterhin offen (nicht in diesem Durchgang angefasst)
-Der Typechecker fängt **User-Method-Arity, Methoden-Existenz und Argumenttypen nicht** —
-`add(1)` bei `fn add(int,int)`, `p.nonexistent()`, `add("a","b")` gehen alle erst bei rustc
-hoch. Der Source-Map-Fix macht die Meldung brauchbar (zeigt auf das .varg-Konstrukt), aber es
-bleibt ein rustc-Fehler in Rust-Begriffen. Das ist die größte verbleibende Lücke für die
-Benutzbarkeit durch Dritte.
+~~Der Typechecker fängt User-Method-Arity, Methoden-Existenz und Argumenttypen nicht.~~
+**Erledigt in Stufe 15** — alle 13 Fehlerfälle werden jetzt vom Typechecker mit Quellspanne
+abgelehnt.
 
 ---
 
@@ -367,6 +365,75 @@ der Test mit „coverage fell to 94.6% … Uncovered: [tensor_sum, …]".
 ### Stand danach
 1197 Unit-Tests (default) / 1348 (`--features full`), 0 Failures · Golden **31/31**, drei Läufe
 stabil · alle 12 Feature-Isolationen kompilieren · 11 Beispiele bauen.
+
+---
+
+## Typechecker-Vollständigkeit: Arity, Methoden-Existenz, Argumenttypen (Stufe 15)
+
+**Ausgangspunkt:** Stufe 13/14 hatten das als die größte verbleibende Hürde benannt — `add(1)` bei
+`fn add(int,int)`, `p.nonexistent()` und `add("a","b")` gingen alle erst bei rustc hoch, gemeldet in
+Rust-Begriffen über generierten Code, den niemand geschrieben hat. Von 13 Fehlerfällen wurden **8
+durchgereicht**.
+
+**Ergebnis: 13 von 13 werden jetzt vom Typechecker gefangen**, mit Quellspanne auf das eigene
+`.varg`-Konstrukt.
+
+### Was das Material war
+`MethodSignature.args` wurde seit jeher gesammelt und trug ein `#[allow(dead_code)]` — die
+deklarierten Parameter lagen also vor, wurden aber an keiner Aufrufstelle konsultiert. Ergänzt um
+`type_params` (damit ein generischer Parameter nicht gegen einen konkreten Typ geprüft wird) ist das
+die ganze Grundlage.
+
+### Drei Aufrufstellen
+| Stelle | Vorher |
+|--------|--------|
+| Standalone-Funktionen | Rückgabetyp wurde geliefert, Argumente nie angesehen |
+| Agent-/Impl-Methoden (Shadowing-Zweig) | kehrte vorzeitig zurück mit dem Kommentar „Arity-Prüfung bleibt dem allgemeinen Pfad überlassen" — der dadurch nie lief |
+| Methoden über die Signaturtabelle | dito |
+| Unbekannte Methode auf einem Typ **ohne** Methoden | ungeprüft: nur Typen mit ≥1 registrierter Methode wurden angesehen, `struct P { int x; }` akzeptierte jeden Aufruf |
+
+### Konservativ ausgelegt
+Eine solche Prüfung ist nur so viel wert, wie sie **kein** funktionierendes Programm ablehnt.
+Übersprungen wird deshalb: Parameter, die einen eigenen Typparameter des Aufgerufenen nennen;
+`TypeVar` und `Dynamic` auf beiden Seiten; Lambda-Argumente (deren inferierter Typ die Signatur
+nicht modelliert); und jedes Argument, dessen Typ sich nicht bestimmen lässt. Parameter mit
+Default-Wert dürfen von rechts weggelassen werden.
+
+### Dabei gefunden und behoben
+- **Capability-Token hatten zwei Schreibweisen**, die nicht verglichen wurden: der deklarierte
+  Parametertyp ist `Capability(FileAccess)`, der Wert aus `FileAccess {}` inferiert als
+  `Custom("FileAccess")`. Das Weiterreichen eines Tokens sah damit wie ein Typfehler aus — drei
+  Beispiele fielen sofort um. In `types_match` angeglichen; damit funktioniert auch
+  `FileAccess cap = FileAccess {};`.
+- **Default-Parameter von Methoden wurden vom Codegen nicht gefüllt** (nur die von Standalone-
+  Funktionen). Da die neue Arity-Prüfung Defaults ausdrücklich erlaubt, hätte der Typechecker sonst
+  einen Aufruf durchgewinkt, den der Codegen nicht bauen kann. Jetzt symmetrisch — mehrdeutige
+  Namen (zwei Typen, gleicher Methodenname, verschiedene Defaults) werden bewusst nicht gefüllt.
+- **Contract-typisierte Parameter von Standalone-Funktionen waren unbenutzbar**: `fn total(IShape s)`
+  ließ sich nicht mit `total(Sq())` aufrufen, weil die Call-Site den konkreten Agenten nicht in
+  `Box<dyn IShape>` boxte (Konstruktoren taten das für DI längst) und der Parameter nicht `mut`
+  gebunden war, obwohl Contract-Methoden `&mut self` nehmen.
+- **Vorschläge waren irreführend:** ein vertippter Struct-Methodenname wurde mit „did you mean
+  `pop`?" beantwortet — einem Collection-Builtin, das der Typ gar nicht hat. Ursache: die ~250
+  Builtin-Namen wurden gleichrangig mit den Membern des Typs gematcht. Jetzt gewinnen die eigenen
+  Methoden; auf Builtins wird nur zurückgefallen, wenn der Anfangsbuchstabe übereinstimmt — das
+  trennt `lenght`→`length` (plausibler Tippfehler) von `nope`→`pop` (beide Distanz 2, nur der erste
+  gemeint).
+
+### Abgesichert
+Neun Typechecker-Unittests für die Ablehnungen (ein Compile-Fehler lässt sich nicht golden testen)
+**und** ein Golden-Programm `call_signatures` für die Akzeptanz-Seite: Defaults, Capability-Token,
+Contract-Parameter, generische Parameter, Lambdas. Letzteres ist das wichtigere der beiden — es
+hält fest, dass die Prüfung nichts kaputtmacht.
+
+### Stand danach
+1206 Unit-Tests (default) / 1358 (`--features full`), 0 Failures · Golden **32/32**, drei Läufe
+stabil · 11 Beispiele + 4 Spike-Programme bauen.
+
+### Weiterhin offen
+`int? x` als Parameter: die Call-Site wrappt ein Argument nicht in `Some(...)`, `maybe(5)` bricht
+im generierten Rust. Dieselbe Klasse wie das Contract-Boxing oben, nur für Nullable — nicht in
+diesem Durchgang angefasst.
 
 ---
 
