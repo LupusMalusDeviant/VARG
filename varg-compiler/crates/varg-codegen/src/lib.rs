@@ -162,6 +162,10 @@ pub struct RustGenerator {
     /// methods did not, so `greet(1)` against `greet(int a, int b = 10)` type-checked and then
     /// produced a Rust call missing an argument.
     known_method_defaults: HashMap<String, Option<Vec<Option<Expression>>>>,
+    /// Declared parameter lists of agent/impl methods, keyed by method name and poisoned the same
+    /// way. Used to adapt an argument to what the parameter actually is — boxing a concrete agent
+    /// into a contract parameter, wrapping a value for a nullable one.
+    known_method_params: HashMap<String, Option<Vec<FieldDecl>>>,
     /// Named-arg support: fn_name → ordered param declarations (name + type + default)
     known_function_params: HashMap<String, Vec<FieldDecl>>,
     /// Method names defined in user impl blocks — these take priority over builtin dispatch
@@ -202,6 +206,7 @@ impl RustGenerator {
             map_vars: HashSet::new(),
             known_function_defaults: HashMap::new(),
             known_method_defaults: HashMap::new(),
+            known_method_params: HashMap::new(),
             known_function_params: HashMap::new(),
             user_impl_methods: HashSet::new(),
             in_try_block: false,
@@ -270,6 +275,7 @@ impl RustGenerator {
             if let Item::Impl { methods, .. } = item {
                 for m in methods {
                     Self::record_method_defaults(&mut self.known_method_defaults, m);
+                    Self::record_method_params(&mut self.known_method_params, m);
                     self.user_impl_methods.insert(m.name.clone());
                 }
             }
@@ -279,6 +285,7 @@ impl RustGenerator {
             if let Item::Agent(a) = item {
                 for m in &a.methods {
                     Self::record_method_defaults(&mut self.known_method_defaults, m);
+                    Self::record_method_params(&mut self.known_method_params, m);
                     self.user_impl_methods.insert(m.name.clone());
                 }
             }
@@ -1021,6 +1028,15 @@ impl RustGenerator {
                 },
                 _ => self.resolve_type(left).or_else(|| self.resolve_type(right)),
             },
+            // A unary operator keeps its operand's type (`-3.7` is a float, `!x` is a bool).
+            // Without this, `var f = -3.7;` recorded no type for `f`, and every later decision
+            // that consults resolve_type fell back to a default. That is how `abs(-3.7)` came out
+            // as 3: the operand looked like an integer, so it was cast to i64 and truncated.
+            Expression::UnaryOp { operator, operand } => match operator {
+                UnaryOperator::Not => Some(TypeNode::Bool),
+                UnaryOperator::Negate => self.resolve_type(operand),
+            },
+            Expression::Cast { target_type, .. } => Some(target_type.clone()),
             // T-stage3: builtin call results, via the shared signature table — unless the name
             // is a user-defined method (those shadow builtins and have their own return type).
             Expression::MethodCall { method_name, .. } => {
@@ -1846,6 +1862,46 @@ impl RustGenerator {
     /// Record a method's default parameter values under its bare name. Two types declaring the
     /// same method name with different defaults makes the name ambiguous at the call site (codegen
     /// keys method dispatch by bare name), so the entry is poisoned and nothing gets filled in.
+    /// Record a method parameter list under its bare name, poisoning the entry when two types
+    /// declare the same name with different parameters.
+    fn record_method_params(
+        table: &mut HashMap<String, Option<Vec<FieldDecl>>>,
+        m: &MethodDecl,
+    ) {
+        match table.get(&m.name) {
+            Some(Some(existing)) if *existing == m.args => {}
+            Some(_) => {
+                table.insert(m.name.clone(), None);
+            }
+            None => {
+                table.insert(m.name.clone(), Some(m.args.clone()));
+            }
+        }
+    }
+
+    /// Adapt a rendered argument to the parameter it is being passed to.
+    ///
+    /// A contract parameter is a `Box<dyn Trait>` and a nullable one is an `Option<T>`; passing a
+    /// plain value to either produced a Rust type error against generated code. `null` and an
+    /// argument that is already optional are left alone.
+    fn adapt_arg_to_param(&mut self, declared: &TypeNode, arg: &Expression, rendered: String) -> String {
+        match declared {
+            TypeNode::Custom(n) if self.known_contract_methods.contains_key(n) => {
+                format!("Box::new({})", rendered)
+            }
+            TypeNode::Nullable(_) => {
+                let already_optional = matches!(arg, Expression::Null)
+                    || matches!(self.resolve_type(arg), Some(TypeNode::Nullable(_)));
+                if already_optional {
+                    rendered
+                } else {
+                    format!("Some({})", rendered)
+                }
+            }
+            _ => rendered,
+        }
+    }
+
     fn record_method_defaults(
         table: &mut HashMap<String, Option<Vec<Option<Expression>>>>,
         m: &MethodDecl,
@@ -1867,6 +1923,24 @@ impl RustGenerator {
     }
 
     /// Append the declared defaults for any trailing parameter the call site omitted.
+    /// Render a method call's arguments, adapting each to its declared parameter type.
+    fn gen_adapted_method_args(&mut self, method_name: &str, args: &[Expression]) -> Vec<String> {
+        let declared: Vec<TypeNode> = match self.known_method_params.get(method_name) {
+            Some(Some(ps)) => ps.iter().map(|p| p.ty.clone()).collect(),
+            _ => Vec::new(),
+        };
+        args.iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let raw = self.gen_cloned_arg(a);
+                match declared.get(i) {
+                    Some(ty) => { let ty = ty.clone(); self.adapt_arg_to_param(&ty, a, raw) }
+                    None => raw,
+                }
+            })
+            .collect()
+    }
+
     fn pad_method_defaults(&mut self, method_name: &str, args: &mut Vec<String>) {
         let Some(Some(defaults)) = self.known_method_defaults.get(method_name).cloned() else {
             return;
@@ -2406,22 +2480,19 @@ impl RustGenerator {
                     // Known standalone function — either bare call (self.fn) or pipe (val |> fn)
                     let is_self_caller = matches!(**caller, Expression::Identifier(ref n) if n == "self");
                     let pipe_arg = if !is_self_caller { Some(self.gen_cloned_arg(caller)) } else { None };
-                    // A contract-typed parameter is a `Box<dyn Trait>`; a concrete agent passed to
-                    // one has to be boxed. Constructors already did this for dependency injection,
-                    // but standalone functions did not, so `fn total(IShape s)` could not be called
-                    // with `total(Sq())` at all.
-                    let contract_params: Vec<bool> = self.known_function_params
+                    // Adapt each argument to its declared parameter: a contract parameter is a
+                    // `Box<dyn Trait>` (constructors already boxed for dependency injection, but
+                    // standalone functions did not, so `total(Sq())` was uncallable) and a
+                    // nullable one is an `Option<T>`.
+                    let declared_params: Vec<TypeNode> = self.known_function_params
                         .get(method_name.as_str())
-                        .map(|ps| ps.iter().map(|p| {
-                            matches!(&p.ty, TypeNode::Custom(n) if self.known_contract_methods.contains_key(n))
-                        }).collect())
+                        .map(|ps| ps.iter().map(|p| p.ty.clone()).collect())
                         .unwrap_or_default();
                     let mut final_args: Vec<String> = args.iter().enumerate().map(|(i, a)| {
                         let raw = self.gen_cloned_arg(a);
-                        if contract_params.get(i).copied().unwrap_or(false) {
-                            format!("Box::new({})", raw)
-                        } else {
-                            raw
+                        match declared_params.get(i) {
+                            Some(ty) => { let ty = ty.clone(); self.adapt_arg_to_param(&ty, a, raw) }
+                            None => raw,
                         }
                     }).collect();
                     if let Some(pipe_val) = pipe_arg {
@@ -2442,7 +2513,7 @@ impl RustGenerator {
                 // User impl methods take priority over builtin dispatch to avoid shadowing.
                 // e.g. `impl Point { fn sum() }` must not dispatch to Vec::iter().sum().
                 if self.user_impl_methods.contains(method_name.as_str()) {
-                    let mut cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    let mut cloned_args: Vec<String> = self.gen_adapted_method_args(method_name, args);
                     self.pad_method_defaults(method_name, &mut cloned_args);
                     return format!("{}.{}({})", self.gen_expression(caller), method_name, cloned_args.join(", "));
                 }
@@ -3498,7 +3569,7 @@ impl RustGenerator {
                         format!("{}({})", method_name, cloned_args.join(", "))
                     } else {
                         // Plan 22: Defensive cloning for user-defined method calls
-                        let mut cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                        let mut cloned_args: Vec<String> = self.gen_adapted_method_args(method_name, args);
                         self.pad_method_defaults(method_name, &mut cloned_args);
                         format!("{}.{}({})", self.gen_expression(caller), method_name, cloned_args.join(", "))
                     }

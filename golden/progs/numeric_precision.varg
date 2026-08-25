@@ -5,7 +5,11 @@
 agent Main {
     public void Run() {
         print abs(-5);
-        print abs(-5.0);
+        // Fractional on purpose: `abs(-5.0)` prints "5" whether the result is an int or a float,
+        // so it cannot tell truncation from correctness. -3.7 can.
+        print abs(-3.7);
+        var neg_f = -2.25;
+        print abs(neg_f);
         print abs(3 - 10);
         print abs(2.0 - 9.5);
         print abs(-4) + 1;
