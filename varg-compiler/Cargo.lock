@@ -4976,6 +4976,7 @@ name = "varg-typechecker"
 version = "0.1.0"
 dependencies = [
  "varg-ast",
+ "varg-parser",
 ]
 
 [[package]]

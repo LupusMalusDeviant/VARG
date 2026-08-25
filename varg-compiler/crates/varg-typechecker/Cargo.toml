@@ -5,3 +5,8 @@ edition = "2021"
 
 [dependencies]
 varg-ast = { path = "../varg-ast" }
+
+# Test-only: lets the semantic tests be written as Varg source instead of hand-built AST
+# literals. varg-parser depends on varg-ast and varg-lexer only, so this is not a cycle.
+[dev-dependencies]
+varg-parser = { path = "../varg-parser" }

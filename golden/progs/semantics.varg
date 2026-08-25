@@ -1,0 +1,90 @@
+/// The language shapes the newly added semantic checks must keep accepting.
+///
+/// This round taught the typechecker twelve things it did not check: struct literal
+/// completeness and field types, returning a value from a void function, reassigning a const,
+/// assigning to an unknown agent field, comparing and doing arithmetic on incompatible types,
+/// indexing by the wrong key type, break outside a loop, iterating a scalar, invalid casts,
+/// awaiting a non-async call, forgetting an await, block scoping, and a match arm naming
+/// something that is not a variant. Every one of those is a rejection; this program is the
+/// other half, and the more important one — the valid code that must keep compiling.
+enum Colour { Red, Green, Blue }
+
+struct Point { int x; int y; }
+
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+
+/// A named catch-all arm covers the remaining variants, exactly like `_`.
+fn describe(Colour c) -> string {
+    match c {
+        Red => { return "red"; }
+        other => { return "not red"; }
+    }
+    return "unreached";
+}
+
+/// Guards and literal arms on a scalar subject.
+fn classify(int code) -> string {
+    match code {
+        200 => { return "ok"; }
+        x if x >= 500 => { return "server"; }
+        _ => { return "other"; }
+    }
+    return "unreached";
+}
+
+agent Main {
+    public void Run() {
+        // Struct literals: every field present, every type right.
+        var p = Point { x: 3, y: 4 };
+        print check("struct_literal", $"{p.x + p.y}", "7");
+
+        // Casts follow what they lower to: to-string always works, numeric conversions work.
+        var i = 42;
+        var f = 3.9;
+        print check("cast_int_float", $"{i as float}", "42");
+        print check("cast_float_int", $"{f as int}", "3");
+        print check("cast_to_string", i as string, "42");
+
+        // Comparison and arithmetic across int and float.
+        var mixed_cmp = 2 < 2.5;
+        print check("mixed_compare", $"{mixed_cmp}", "true");
+        print check("mixed_arith", $"{2 + 2.5}", "4.5");
+        // `string + anything` is concatenation, by design.
+        print check("string_concat", "n=" + 5, "n=5");
+
+        // Indexing by the declared key type.
+        var xs = [10, 20, 30];
+        var m = {"a": "1"};
+        print check("index_list", $"{xs[1]}", "20");
+        print check("index_map", m["a"], "1");
+
+        // break and continue inside a loop.
+        var total = 0;
+        for n in xs {
+            if n == 20 { continue; }
+            if n > 25 { break; }
+            total += n;
+        }
+        print check("loop_control", $"{total}", "10");
+
+        // Block scoping: an inner binding may shadow, and the outer one survives.
+        var shadowed = "outer";
+        if true {
+            var shadowed = "inner";
+            print check("block_inner", shadowed, "inner");
+        }
+        print check("block_outer", shadowed, "outer");
+
+        // A const is readable everywhere, just not assignable.
+        const int LIMIT = 5;
+        print check("const_read", $"{LIMIT}", "5");
+
+        print check("match_named_catchall", describe(Colour.Blue), "not red");
+        print check("match_guard", classify(503), "server");
+        print check("match_literal", classify(200), "ok");
+        print check("match_wildcard", classify(302), "other");
+    }
+}

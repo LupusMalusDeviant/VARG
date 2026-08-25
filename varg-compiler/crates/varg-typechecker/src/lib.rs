@@ -47,6 +47,20 @@ pub enum TypeError {
     UnknownField { type_name: String, field_name: String, suggestions: Vec<String> },
     UnknownMethod { type_name: String, method_name: String, suggestions: Vec<String> },
     NonExhaustiveMatch { type_name: String, missing_variants: Vec<String> },
+    UnknownVariant { enum_name: String, variant_name: String, suggestions: Vec<String> },
+    MissingStructFields { type_name: String, missing: Vec<String> },
+    ReturnValueFromVoid { function_name: String },
+    AssignToConst { name: String },
+    ContractSignatureMismatch {
+        agent_name: String,
+        contract_name: String,
+        method_name: String,
+        detail: String,
+    },
+    InvalidCast { from: String, to: String },
+    AwaitOnNonAsync { method_name: String },
+    MissingAwait { method_name: String },
+    FieldTypeMismatch { type_name: String, field_name: String, expected: String, found: String },
     // Plan 29: Contract Enforcement
     MissingContractMethod { agent_name: String, contract_name: String, method_name: String },
     ContractNotDefined { agent_name: String, contract_name: String },
@@ -110,6 +124,56 @@ impl TypeError {
             TypeError::NonExhaustiveMatch { type_name, missing_variants } => {
                 format!("non-exhaustive match on `{}`: missing variant(s) {}", type_name, missing_variants.join(", "))
             }
+            TypeError::ContractSignatureMismatch { agent_name, contract_name, method_name, detail } => {
+                format!(
+                    "`{}.{}` does not match `{}.{}`: {}",
+                    agent_name, method_name, contract_name, method_name, detail
+                )
+            }
+            TypeError::AwaitOnNonAsync { method_name } => {
+                format!("`{}` is not async, so there is nothing to await", method_name)
+            }
+            TypeError::MissingAwait { method_name } => {
+                format!(
+                    "`{}` is async — its result is a future until you `await` it",
+                    method_name
+                )
+            }
+            TypeError::InvalidCast { from, to } => {
+                format!(
+                    "cannot cast `{}` to `{}` — use a parsing builtin (e.g. `parse_int`) for text",
+                    from, to
+                )
+            }
+            TypeError::ReturnValueFromVoid { function_name } => {
+                format!("`{}` is declared void but returns a value", function_name)
+            }
+            TypeError::AssignToConst { name } => {
+                format!("cannot assign to `{}`: it is declared const", name)
+            }
+            TypeError::MissingStructFields { type_name, missing } => {
+                format!(
+                    "struct literal for `{}` is missing field(s) {}",
+                    type_name,
+                    missing.join(", ")
+                )
+            }
+            TypeError::FieldTypeMismatch { type_name, field_name, expected, found } => {
+                format!(
+                    "field `{}` of `{}` expects `{}`, found `{}`",
+                    field_name, type_name, expected, found
+                )
+            }
+            TypeError::UnknownVariant { enum_name, variant_name, suggestions } => {
+                let mut msg = format!(
+                    "`{}` is not a variant of `{}`. As a match arm it binds the whole value, so it matches everything and every arm below it is dead",
+                    variant_name, enum_name
+                );
+                if let Some(first) = suggestions.first() {
+                    msg.push_str(&format!(", did you mean `{}`?", first));
+                }
+                msg
+            }
             TypeError::MissingContractMethod { agent_name, contract_name, method_name } => {
                 format!("agent `{}` implements `{}` but is missing method `{}`", agent_name, contract_name, method_name)
             }
@@ -159,6 +223,14 @@ impl TypeError {
             TypeError::TraitBoundViolation { type_name, .. } => Some(type_name),
             TypeError::AgentSpawnUnknown { target, .. } => Some(target),
             TypeError::AgentGraphCycle { .. } => None,
+            TypeError::UnknownVariant { variant_name, .. } => Some(variant_name.as_str()),
+            TypeError::MissingStructFields { type_name, .. } => Some(type_name.as_str()),
+            TypeError::ReturnValueFromVoid { function_name } => Some(function_name.as_str()),
+            TypeError::ContractSignatureMismatch { method_name, .. } => Some(method_name.as_str()),
+            TypeError::AwaitOnNonAsync { method_name } => Some(method_name.as_str()),
+            TypeError::MissingAwait { method_name } => Some(method_name.as_str()),
+            TypeError::AssignToConst { name } => Some(name.as_str()),
+            TypeError::FieldTypeMismatch { field_name, .. } => Some(field_name.as_str()),
             TypeError::WrongArgumentCount { callee, .. } => Some(callee.as_str()),
             TypeError::ArgumentTypeMismatch { callee, .. } => Some(callee.as_str()),
             _ => None,
@@ -190,14 +262,24 @@ pub struct TypeChecker {
     // Registered type aliases (name → resolved type)
     pub type_aliases: HashMap<String, TypeNode>,
 
+    // Names declared `const`. Reassigning one produced Rust's "cannot assign twice to immutable
+    // variable" against generated code; the declaration is a Varg-level fact, so say so here.
+    const_names: std::collections::HashSet<String>,
+
     // OCAP state
     in_unsafe_block: bool,
+
+    // How many loops enclose the statement being checked. `break`/`continue` outside all of them
+    // is a Varg-level mistake; it used to surface as rustc's "`break` outside of a loop".
+    loop_depth: usize,
 
     // Plan 03: Capability tokens available in current method scope
     available_capabilities: Vec<CapabilityType>,
 
     // Wave 5b: Expected return type for current method (for validation)
     current_return_ty: Option<TypeNode>,
+    // Name of the function/method being checked, so return-type errors can name it.
+    current_callable_name: Option<String>,
 
     // Plan 19: Agent fields available in method scope
     current_agent_fields: Vec<FieldDecl>,
@@ -251,6 +333,9 @@ struct MethodSignature {
     /// The callee's own generic parameters (`fn max<T>(T a, T b)`). A parameter whose declared
     /// type names one of these is not checked against the argument: `T` is whatever was passed.
     type_params: Vec<String>,
+    /// Whether the callee is `async`. Awaiting something that is not, and forgetting to await
+    /// something that is, both used to surface only as rustc errors about futures.
+    is_async: bool,
 }
 
 impl Default for TypeChecker {
@@ -265,9 +350,12 @@ impl TypeChecker {
             env: HashMap::new(),
             enum_defs: HashMap::new(),
             type_aliases: HashMap::new(),
+            const_names: std::collections::HashSet::new(),
             in_unsafe_block: false,
+            loop_depth: 0,
             available_capabilities: Vec::new(),
             current_return_ty: None,
+            current_callable_name: None,
             current_agent_fields: Vec::new(),
             current_agent_name: None,
             struct_fields: HashMap::new(),
@@ -700,6 +788,7 @@ impl TypeChecker {
                         return_ty: method.return_ty.clone(),
                         args: method.args.clone(),
                         type_params: method.type_params.clone(),
+                        is_async: method.is_async,
                     });
                     if !method.constraints.is_empty() {
                         constraints_map.insert(method.name.clone(), (method.type_params.clone(), method.constraints.clone()));
@@ -723,6 +812,38 @@ impl TypeChecker {
                                     contract_name: contract_name.clone(),
                                     method_name: required_method.name.clone(),
                                 });
+                            }
+                            // Presence was checked, compatibility was not: an implementation with
+                            // the right name but a different return type or arity only failed at
+                            // rustc, as E0053 against the generated trait impl.
+                            if let Some(impl_method) =
+                                agent.methods.iter().find(|m| m.name == required_method.name)
+                            {
+                                let want = required_method.return_ty.clone().unwrap_or(TypeNode::Void);
+                                let got = impl_method.return_ty.clone().unwrap_or(TypeNode::Void);
+                                if !self.types_match(&want, &got) {
+                                    return Err(TypeError::ContractSignatureMismatch {
+                                        agent_name: agent.name.clone(),
+                                        contract_name: contract_name.clone(),
+                                        method_name: required_method.name.clone(),
+                                        detail: format!(
+                                            "the contract returns `{:?}`, the implementation returns `{:?}`",
+                                            want, got
+                                        ),
+                                    });
+                                }
+                                if impl_method.args.len() != required_method.args.len() {
+                                    return Err(TypeError::ContractSignatureMismatch {
+                                        agent_name: agent.name.clone(),
+                                        contract_name: contract_name.clone(),
+                                        method_name: required_method.name.clone(),
+                                        detail: format!(
+                                            "the contract declares {} parameter(s), the implementation has {}",
+                                            required_method.args.len(),
+                                            impl_method.args.len()
+                                        ),
+                                    });
+                                }
                             }
                         }
                     } else {
@@ -787,6 +908,7 @@ impl TypeChecker {
                     return_ty: f.return_ty.clone(),
                     args: f.params.clone(),
                     type_params: f.type_params.clone(),
+                    is_async: false,
                 });
                 self.env.clear();
                 self.available_capabilities.clear();
@@ -806,6 +928,7 @@ impl TypeChecker {
                         .extend(c.bounds.iter().cloned());
                 }
                 self.current_return_ty = f.return_ty.clone();
+                self.current_callable_name = Some(f.name.clone());
                 self.check_block(&f.body)?;
                 self.current_type_param_bounds.clear();
                 // Plan 58: Validate all code paths return for non-void functions
@@ -833,6 +956,7 @@ impl TypeChecker {
                         return_ty: method.return_ty.clone(),
                         args: method.args.clone(),
                         type_params: method.type_params.clone(),
+                        is_async: method.is_async,
                     });
                 }
                 self.method_signatures.insert(type_name.clone(), method_sigs);
@@ -926,6 +1050,7 @@ impl TypeChecker {
 
         // Track expected return type for return-statement validation
         self.current_return_ty = method.return_ty.clone();
+        self.current_callable_name = Some(method.name.clone());
 
         if let Some(body) = &method.body {
             self.check_block(body)?;
@@ -955,6 +1080,16 @@ impl TypeChecker {
                             return Err(TypeError::CapabilityConstructionOutsideUnsafe { capability: cap_name });
                         }
                     }
+                    // Binding the result of an async call without `await` stores a future, which
+                    // then fails wherever it is used ("no method named `__varg_fmt` found for
+                    // opaque type"). Only the direct, unmistakable shape is flagged.
+                    if let Expression::MethodCall { method_name, .. } = value {
+                        if let Some(true) = self.lookup_is_async(method_name) {
+                            return Err(TypeError::MissingAwait {
+                                method_name: method_name.clone(),
+                            });
+                        }
+                    }
                     let val_type = self.infer_expression_type(value)?;
                     if let Some(expected_ty) = ty {
                         if !self.types_match(expected_ty, &val_type) {
@@ -970,6 +1105,9 @@ impl TypeChecker {
                     }
                 },
                 Statement::Assign { name, value } => {
+                    if self.const_names.contains(name) {
+                        return Err(TypeError::AssignToConst { name: name.clone() });
+                    }
                     let expected_ty = self.env.get(name).cloned().ok_or_else(|| self.undeclared_variable_error(name))?;
                     let val_type = self.infer_expression_type(value)?;
                     if !self.types_match(&expected_ty, &val_type) {
@@ -984,14 +1122,25 @@ impl TypeChecker {
                     self.infer_expression_type(index)?;
                     self.infer_expression_type(value)?;
                 },
-                Statement::PropertyAssign { target, property: _, value } => {
+                Statement::PropertyAssign { target, property, value } => {
                     self.infer_expression_type(target)?;
                     self.infer_expression_type(value)?;
+                    // `self.typo = ...` created nothing and reached rustc as "no field `typo`".
+                    // The agent's fields are known here, so name the mistake in Varg terms.
+                    if matches!(target, Expression::Identifier(n) if n == "self") {
+                        if let Some(agent) = self.current_agent_name.clone() {
+                            let is_field = self.current_agent_fields.iter().any(|f| f.name == *property);
+                            if !is_field && !self.current_agent_fields.is_empty() {
+                                return Err(self.unknown_field_error(&agent, property));
+                            }
+                        }
+                    }
                 },
                 Statement::UnsafeBlock(inner_block) => {
                     self.in_unsafe_block = true;
-                    self.check_block(inner_block)?;
+                    let result = self.check_scoped_block(inner_block);
                     self.in_unsafe_block = previous_unsafe;
+                    result?;
                 },
 
                 Statement::Const { name, ty, value } => {
@@ -1004,17 +1153,25 @@ impl TypeChecker {
                         });
                     }
                     self.env.insert(name.clone(), expected);
+                    self.const_names.insert(name.clone());
                 },
-                Statement::Break => {},
-                Statement::Continue => {},
+                Statement::Break | Statement::Continue => {
+                    if self.loop_depth == 0 {
+                        let kw = if matches!(stmt, Statement::Break) { "break" } else { "continue" };
+                        return Err(TypeError::TypeMismatch {
+                            expected: format!("`{}` inside a loop", kw),
+                            found: format!("`{}` outside any loop", kw),
+                        });
+                    }
+                },
                 Statement::If { condition, then_block, else_block } => {
                     let cond_ty = self.infer_expression_type(condition)?;
                     if cond_ty != TypeNode::Bool {
                         return Err(TypeError::TypeMismatch { expected: "Bool".to_string(), found: format!("{:?}", cond_ty) });
                     }
-                    self.check_block(then_block)?;
+                    self.check_scoped_block(then_block)?;
                     if let Some(eb) = else_block {
-                        self.check_block(eb)?;
+                        self.check_scoped_block(eb)?;
                     }
                 },
                 Statement::While { condition, body } => {
@@ -1022,7 +1179,10 @@ impl TypeChecker {
                     if cond_ty != TypeNode::Bool {
                         return Err(TypeError::TypeMismatch { expected: "Bool".to_string(), found: format!("{:?}", cond_ty) });
                     }
-                    self.check_block(body)?;
+                    self.loop_depth += 1;
+                    let result = self.check_scoped_block(body);
+                    self.loop_depth -= 1;
+                    result?;
                 },
                 Statement::For { init, condition, update, body } => {
                     self.check_block(&Block { statements: vec![*init.clone()] })?;
@@ -1031,7 +1191,10 @@ impl TypeChecker {
                          return Err(TypeError::TypeMismatch { expected: "Bool".to_string(), found: format!("{:?}", cond_ty) });
                     }
                     self.check_block(&Block { statements: vec![*update.clone()] })?;
-                    self.check_block(body)?;
+                    self.loop_depth += 1;
+                    let result = self.check_scoped_block(body);
+                    self.loop_depth -= 1;
+                    result?;
                 },
                 Statement::Foreach { item_name, value_name, collection, body } => {
                      let coll_ty = self.infer_expression_type(collection)?;
@@ -1062,11 +1225,22 @@ impl TypeChecker {
                              TypeNode::Set(inner) => *inner.clone(),
                              TypeNode::Map(key_ty, _) => *key_ty.clone(),
                              TypeNode::Generic(name, args) if name == "map" && args.len() == 2 => args[0].clone(),
+                             // A definite scalar is not iterable. `for x in 5` produced rustc's
+                             // "`{integer}` is not an iterator" against generated code.
+                             t if Self::is_definite_primitive(t) && *t != TypeNode::String => {
+                                 return Err(TypeError::TypeMismatch {
+                                     expected: "a list, set, map or range to iterate over".to_string(),
+                                     found: format!("{:?}", coll_ty),
+                                 });
+                             }
                              _ => TypeNode::Custom("Dynamic".to_string()),
                          };
                          self.env.insert(item_name.clone(), item_ty);
                      }
-                     self.check_block(body)?;
+                     self.loop_depth += 1;
+                     let result = self.check_scoped_block(body);
+                     self.loop_depth -= 1;
+                     result?;
                 },
                 Statement::Stream(expr) => {
                      let ty = self.infer_expression_type(expr)?;
@@ -1090,7 +1264,20 @@ impl TypeChecker {
                     let val_type = self.infer_expression_type(expr)?;
                     // Validate return type matches method declaration
                     if let Some(expected) = &self.current_return_ty {
-                        if *expected != TypeNode::Void && !self.types_match(expected, &val_type) {
+                        if *expected == TypeNode::Void {
+                            // `return <value>;` from a void function. Skipped before, so it only
+                            // showed up as a rustc type error about the generated body.
+                            if val_type != TypeNode::Void
+                                && !self.arg_type_is_unconstrained(&val_type)
+                            {
+                                return Err(TypeError::ReturnValueFromVoid {
+                                    function_name: self
+                                        .current_callable_name
+                                        .clone()
+                                        .unwrap_or_else(|| "this function".to_string()),
+                                });
+                            }
+                        } else if !self.types_match(expected, &val_type) {
                             return Err(TypeError::TypeMismatch {
                                 expected: format!("{:?}", expected),
                                 found: format!("{:?}", val_type),
@@ -1137,6 +1324,19 @@ impl TypeChecker {
                             fn pattern_has_wildcard(p: &Pattern) -> bool {
                                 match p {
                                     Pattern::Wildcard => true,
+                                    // A named catch-all (`other => …`) is an irrefutable binding,
+                                    // so it covers the remaining variants exactly like `_`. It
+                                    // was counted as a variant instead, which reported the
+                                    // covered variants as missing. Variants are capitalised by
+                                    // convention; a lower-case bare name is a binding.
+                                    Pattern::Variant(name, args) => {
+                                        args.is_empty()
+                                            && name
+                                                .chars()
+                                                .next()
+                                                .map(|c| c.is_ascii_lowercase())
+                                                .unwrap_or(false)
+                                    }
                                     Pattern::Or(alts) => alts.iter().any(pattern_has_wildcard),
                                     _ => false,
                                 }
@@ -1148,6 +1348,36 @@ impl TypeChecker {
                                     _ => {}
                                 }
                             }
+                            // An arm naming something that is not a variant is compiled as an
+                            // irrefutable *binding*, so it matches everything and every arm below
+                            // it becomes dead. With no wildcard the exhaustiveness check below
+                            // catches the resulting hole, but with a wildcard present it was
+                            // skipped entirely: a misspelled variant then silently returned its
+                            // own arm for every other case — a wrong answer from a program that
+                            // compiled and ran clean. Checked unconditionally for that reason.
+                            let known: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
+                            for arm in arms.iter() {
+                                let mut named = std::collections::HashSet::new();
+                                collect_variant_names(&arm.pattern, &mut named);
+                                for name in named {
+                                    // Lower-case names are the conventional spelling of a binding
+                                    // (`other => ...`), which is legitimate; variants are
+                                    // capitalised.
+                                    let looks_like_variant = name
+                                        .chars()
+                                        .next()
+                                        .map(|c| c.is_ascii_uppercase())
+                                        .unwrap_or(false);
+                                    if looks_like_variant && !known.contains(&name.as_str()) {
+                                        return Err(TypeError::UnknownVariant {
+                                            enum_name: enum_name.clone(),
+                                            variant_name: name.clone(),
+                                            suggestions: suggest_similar(&name, &known),
+                                        });
+                                    }
+                                }
+                            }
+
                             let has_wildcard = arms.iter().any(|arm| pattern_has_wildcard(&arm.pattern));
                             if !has_wildcard {
                                 let mut matched_variants = std::collections::HashSet::new();
@@ -1387,8 +1617,17 @@ impl TypeChecker {
                 if arms.is_empty() { return false; }
                 // All arms must return AND there must be a wildcard or exhaustive coverage
                 fn pat_has_wildcard(p: &Pattern) -> bool {
-                    matches!(p, Pattern::Wildcard) ||
-                    matches!(p, Pattern::Or(alts) if alts.iter().any(|a| pat_has_wildcard(a)))
+                    match p {
+                        Pattern::Wildcard => true,
+                        // A named catch-all binding covers everything, so a match ending in one
+                        // does return on every path.
+                        Pattern::Variant(name, args) => {
+                            args.is_empty()
+                                && name.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
+                        }
+                        Pattern::Or(alts) => alts.iter().any(pat_has_wildcard),
+                        _ => false,
+                    }
                 }
                 let has_wildcard = arms.iter().any(|arm| pat_has_wildcard(&arm.pattern));
                 has_wildcard && arms.iter().all(|arm| Self::block_always_returns(&arm.body))
@@ -1458,13 +1697,35 @@ impl TypeChecker {
                 match operator {
                     BinaryOperator::Eq | BinaryOperator::NotEq |
                     BinaryOperator::Lt | BinaryOperator::Gt |
-                    BinaryOperator::LtEq | BinaryOperator::GtEq |
-                    BinaryOperator::And | BinaryOperator::Or => Ok(TypeNode::Bool),
+                    BinaryOperator::LtEq | BinaryOperator::GtEq => {
+                        // The result is Bool either way, but the *operands* were never compared:
+                        // `5 > "x"` type-checked and only rustc objected. Only definite,
+                        // incompatible primitives are rejected — anything unresolved passes.
+                        self.check_comparable(&left_ty, &right_ty)?;
+                        Ok(TypeNode::Bool)
+                    }
+                    BinaryOperator::And | BinaryOperator::Or => {
+                        for ty in [&left_ty, &right_ty] {
+                            if Self::is_definite_primitive(ty) && *ty != TypeNode::Bool {
+                                return Err(TypeError::TypeMismatch {
+                                    expected: "Bool".to_string(),
+                                    found: format!("{:?}", ty),
+                                });
+                            }
+                        }
+                        Ok(TypeNode::Bool)
+                    }
                     BinaryOperator::CosineSim => Ok(TypeNode::Custom("f32".to_string())),
                     BinaryOperator::Add => {
                         // String + anything = String (concat); else numeric with float promotion.
                         if left_ty == TypeNode::String || right_ty == TypeNode::String {
                             Ok(TypeNode::String)
+                        } else if left_ty == TypeNode::Bool || right_ty == TypeNode::Bool {
+                            // `true + 1` reached rustc as "cannot add {integer} to bool".
+                            Err(TypeError::TypeMismatch {
+                                expected: "numeric operands for `+`".to_string(),
+                                found: format!("{:?} + {:?}", left_ty, right_ty),
+                            })
                         } else if left_ty == TypeNode::Float || right_ty == TypeNode::Float {
                             Ok(TypeNode::Float)
                         } else {
@@ -1473,6 +1734,14 @@ impl TypeChecker {
                     },
                     BinaryOperator::Sub | BinaryOperator::Mul
                     | BinaryOperator::Div | BinaryOperator::Mod => {
+                        for ty in [&left_ty, &right_ty] {
+                            if matches!(ty, TypeNode::Bool | TypeNode::String) {
+                                return Err(TypeError::TypeMismatch {
+                                    expected: format!("numeric operands for `{:?}`", operator),
+                                    found: format!("{:?}", ty),
+                                });
+                            }
+                        }
                         // Numeric arithmetic: if either operand is Float the result is Float
                         // (matches the codegen's int→f64 promotion). Previously always Int, so
                         // `float * float` mis-typed as Int and leaked as an rustc/typecheck error.
@@ -1486,6 +1755,15 @@ impl TypeChecker {
                 }
             },
             Expression::Await(inner) => {
+                // Awaiting a plain value reached rustc as "`i64` is not a future". The method
+                // being called is known here, so say which one.
+                if let Expression::MethodCall { method_name, .. } = inner.as_ref() {
+                    if let Some(false) = self.lookup_is_async(method_name) {
+                        return Err(TypeError::AwaitOnNonAsync {
+                            method_name: method_name.clone(),
+                        });
+                    }
+                }
                 // await unwraps the future — for MVP, return the inner expression type
                 self.infer_expression_type(inner)
             },
@@ -3077,6 +3355,18 @@ impl TypeChecker {
                 }
             },
             Expression::PropertyAccess { caller, property_name } => {
+                // `Colour.Red` is a variant, not a field read: the left side names the enum, not
+                // a value. Without this the expression fell through to the opaque fallback, so
+                // `var c = Colour.Red;` gave `c` no enum type — and every check keyed on the
+                // subject being a known enum (exhaustiveness, unknown-variant) silently did
+                // nothing for the common `var c = …; match c` shape.
+                if let Expression::Identifier(ref maybe_enum) = **caller {
+                    if let Some(variants) = self.enum_defs.get(maybe_enum) {
+                        if variants.iter().any(|v| v.name == *property_name) {
+                            return Ok(TypeNode::Custom(maybe_enum.clone()));
+                        }
+                    }
+                }
                 let caller_ty = self.infer_expression_type(caller)?;
                 // Hardcoded built-in properties
                 if *property_name == "text" && caller_ty == TypeNode::Prompt {
@@ -3146,10 +3436,31 @@ impl TypeChecker {
             },
             Expression::IndexAccess { caller, index } => {
                 let caller_ty = self.infer_expression_type(caller)?;
-                let _index_ty = self.infer_expression_type(index)?;
+                let index_ty = self.infer_expression_type(index)?;
                 match caller_ty {
-                    TypeNode::Array(inner) | TypeNode::List(inner) => Ok(*inner),
-                    TypeNode::Map(_, val) => Ok(*val),
+                    TypeNode::Array(inner) | TypeNode::List(inner) => {
+                        // A sequence is indexed by position. `a["x"]` used to reach rustc as
+                        // "the type `[{integer}]` cannot be indexed by `String`".
+                        if Self::is_definite_primitive(&index_ty) && index_ty != TypeNode::Int {
+                            return Err(TypeError::TypeMismatch {
+                                expected: "Int (a list is indexed by position)".to_string(),
+                                found: format!("{:?}", index_ty),
+                            });
+                        }
+                        Ok(*inner)
+                    }
+                    TypeNode::Map(key, val) => {
+                        if Self::is_definite_primitive(&index_ty)
+                            && Self::is_definite_primitive(&key)
+                            && !self.types_match(&key, &index_ty)
+                        {
+                            return Err(TypeError::TypeMismatch {
+                                expected: format!("{:?} (the map key type)", key),
+                                found: format!("{:?}", index_ty),
+                            });
+                        }
+                        Ok(*val)
+                    }
                     TypeNode::Custom(_) => Ok(TypeNode::Custom("Dynamic".to_string())),
                     _ => Err(TypeError::TypeMismatch { expected: "List or Map".to_string(), found: format!("{:?}", caller_ty) })
                 }
@@ -3288,22 +3599,76 @@ impl TypeChecker {
             },
             // Wave 11: Type casting — expr as Type
             Expression::Cast { expr, target_type } => {
-                // Validate the source expression type-checks
-                let _source_ty = self.infer_expression_type(expr)?;
-                // The result type is always the target type
+                let source_ty = self.infer_expression_type(expr)?;
+                // Mirror what the cast actually lowers to. `as string` becomes `format!("{}", x)`
+                // and so accepts anything; `as int`/`as float`/`as ulong` become Rust's `as`,
+                // which is numeric-or-bool only; `as bool` becomes `x != 0`, which needs a number.
+                // `"abc" as int` therefore produced rustc's "non-primitive cast" against generated
+                // code — text needs `parse_int`, which is fallible for a reason.
+                let source_is_text = source_ty == TypeNode::String;
+                let rejected = match target_type {
+                    TypeNode::Int | TypeNode::Float | TypeNode::Ulong => source_is_text,
+                    TypeNode::Bool => source_is_text,
+                    _ => false,
+                };
+                if rejected {
+                    return Err(TypeError::InvalidCast {
+                        from: format!("{:?}", source_ty),
+                        to: format!("{:?}", target_type),
+                    });
+                }
                 Ok(target_type.clone())
             },
             // Wave 12: Struct literal — Point { x: 5, y: 10 }
             Expression::StructLiteral { type_name, fields } => {
-                // Clone known names to avoid borrow conflict
-                let known_names: Option<Vec<String>> = self.struct_fields.get(type_name)
+                // Clone the declaration to avoid a borrow conflict with infer_expression_type.
+                // An *extra* field was already rejected here; a missing one and a wrongly typed
+                // one were not, so both only surfaced as rustc errors about generated code.
+                let declared: Option<Vec<FieldDecl>> = self.struct_fields.get(type_name).cloned();
+                let known_names: Option<Vec<String>> = declared
+                    .as_ref()
                     .map(|sf| sf.iter().map(|f| f.name.clone()).collect());
                 if let Some(ref names) = known_names {
                     for (field_name, value) in fields {
                         if !names.iter().any(|n| n == field_name) {
                             return Err(self.unknown_field_error(type_name, field_name));
                         }
-                        let _val_ty = self.infer_expression_type(value)?;
+                        let val_ty = self.infer_expression_type(value)?;
+                        if let Some(decl) = declared
+                            .as_ref()
+                            .and_then(|sf| sf.iter().find(|f| f.name == *field_name))
+                        {
+                            if !self.param_type_is_unconstrained(&decl.ty, &[])
+                                && !self.arg_type_is_unconstrained(&val_ty)
+                                && !self.types_match(&decl.ty, &val_ty)
+                            {
+                                return Err(TypeError::FieldTypeMismatch {
+                                    type_name: type_name.clone(),
+                                    field_name: field_name.clone(),
+                                    expected: format!("{:?}", decl.ty),
+                                    found: format!("{:?}", val_ty),
+                                });
+                            }
+                        }
+                    }
+                    // A field with a declared default may be omitted; everything else is required.
+                    let missing: Vec<String> = declared
+                        .as_ref()
+                        .map(|sf| {
+                            sf.iter()
+                                .filter(|f| {
+                                    f.default_value.is_none()
+                                        && !fields.iter().any(|(n, _)| n == &f.name)
+                                })
+                                .map(|f| f.name.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !missing.is_empty() {
+                        return Err(TypeError::MissingStructFields {
+                            type_name: type_name.clone(),
+                            missing,
+                        });
                     }
                 } else {
                     // Unknown struct — still type-check values
@@ -3508,6 +3873,68 @@ impl TypeChecker {
             TypeNode::Void => true,
             _ => false,
         }
+    }
+
+    /// A type whose shape is known for certain, so an operator mismatch on it is a real error
+    /// rather than a gap in inference.
+    fn is_definite_primitive(ty: &TypeNode) -> bool {
+        matches!(ty, TypeNode::Int | TypeNode::Float | TypeNode::String | TypeNode::Bool)
+    }
+
+    /// Reject a comparison between two definite primitives that cannot be compared.
+    ///
+    /// Numbers compare with numbers (int and float mix, matching the arithmetic promotion),
+    /// strings with strings, bools with bools. Anything not definitely known passes: the point is
+    /// to catch `5 > "x"`, not to guess about types the checker could not resolve.
+    fn check_comparable(&self, left: &TypeNode, right: &TypeNode) -> Result<(), TypeError> {
+        if !Self::is_definite_primitive(left) || !Self::is_definite_primitive(right) {
+            return Ok(());
+        }
+        let numeric = |t: &TypeNode| matches!(t, TypeNode::Int | TypeNode::Float);
+        let ok = (numeric(left) && numeric(right)) || left == right;
+        if ok {
+            Ok(())
+        } else {
+            Err(TypeError::TypeMismatch {
+                expected: format!("a value comparable with `{:?}`", left),
+                found: format!("{:?}", right),
+            })
+        }
+    }
+
+    /// Is this method name declared async? `None` when it cannot be resolved unambiguously —
+    /// two types declaring the same name with different asyncness, or a name that is not a user
+    /// method at all (a builtin, a closure variable) — in which case nothing is claimed.
+    /// Check a nested block in its own scope.
+    ///
+    /// `env` is a single flat map, so a variable declared inside `if`/`while`/`for`/`unsafe`
+    /// stayed visible after the block closed. The typechecker then accepted code rustc rejected
+    /// with "cannot find value in this scope". Bindings made inside the block are dropped again
+    /// here; `const` names are scoped with them so a later `var` of the same name is not treated
+    /// as the earlier constant.
+    fn check_scoped_block(&mut self, block: &Block) -> Result<(), TypeError> {
+        let saved_env = self.env.clone();
+        let saved_consts = self.const_names.clone();
+        let result = self.check_block(block);
+        self.env = saved_env;
+        self.const_names = saved_consts;
+        result
+    }
+
+    fn lookup_is_async(&self, method_name: &str) -> Option<bool> {
+        if self.known_functions.contains_key(method_name) {
+            return Some(false);
+        }
+        let mut seen: Option<bool> = None;
+        for methods in self.method_signatures.values() {
+            if let Some(sig) = methods.get(method_name) {
+                match seen {
+                    Some(prev) if prev != sig.is_async => return None,
+                    _ => seen = Some(sig.is_async),
+                }
+            }
+        }
+        seen
     }
 
     fn types_match(&self, expected: &TypeNode, actual: &TypeNode) -> bool {
@@ -5171,7 +5598,7 @@ mod tests {
     }
 
     #[test]
-    fn test_return_void_allows_anything() {
+    fn test_return_value_from_void_is_rejected() {
         let mut checker = TypeChecker::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
@@ -5191,8 +5618,14 @@ mod tests {
                 }],
             })],
         };
-        // Void methods don't enforce return type
-        assert!(checker.check_program(&program).is_ok());
+        // A void method returning a value is not permissive, it is broken: the generated Rust
+        // does not compile. This test used to assert the opposite and so kept the hole open.
+        let err = checker.check_program(&program).unwrap_err();
+        assert!(
+            err.iter().any(|e| matches!(&e.error, TypeError::ReturnValueFromVoid { .. })),
+            "expected a ReturnValueFromVoid error, got: {:?}",
+            err
+        );
     }
 
     // ===== Plan 16: Agent Messaging Tests =====
@@ -7777,6 +8210,7 @@ mod tests {
             return_ty: Some(TypeNode::Int),
             args: vec![],
             type_params: vec![],
+            is_async: false,
         });
         checker.method_signatures.insert("MathHelper".to_string(), methods);
         checker.env.insert("m".to_string(), TypeNode::Custom("MathHelper".to_string()));
@@ -8537,6 +8971,7 @@ mod tests {
             return_ty: Some(TypeNode::String),
             args: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::String, default_value: None }],
             type_params: vec![],
+            is_async: false,
         });
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
@@ -9819,6 +10254,7 @@ mod tests {
             return_ty: Some(TypeNode::Void),
             args: vec![FieldDecl { name: "item".to_string(), ty: TypeNode::Custom("T".to_string()), default_value: None }],
             type_params: vec![],
+            is_async: false,
         });
         checker.method_signatures.insert("Caller".to_string(), caller_methods);
         let mut caller_mc = std::collections::HashMap::new();
@@ -10159,7 +10595,7 @@ mod tests {
         let mut c = TypeChecker::new();
         // An agent Box with a 0-arg get() returning int.
         let mut methods = HashMap::new();
-        methods.insert("get".to_string(), MethodSignature { return_ty: Some(TypeNode::Int), args: vec![], type_params: vec![] });
+        methods.insert("get".to_string(), MethodSignature { return_ty: Some(TypeNode::Int), args: vec![], type_params: vec![], is_async: false });
         c.method_signatures.insert("Box".to_string(), methods);
         c.agent_fields.insert("Box".to_string(), vec![]);
         c.env.insert("b".to_string(), TypeNode::Custom("Box".to_string()));
@@ -10190,6 +10626,7 @@ mod tests {
             return_ty: Some(TypeNode::Int),
             args: vec![field("a", TypeNode::Int), field("b", TypeNode::Int)],
             type_params: vec![],
+            is_async: false,
         });
         c
     }
@@ -10243,6 +10680,7 @@ mod tests {
             return_ty: Some(TypeNode::Int),
             args: vec![field("a", TypeNode::Int), field("b", TypeNode::Int)],
             type_params: vec![],
+            is_async: false,
         });
         c.method_signatures.insert("Helper".to_string(), methods);
         c.agent_fields.insert("Helper".to_string(), vec![]);
@@ -10283,6 +10721,7 @@ mod tests {
                 field_with_default("b", TypeNode::Int, Expression::Int(10)),
             ],
             type_params: vec![],
+            is_async: false,
         });
         assert!(c.infer_expression_type(&bare_call("greet", vec![Expression::Int(1)])).is_ok());
         let both = bare_call("greet", vec![Expression::Int(1), Expression::Int(2)]);
@@ -10297,6 +10736,7 @@ mod tests {
             return_ty: Some(TypeNode::Int),
             args: vec![field("v", TypeNode::Custom("T".to_string()))],
             type_params: vec!["T".to_string()],
+            is_async: false,
         });
         let call = bare_call("identity", vec![Expression::String("anything".to_string())]);
         assert!(c.infer_expression_type(&call).is_ok());
@@ -10312,6 +10752,7 @@ mod tests {
             return_ty: Some(TypeNode::String),
             args: vec![field("cap", TypeNode::Capability(CapabilityType::FileAccess))],
             type_params: vec![],
+            is_async: false,
         });
         c.env.insert("cap".to_string(), TypeNode::Custom("FileAccess".to_string()));
         let call = bare_call("load", vec![Expression::Identifier("cap".to_string())]);
@@ -10329,6 +10770,7 @@ mod tests {
         let mut methods = HashMap::new();
         methods.insert("compute".to_string(), MethodSignature {
             return_ty: Some(TypeNode::Int), args: vec![], type_params: vec![],
+            is_async: false,
         });
         c.method_signatures.insert("Helper".to_string(), methods);
         c.agent_fields.insert("Helper".to_string(), vec![]);
@@ -10353,6 +10795,200 @@ mod tests {
             }
             other => panic!("expected UnknownMethod, got {:?}", other),
         }
+    }
+
+    // ===== Semantic checks over real Varg source =====
+    //
+    // Written as source rather than hand-built AST so the case being checked is legible and the
+    // next one is cheap to add. Every rejection here used to reach rustc, which reported it in
+    // Rust terms against generated code the author never wrote.
+
+    /// Parse and check a whole program, returning the first error message (if any).
+    fn check_source(src: &str) -> Result<(), String> {
+        let mut parser = varg_parser::Parser::new(src);
+        let program = parser
+            .parse_program()
+            .map_err(|e| format!("parse error: {:?}", e))?;
+        TypeChecker::new()
+            .check_program(&program)
+            .map_err(|errs| errs[0].error.message())
+    }
+
+    #[track_caller]
+    fn assert_rejected(src: &str, expect_substring: &str) {
+        match check_source(src) {
+            Ok(()) => panic!("expected a rejection mentioning {:?}, but it type-checked", expect_substring),
+            Err(msg) => assert!(
+                msg.contains(expect_substring),
+                "expected a message containing {:?}, got: {}",
+                expect_substring,
+                msg
+            ),
+        }
+    }
+
+    #[track_caller]
+    fn assert_accepted(src: &str) {
+        if let Err(msg) = check_source(src) {
+            panic!("valid program was rejected: {}", msg);
+        }
+    }
+
+    #[test]
+    fn struct_literal_must_be_complete_and_well_typed() {
+        assert_rejected(
+            "struct P { int x; int y; }\nagent M { public void Run() { var p = P { x: 1 }; print p.x; } }",
+            "missing field(s) y",
+        );
+        assert_rejected(
+            "struct P { int x; }\nagent M { public void Run() { var p = P { x: \"no\" }; print p.x; } }",
+            "field `x` of `P` expects",
+        );
+        assert_accepted("struct P { int x; int y; }\nagent M { public void Run() { var p = P { x: 1, y: 2 }; print p.x; } }");
+    }
+
+    #[test]
+    fn void_function_may_not_return_a_value() {
+        assert_rejected(
+            "agent M { public void Run() { return 5; } }",
+            "declared void but returns a value",
+        );
+        assert_accepted("agent M { public void Run() { return; } }");
+    }
+
+    #[test]
+    fn const_may_not_be_reassigned() {
+        assert_rejected(
+            "agent M { public void Run() { const int X = 5; X = 6; print X; } }",
+            "it is declared const",
+        );
+        assert_accepted("agent M { public void Run() { const int X = 5; print X; } }");
+    }
+
+    #[test]
+    fn assignment_to_an_unknown_agent_field_is_rejected() {
+        assert_rejected(
+            "agent M { int a; public void Run() { self.b = 5; print self.a; } }",
+            "unknown field `b`",
+        );
+        assert_accepted("agent M { int a; public void Run() { self.a = 5; print self.a; } }");
+    }
+
+    #[test]
+    fn operators_reject_incompatible_operands() {
+        assert_rejected(
+            "agent M { public void Run() { var a = 5; var b = \"x\"; if a > b { print 1; } } }",
+            "comparable",
+        );
+        assert_rejected(
+            "agent M { public void Run() { var t = true; print t + 1; } }",
+            "numeric operands",
+        );
+        // Numbers mix freely, and `string + anything` is concatenation by design.
+        assert_accepted("agent M { public void Run() { print 2 + 2.5; var ok = 2 < 2.5; print ok; } }");
+        assert_accepted("agent M { public void Run() { print \"n=\" + 5; } }");
+    }
+
+    #[test]
+    fn indexing_uses_the_declared_key_type() {
+        assert_rejected(
+            "agent M { public void Run() { var a = [1, 2, 3]; print a[\"x\"]; } }",
+            "indexed by position",
+        );
+        assert_accepted("agent M { public void Run() { var a = [1, 2, 3]; print a[1]; } }");
+    }
+
+    #[test]
+    fn break_requires_an_enclosing_loop() {
+        assert_rejected("agent M { public void Run() { break; } }", "outside any loop");
+        assert_accepted("agent M { public void Run() { for n in [1, 2] { if n == 1 { continue; } break; } } }");
+    }
+
+    #[test]
+    fn a_scalar_is_not_iterable() {
+        assert_rejected(
+            "agent M { public void Run() { var n = 5; for x in n { print x; } } }",
+            "to iterate over",
+        );
+        assert_accepted("agent M { public void Run() { for x in [1, 2] { print x; } } }");
+    }
+
+    #[test]
+    fn casts_follow_what_they_lower_to() {
+        // `as int` becomes Rust's `as`, which cannot take a String.
+        assert_rejected(
+            "agent M { public void Run() { var s = \"abc\"; var n = s as int; print n; } }",
+            "cannot cast",
+        );
+        // `as string` becomes format!(), so it accepts anything.
+        assert_accepted("agent M { public void Run() { var i = 42; print i as string; print i as float; } }");
+    }
+
+    #[test]
+    fn await_must_match_asyncness() {
+        assert_rejected(
+            "agent M { public int s() { return 1; } async public void Run() { var r = await self.s(); print r; } }",
+            "is not async",
+        );
+        assert_rejected(
+            "agent M { async public int slow() { return 42; } async public void Run() { var r = self.slow(); print r; } }",
+            "until you `await` it",
+        );
+        assert_accepted(
+            "agent M { async public int slow() { return 42; } async public void Run() { var r = await self.slow(); print r; } }",
+        );
+    }
+
+    #[test]
+    fn blocks_scope_their_bindings() {
+        assert_rejected(
+            "agent M { public void Run() { if true { var inner = 5; } print inner; } }",
+            "undeclared variable `inner`",
+        );
+        // Shadowing inside a block is fine, and the outer binding survives it.
+        assert_accepted(
+            "agent M { public void Run() { var v = 1; if true { var v = 2; print v; } print v; } }",
+        );
+    }
+
+    #[test]
+    fn contract_implementations_must_match_the_contract() {
+        assert_rejected(
+            "contract IS { int area(); }\nagent S implements IS { public string area() { return \"x\"; } }\nagent M { public void Run() { print 1; } }",
+            "does not match",
+        );
+        assert_accepted(
+            "contract IS { int area(); }\nagent S implements IS { public int area() { return 4; } }\nagent M { public void Run() { print 1; } }",
+        );
+    }
+
+    /// The one that produced a wrong answer rather than an error: an arm naming something that is
+    /// not a variant compiles to an irrefutable binding, so it matches everything and every arm
+    /// below it is dead. Without a wildcard the exhaustiveness check caught the resulting hole;
+    /// with one it was skipped entirely and the misspelled arm silently answered every case.
+    #[test]
+    fn a_match_arm_naming_a_non_variant_is_rejected() {
+        assert_rejected(
+            "enum C { Red, Green, Blue }\nagent M { public void Run() { var c = C.Red; match c { Red => { print 1; } Gren => { print 2; } _ => { print 3; } } } }",
+            "is not a variant of `C`",
+        );
+        // A lower-case name is a binding, which is a legitimate named catch-all.
+        assert_accepted(
+            "enum C { Red, Green, Blue }\nagent M { public void Run() { var c = C.Red; match c { Red => { print 1; } other => { print 2; } } } }",
+        );
+        // Guards and literal arms on a scalar subject stay untouched.
+        assert_accepted(
+            "agent M { public void Run() { var n = 5; match n { 200 => { print 1; } x if x > 3 => { print 2; } _ => { print 3; } } } }",
+        );
+    }
+
+    /// Missing a variant with no catch-all is still a hole, and the named catch-all closes it.
+    #[test]
+    fn match_exhaustiveness_still_holds() {
+        assert_rejected(
+            "enum C { Red, Green, Blue }\nagent M { public void Run() { var c = C.Red; match c { Red => { print 1; } Green => { print 2; } } } }",
+            "non-exhaustive",
+        );
     }
 
     // ===== Generic body method resolution =====
