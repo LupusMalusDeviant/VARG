@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-25 · Version 1.0.0 · 1220 Compiler-Tests (default) / 1372 (`--features full`) · Golden 33/33 · Builtin-Abdeckung 97,9 %
+> Stand: 2026-08-25 · Version 1.0.0 · 1227 Compiler-Tests (default) / 1379 (`--features full`) · Golden 34/34 · Builtin-Abdeckung 97,9 %
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -431,9 +431,7 @@ hält fest, dass die Prüfung nichts kaputtmacht.
 stabil · 11 Beispiele + 4 Spike-Programme bauen.
 
 ### Weiterhin offen
-`int? x` als Parameter: die Call-Site wrappt ein Argument nicht in `Some(...)`, `maybe(5)` bricht
-im generierten Rust. Dieselbe Klasse wie das Contract-Boxing oben, nur für Nullable — nicht in
-diesem Durchgang angefasst.
+~~`int? x` als Parameter~~ — **erledigt in Stufe 17**.
 
 ---
 
@@ -505,7 +503,77 @@ Gegenstück. Dazu das Golden-Programm `semantics` mit 17 Prüfungen für die Akz
 stabil · 11 Beispiele + 4 Spike-Programme bauen · Sonde 34/35, keine False Positives.
 
 ### Weiterhin offen
-`int? x` als Parameter (Call-Site wrappt nicht in `Some(...)`) — unverändert aus Stufe 15.
+~~`int? x` als Parameter~~ — **erledigt in Stufe 17**.
+
+---
+
+## Parser/Lexer-Sonde und die letzten Leaks (Stufe 17)
+
+Die bisherigen Runden hatten **Semantik** vermessen, nie **Syntax**. 32 Sonden über Literale,
+Trenner, Kommentare, Lambdas, Präzedenz, Annotationen, Ranges, Pipes und Fehlerqualität. Dazu ein
+Sweep über alle ~95 angesammelten Sondenprogramme, um eigene Regressionen zu finden.
+
+**Ergebnis: von ~95 Sonden leakt noch genau eine** — rustcs `unconditional_panic`-Lint bei
+Division durch eine Variable, die nachweislich 0 ist. Das ist ein *korrekter* Compile-Zeit-Fang,
+nur in Rust-Worten; ihn selbst zu bauen bräuchte Konstantenpropagation. Division durch ein
+**Literal** 0 lehnt der Typechecker jetzt ab.
+
+### Lexer: drei Literalformen fehlten
+`0xFF` lexte als `0` gefolgt vom Bezeichner `xFF` — der Nutzer sah „use of undeclared variable
+`xFF`" für ein vollkommen gewöhnliches Literal. Ebenso `0b1010`, `1_000_000` und `1.5e3`
+(→ „undeclared variable `e3`"). Alle vier Formen sind jetzt implementiert, inklusive `2E-4` und
+`1_000.5`.
+
+### Parser: Trailing Commas
+`[1, 2, 3,]`, `{"a": 1,}`, `add(1, 2,)`, `fn f(int a, int b,)`, `Colour.Rgb(1, 2, 3,)` — alle
+abgelehnt. Jetzt überall erlaubt.
+
+**Dabei fast selbst einen Bug gebaut:** der erste, mechanische Patch setzte das `break` in drei
+Schleifen **vor** das zugehörige `push` — die letzte Enum-Variante bzw. der letzte Match-Arm wären
+stillschweigend verschwunden. Die bestehende Testsuite hat das sofort gestellt
+(`test_e2e_enum_construction_qualified`, dessen Enum zufällig ein Trailing Comma hat). Danach jede
+der 14 Einfügestellen einzeln auf die Push-Reihenfolge geprüft.
+
+### Zwei Regressionen aus den eigenen vorherigen Runden
+Der Sweep über die alten Sonden war der eigentliche Gewinn:
+
+1. **`return` in einem Lambda** wurde der umgebenden Methode zugerechnet, also lehnte die neue
+   „void gibt keinen Wert zurück"-Prüfung `(int x) => { return x * 3; }` in einer void-Methode ab.
+2. **Der Pipe-Operator** reicht den Wert implizit als erstes Argument weiter; die neue
+   Arity-Prüfung zählte ihn nicht mit und lehnte **jede** Pipeline ab.
+
+### Und ein stiller Falschwert, den ich selbst eingebaut hatte
+`abs(-3.7)` lieferte **3**. Der `abs`-Fix aus Stufe 13 wählt den Cast (`i64` vs `f64`) über
+`resolve_type` — und das kannte **Unär-Operatoren nicht**, sah also bei `-3.7` keinen Float und
+schnitt ab. Betroffen war auch jede Variable, die aus einem unären Ausdruck kam (`var f = -3.7`).
+
+Warum das Golden-Netz es nicht fing: die Prüfung dort nutzte `abs(-5.0)`, und `5.0` formatiert als
+`5` — die Erwartung war gegen Abschneiden **blind**. Das Programm nutzt jetzt `-3.7` und `-2.25`,
+Werte, bei denen Abschneiden sichtbar wird. `resolve_type` versteht jetzt Unär und Cast.
+
+### Weitere geschlossene Leaks
+- Arithmetik auf einem unbehandelten `Result` (`parse_int("17") + 1`) — jetzt dieselbe Meldung wie
+  bei `print`/Interpolation.
+- Das Ergebnis einer In-place-Mutation binden (`var s = n.sort();`) — mit dem Hinweis, `sort` als
+  Anweisung aufzurufen.
+- Lambda mit untypisiertem Parameter in einer Variablen — abgelehnt mit dem Hinweis, den Typ zu
+  schreiben oder das Lambda direkt an den konsumierenden Aufruf zu geben.
+- `int? x` als Parameter (offener Punkt aus Stufe 15): Call-Sites adaptieren Argumente jetzt
+  generell an den deklarierten Parameter — `Some(...)` für Nullable, `Box::new(...)` für Contracts.
+
+### Kein Bug, entgegen früherer Notiz
+Escapte Quotes in Interpolation: `$"{s.replace("-", "+")}"` funktioniert. Nur `\"` innerhalb der
+Interpolation bricht — und das braucht man dort gar nicht. Die Notiz aus Stufe 14 war zu breit.
+
+### Abgesichert
+7 weitere Typechecker-Tests (Pipe in beide Richtungen, Lambda-Return-Scope, untypisiertes Lambda,
+In-place-Mutation, Result-Arithmetik, Literal-Division durch 0, Nullable/Contract-Parameter) und
+das Golden-Programm `syntax` mit 30 Prüfungen über Literale, Trenner, Escapes, Interpolation,
+Präzedenz, Pipes, Compound-Assignment und Ranges.
+
+### Stand danach
+1227 Unit-Tests (default) / 1379 (`--features full`), 0 Failures · Golden **34/34**, drei Läufe
+stabil · 11 Beispiele + 4 Spikes bauen · ~95 Sonden, 1 verbleibender rustc-Leak (s.o.).
 
 ---
 
