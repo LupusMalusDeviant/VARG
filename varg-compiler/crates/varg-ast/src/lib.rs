@@ -155,10 +155,18 @@ pub enum Token {
     PromptLiteralToken(String),
 
     // Numbers (Plan 42: Float literals must come before Int to get priority via longest-match)
-    #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse().ok())]
+    // `1_000.5`, `1.5e3`, `2E-4`. Underscores are stripped before parsing; without the exponent
+    // form `1.5e3` lexed as `1.5` followed by the identifier `e3`, which surfaced as "use of
+    // undeclared variable `e3`".
+    #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9]+)?", |lex| lex.slice().replace('_', "").parse().ok())]
+    #[regex(r"[0-9][0-9_]*[eE][+-]?[0-9]+", |lex| lex.slice().replace('_', "").parse().ok())]
     FloatLiteral(f64),
 
-    #[regex(r"[0-9]+", |lex| lex.slice().parse().ok())]
+    // Hex and binary literals, and `1_000_000`. `0xFF` used to lex as `0` followed by the
+    // identifier `xFF` — a confusing "undeclared variable" for a perfectly ordinary literal.
+    #[regex(r"0[xX][0-9a-fA-F][0-9a-fA-F_]*", |lex| i64::from_str_radix(&lex.slice()[2..].replace('_', ""), 16).ok(), priority = 3)]
+    #[regex(r"0[bB][01][01_]*", |lex| i64::from_str_radix(&lex.slice()[2..].replace('_', ""), 2).ok(), priority = 3)]
+    #[regex(r"[0-9][0-9_]*", |lex| lex.slice().replace('_', "").parse().ok())]
     IntLiteral(i64),
 
     // Booleans

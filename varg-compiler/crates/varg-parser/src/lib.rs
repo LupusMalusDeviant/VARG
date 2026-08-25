@@ -330,6 +330,8 @@ impl Parser {
                         }
                         if self.peek() == Some(&Token::Comma) {
                             self.advance();
+                            // A trailing comma before the closer is allowed.
+                            if self.peek() == Some(&Token::RParen) { break; }
                         } else {
                             break;
                         }
@@ -611,7 +613,11 @@ impl Parser {
                         let ty = self.parse_type()?;
                         let param_name = self.parse_identifier()?;
                         params.push(FieldDecl { name: param_name, ty, default_value: None });
-                        if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                        if self.peek() == Some(&Token::Comma) {
+                            self.advance();
+                            // A trailing comma before the closer is allowed.
+                            if self.peek() == Some(&Token::RParen) { break; }
+                        } else { break; }
                     }
                 }
                 self.consume(Token::RParen)?;
@@ -706,7 +712,11 @@ impl Parser {
                                 Some(self.parse_expression()?)
                             } else { None };
                             args.push(FieldDecl { name: param_name, ty, default_value });
-                            if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                            if self.peek() == Some(&Token::Comma) {
+                                self.advance();
+                                // A trailing comma before the closer is allowed.
+                                if self.peek() == Some(&Token::RParen) { break; }
+                            } else { break; }
                         }
                     }
                     self.consume(Token::RParen)?;
@@ -768,7 +778,11 @@ impl Parser {
                             Some(self.parse_expression()?)
                         } else { None };
                         params.push(FieldDecl { name: param_name, ty, default_value });
-                        if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                        if self.peek() == Some(&Token::Comma) {
+                            self.advance();
+                            // A trailing comma before the closer is allowed.
+                            if self.peek() == Some(&Token::RParen) { break; }
+                        } else { break; }
                     }
                 }
                 self.consume(Token::RParen)?;
@@ -818,6 +832,8 @@ impl Parser {
                         fields.push((field_name, field_ty));
                         if self.peek() == Some(&Token::Comma) {
                             self.advance();
+                            // A trailing comma before the closer is allowed.
+                            if self.peek() == Some(&Token::RParen) { break; }
                         } else {
                             break;
                         }
@@ -1112,7 +1128,11 @@ impl Parser {
                             Some(self.parse_expression()?)
                         } else { None };
                         args.push(FieldDecl { name: arg_name, ty: arg_ty, default_value });
-                        if let Some(Token::Comma) = self.peek() { self.advance(); } else { break; }
+                        if let Some(Token::Comma) = self.peek() {
+                            self.advance();
+                            // A trailing comma before the closing paren is allowed: `fn f(int a, int b,)`.
+                            if self.peek() == Some(&Token::RParen) { break; }
+                        } else { break; }
                     }
                 }
             }
@@ -1423,6 +1443,8 @@ impl Parser {
                                     names.push(self.parse_identifier()?);
                                     if self.peek() == Some(&Token::Comma) {
                                         self.advance();
+                                        // A trailing comma before the closer is allowed.
+                                        if self.peek() == Some(&Token::RParen) { break; }
                                     } else { break; }
                                 }
                             }
@@ -1452,6 +1474,8 @@ impl Parser {
                                     fields.push((field_name, alias));
                                     if self.peek() == Some(&Token::Comma) {
                                         self.advance();
+                                        // A trailing comma before the closer is allowed.
+                                        if self.peek() == Some(&Token::RBrace) { break; }
                                     } else { break; }
                                 }
                             }
@@ -1876,6 +1900,8 @@ impl Parser {
                         // Optional comma between arms
                         if self.peek() == Some(&Token::Comma) {
                             self.advance();
+                            // A trailing comma before the closer is allowed.
+                            if self.peek() == Some(&Token::RBrace) { break; }
                         }
                     }
                     self.consume(Token::RBrace)?;
@@ -1981,6 +2007,8 @@ impl Parser {
                             bindings.push(self.parse_identifier()?);
                             if self.peek() == Some(&Token::Comma) {
                                 self.advance();
+                                // A trailing comma before the closer is allowed.
+                                if self.peek() == Some(&Token::RParen) { break; }
                             } else { break; }
                         }
                     }
@@ -2250,6 +2278,8 @@ impl Parser {
                         elements.push(self.parse_expression()?);
                         if self.peek() == Some(&Token::Comma) {
                             self.advance();
+                            // A trailing comma before the closer is allowed.
+                            if self.peek() == Some(&Token::RBracket) { break; }
                         } else {
                             break;
                         }
@@ -2268,6 +2298,8 @@ impl Parser {
                         entries.push((key, value));
                         if self.peek() == Some(&Token::Comma) {
                             self.advance();
+                            // A trailing comma before the closer is allowed.
+                            if self.peek() == Some(&Token::RBrace) { break; }
                         } else {
                             break;
                         }
@@ -2394,7 +2426,11 @@ impl Parser {
                 if self.peek() != Some(&Token::RParen) {
                     loop {
                         args.push(self.parse_expression()?);
-                        if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                        if self.peek() == Some(&Token::Comma) {
+                            self.advance();
+                            // A trailing comma before the closer is allowed.
+                            if self.peek() == Some(&Token::RParen) { break; }
+                        } else { break; }
                     }
                 }
                 self.consume(Token::RParen)?;
@@ -2422,7 +2458,11 @@ impl Parser {
                     if self.peek() != Some(&Token::RParen) {
                         loop {
                             args.push(self.parse_expression()?);
-                            if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                            if self.peek() == Some(&Token::Comma) {
+                                self.advance();
+                                // A trailing comma before the closer is allowed.
+                                if self.peek() == Some(&Token::RParen) { break; }
+                            } else { break; }
                         }
                     }
                     self.consume(Token::RParen)?;
@@ -2530,6 +2570,8 @@ impl Parser {
                                     args.push(self.parse_expression()?);
                                     if self.peek() == Some(&Token::Comma) {
                                         self.advance();
+                                        // A trailing comma before the closer is allowed.
+                                        if self.peek() == Some(&Token::RParen) { break; }
                                     } else {
                                         break;
                                     }
@@ -2577,6 +2619,8 @@ impl Parser {
                                     args.push(self.parse_expression()?);
                                     if self.peek() == Some(&Token::Comma) {
                                         self.advance();
+                                        // A trailing comma before the closer is allowed.
+                                        if self.peek() == Some(&Token::RParen) { break; }
                                     } else {
                                         break;
                                     }
@@ -2633,7 +2677,11 @@ impl Parser {
                         if self.peek() != Some(&Token::RParen) {
                             loop {
                                 args.push(self.parse_expression()?);
-                                if self.peek() == Some(&Token::Comma) { self.advance(); } else { break; }
+                                if self.peek() == Some(&Token::Comma) {
+                                    self.advance();
+                                    // A trailing comma before the closer is allowed.
+                                    if self.peek() == Some(&Token::RParen) { break; }
+                                } else { break; }
                             }
                         }
                         self.consume(Token::RParen)?;
@@ -2682,6 +2730,8 @@ impl Parser {
                                 fields.push((field_name, value));
                                 if self.peek() == Some(&Token::Comma) {
                                     self.advance();
+                                    // A trailing comma before the closer is allowed.
+                                    if self.peek() == Some(&Token::RBrace) { break; }
                                 } else {
                                     break;
                                 }
@@ -2709,6 +2759,8 @@ impl Parser {
                                     args.push(self.parse_expression()?);
                                     if self.peek() == Some(&Token::Comma) {
                                         self.advance();
+                                        // A trailing comma before the closer is allowed.
+                                        if self.peek() == Some(&Token::RParen) { break; }
                                     } else {
                                         break;
                                     }
