@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-07-14 · Version 1.0.0 · 1144 Compiler-Tests grün
+> Stand: 2026-08-25 · Version 1.0.0 · 1197 Compiler-Tests (default) / 1348 (`--features full`) · Golden 31/31 · Builtin-Abdeckung 97,9 %
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -268,6 +268,107 @@ Systematisches Abklopfen von Sprache/Codegen/Tooling durch echtes Kompilieren (~
    ~27 `to_string`/223 Zeilen im typischen Datenpfad. (Voll erst mit #1 sauber.)
 5. **LSP-Härtung** — Typfehler als `WARNING` statt `ERROR`, statische Completion,
    Textscan-Go-to-Definition, kein Rename, Formatter nicht angebunden.
+
+## Audit 2026-08-25 — Blindprobe mit frischen Programmen (Stufe 13)
+
+**Methode:** 43 kleine Programme, die der Compiler noch nie gesehen hatte, quer über die
+dokumentierten Sprachfeatures — nicht aus der Testsuite abgeleitet, sondern aus REFERENCE.md und
+VARG_AGENT_GUIDE.md. Ausgangslage vorher: 1194 Unit-Tests grün, Golden 19/19 grün, 11 Beispiele
+bauen. **Trefferquote der Blindprobe: 14/20 im ersten Durchgang** — die grüne Suite hat den
+Zustand deutlich zu gut dargestellt.
+
+### Gefunden und behoben
+
+| # | Defekt | Klasse | Warum die Suite es nicht sah |
+|---|--------|--------|------------------------------|
+| **A1** | `abs(-5.0)` ergab **-5**. `abs(x)` lowert zu `x.abs()`; ohne Klammern liest Rust `-5.0.abs()` als `-(5.0.abs())`. Auch `abs(3 - 10)` war betroffen. | **stiller Rechenfehler** | Der einzige Unittest asserted `x.abs()` — also genau die kaputte Form, nur mit einem Operanden, bei dem sie zufällig stimmt. Kein Golden-Programm rief `abs` auf. |
+| **A2** | **Agent-Messaging war ein No-op.** Der Dispatcher routete nur Nachrichten, die exakt so heißen wie eine Methode; das dokumentierte `send("process", x)` → `on_message("process", x)` fiel in `_ => "unknown"`. Nachricht weg, kein Fehler, Exit 0. | **stiller No-op** | Kein Test und kein Golden-Programm sendet je eine Nachricht. `examples/chat_agent.varg` — das Vorzeigebeispiel für den Actor-Teil — baute sauber und gab nur „Starting…"/„shutdown complete" aus. |
+| **A3** | **`on_start`/`on_stop` wurden nie aufgerufen** — weder für den Entry-Agenten noch für gespawnte. In `on_start` initialisierte Felder blieben null. | **stiller No-op** | dito |
+| **A4** | Nachrichten-Payload: ein Array-Argument wurde `format!("{}", vec![…])` — kompiliert gar nicht; die dokumentierte Signatur `on_message(string, string[])` war damit unerreichbar. | Compile-Fehler | dito |
+| **A5** | `parse_int` / `parse_float` lowerten zu `.unwrap_or(0)` — jede kaputte Eingabe wurde **stumm zu 0** und floss als echte Zahl weiter. Gleichzeitig war das dokumentierte `parse_int(x) or 0` nicht kompilierbar (kein Result). | **stiller Falschwert** | Beide Richtungen ungetestet. |
+| **A6** | Datentragende Enums waren **matchbar, aber nicht konstruierbar**: `Shape.Circle(5)` landete wörtlich im Rust-Output. | Compile-Fehler | Golden nutzt nur feldlose Enums. |
+| **A7** | `.find((n) => n > 10)` kompilierte nie (Prädikat bekommt eine Referenz) und hätte die Kollektion verbraucht. | Compile-Fehler | `find` in keinem Golden-Programm. |
+| **A8** | Type-Aliase wurden registriert, aber nie aufgelöst — `type Id = int; Id u = 21;` war ein Typfehler. Ein Alias war faktisch ein unbewohnbarer Nominaltyp. | Compile-Fehler | Der Test prüfte nur die Registrierung, nie die Benutzung. |
+
+Zusätzlich gehärtet: `send` auf eine geschlossene Mailbox meldet jetzt auf stderr statt den
+Sender per `unwrap()` mitzureißen; ein Agent ohne `on_message` warnt bei unroutbarer Nachricht,
+statt sie spurlos zu schlucken; kurze Nachrichten panicken den Agent-Thread nicht mehr
+(`args.get(i)` statt `args[i]`).
+
+**Bewusste Breaking Change:** `parse_int`/`parse_float` liefern jetzt `Result`. `parse_int(s) + 1`
+braucht ein `or`/`?`. Das ist der Preis dafür, dass eine kaputte Eingabe nicht mehr als 0 durchgeht;
+REFERENCE.md und VARG_AGENT_GUIDE.md sind angeglichen.
+
+### Golden-Netz erweitert: 19 → 22 Programme
+`actor_messaging` (spawn/send/request/on_message/Lifecycle), `numeric_precision` (Präzedenz +
+Fallibilität der numerischen Builtins), `enum_construct` (datentragende Enums, `find`, Type-Alias).
+Das ist der Punkt: A1–A8 haben 1194 Unit-Tests überlebt, weil die Suite prüft, *dass* Rust erzeugt
+wird, und selten, *was das Programm ausrechnet*. Jeder Fix hier ist deshalb mit einem
+Laufzeit-Ergebnis abgesichert, nicht mit einem Codegen-String.
+
+### Stand danach
+1196 Unit-Tests (default) / 1348 (`--features full`), 0 Failures · Golden 22/22 · 11 Beispiele bauen
+· Blindprobe 40/43, die 3 Ablehnungen sind gewollt (OCAP-Gate + unbehandelte Results).
+
+### Weiterhin offen (nicht in diesem Durchgang angefasst)
+Der Typechecker fängt **User-Method-Arity, Methoden-Existenz und Argumenttypen nicht** —
+`add(1)` bei `fn add(int,int)`, `p.nonexistent()`, `add("a","b")` gehen alle erst bei rustc
+hoch. Der Source-Map-Fix macht die Meldung brauchbar (zeigt auf das .varg-Konstrukt), aber es
+bleibt ein rustc-Fehler in Rust-Begriffen. Das ist die größte verbleibende Lücke für die
+Benutzbarkeit durch Dritte.
+
+---
+
+## Golden-Abdeckung 29 % → 97,9 % (Stufe 14)
+
+**Ausgangspunkt:** Stufe 13 hatte gemessen, dass nur **27 von 94 Builtins** je von einem laufenden
+Programm aufgerufen werden. Genau dort saßen alle acht Defekte jener Runde. Diese Stufe schließt
+die Lücke.
+
+**Ergebnis:** **92 von 94 (97,9 %)** in der ausgeführten und gediffte Golden-Suite. Die beiden
+Ausnahmen — `fetch` und `http_download_base64` — brauchen Netz und sind bewusst ausgenommen; von
+allem offline Prüfbaren sind es **100 %**. Golden-Programme: 22 → **31**.
+
+### Design: selbstprüfende Programme statt Wertedumps
+Jede Zeile druckt `OK <name>` oder `FAIL <name>: got … want …`. Ein falsches Ergebnis steht damit
+als `FAIL` in der Ausgabe, statt als scheinbar plausibler Wert in die Erwartungsdatei eingebacken
+zu werden. Das ist der Unterschied, der zählt: `--update` auf einem kaputten Compiler hätte den
+Fehler sonst zur Norm erklärt. Nicht-deterministische Builtins (`random_*`, `uuid`, `timestamp`,
+`time_millis`) werden über ihren **Vertrag** geprüft (Wertebereich, Länge, Eindeutigkeit,
+Monotonie), nicht über den Wert — die Golden-Ausgabe bleibt dadurch stabil.
+
+### Dabei gefunden und behoben
+
+| # | Defekt | Klasse |
+|---|--------|--------|
+| **C1** | **`uuid()`, `random_int()`, `random_float()` waren nie kompilierbar.** Ihr Codegen emittiert `use rand::Rng;`, aber `vargc` hat die Crate nie in die generierte `Cargo.toml` geschrieben → `unresolved import` bei jedem Programm, das sie benutzt. Jetzt auto-injiziert wie chrono. | Compile-Fehler, 100 % der Aufrufer |
+| **C2** | **Die gesamte Tensor-API war aus Varg unerreichbar.** `tensor_from_list` verlangte `&[f32]`, Varg-Float-Literale sind `f64` — der dokumentierte Konstruktor ließ sich nicht aufrufen. Derselbe Fehler wie bei den Embeddings in Stufe 10, dort gefixt, hier nicht. Jetzt über das gemeinsame `ToF32Vec`. | Compile-Fehler |
+| **C3** | **Typ-Drift an der Tensor-Grenze:** Runtime lieferte `f32`, die Signatur-Tabelle behauptet `Float` (= f64). `tensor_mul_scalar(t, 2.0)` kompilierte nicht, und kein Reduktionsergebnis ließ sich mit einem anderen Varg-Float verrechnen. Grenze auf f64 vereinheitlicht (ndarray bleibt intern f32). | Compile-Fehler + latente Drift |
+| **C4** | **Leere Array-Literale waren unbenutzbar** — auch mit deklariertem Typ. `int[] xs = [];` verwarf den Elementtyp und emittierte ein nacktes `vec![]`, das rustc nicht auflösen kann. Der `Array`-Arm fehlte neben dem `List`-Arm in der Typannotation. | Compile-Fehler |
+
+### Doku-Korrekturen (Signatur stimmte nicht mit der Implementierung überein)
+- `event_count(bus, "name")` → `event_count(bus)`: zählt **alle** Events des Bus, nicht pro Name.
+- `registry_open("packages.json")` → nimmt ein **Cache-Verzeichnis**, keine Datei; der Zustand
+  landet in `<dir>/installed.json`.
+- `abs(-5)`-Beispiel um den Ausdrucksfall ergänzt (nach dem Präzedenz-Fix aus Stufe 13).
+
+### Bekannte Sprachlücke (nicht behoben, umgangen)
+Escapte Anführungszeichen in Interpolation sind nicht parsbar: `$"{f(\"x\")}"` bricht ab. Ein
+String-Literal als Argument innerhalb einer Interpolation ist damit unmöglich — man muss den Wert
+vorher an eine Variable binden. Betrifft nur die Schreibweise, nicht die Semantik.
+
+### Die Abdeckung ist jetzt eine Ratsche, kein Schnappschuss
+`varg-ast/src/builtins.rs::golden_programs_exercise_at_least_95_percent_of_builtins` liest
+`golden/progs/*.varg`, zählt die tatsächlichen Aufrufstellen und bricht unter 95 % mit Nennung der
+unabgedeckten Namen. Ein neues Builtin muss also mit einem Golden-Programm ankommen, das es
+**ausführt und das Ergebnis prüft**. Negativ verifiziert: entfernt man ein Golden-Programm, fällt
+der Test mit „coverage fell to 94.6% … Uncovered: [tensor_sum, …]".
+
+### Stand danach
+1197 Unit-Tests (default) / 1348 (`--features full`), 0 Failures · Golden **31/31**, drei Läufe
+stabil · alle 12 Feature-Isolationen kompilieren · 11 Beispiele bauen.
+
+---
 
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 

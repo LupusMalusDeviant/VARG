@@ -885,10 +885,21 @@ var found = regex_find_all("\\w+", text)?;          // Result<string[], string>
 var replaced = regex_replace("\\s+", text, " ")?;   // Result<string, string>
 ```
 
+### Parsing
+
+`parse_int` / `parse_float` are fallible and return a `Result` — a malformed input is an
+error, not a silent `0`. Handle it with `or`, or propagate it with `?`:
+
+```csharp
+var n = parse_int(input) or 0;      // explicit fallback
+var f = parse_float(raw) or 0.0;
+var m = parse_int(input)?;          // propagate to the caller
+```
+
 ### Math
 
 ```csharp
-var a = abs(-5);          // 5
+var a = abs(-5);          // 5   (also correct over expressions: abs(3 - 10) → 7)
 var s = sqrt(16.0);       // 4.0
 var f = floor(3.7);       // 3.0
 var c = ceil(3.2);        // 4.0
@@ -1048,7 +1059,8 @@ var n = workflow_step_count(wf);              // int
 ### Package Registry
 
 ```csharp
-var reg = registry_open("packages.json");    // RegistryHandle
+var reg = registry_open("./varg_packages");   // RegistryHandle — a cache DIRECTORY,
+                                             // not a file; state lands in <dir>/installed.json
 registry_install(reg, "varg-http", "1.2.0"); // bool
 registry_uninstall(reg, "varg-http");        // bool
 var installed = registry_is_installed(reg, "varg-http"); // bool

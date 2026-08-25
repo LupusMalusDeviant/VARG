@@ -1480,8 +1480,8 @@ s.reverse()
 s.repeat(3)
 s.len()
 s.is_empty()
-parse_int(s)          // → int
-parse_float(s)        // → float
+parse_int(s)          // → Result<int, string>   — handle with `or` / `?`
+parse_float(s)        // → Result<float, string> — handle with `or` / `?`
 ```
 
 ### Math
@@ -1821,7 +1821,7 @@ event_on(bus, "user_joined", (data) => {
     return "ok";
 });
 event_emit(bus, "user_joined", {"name": "Alice"});
-var count = event_count(bus, "user_joined");
+var count = event_count(bus);   // total events on the bus, not per name
 
 // Pipeline (sequential transforms)
 var pipe = pipeline_new("data_pipe");
