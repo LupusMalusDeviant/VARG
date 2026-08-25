@@ -60,6 +60,9 @@ pub enum TypeError {
     InvalidCast { from: String, to: String },
     AwaitOnNonAsync { method_name: String },
     MissingAwait { method_name: String },
+    UnannotatedLambdaParam { param_name: String },
+    ValueFromInPlaceMutation { method_name: String },
+    DivisionByZeroLiteral,
     FieldTypeMismatch { type_name: String, field_name: String, expected: String, found: String },
     // Plan 29: Contract Enforcement
     MissingContractMethod { agent_name: String, contract_name: String, method_name: String },
@@ -132,6 +135,21 @@ impl TypeError {
             }
             TypeError::AwaitOnNonAsync { method_name } => {
                 format!("`{}` is not async, so there is nothing to await", method_name)
+            }
+            TypeError::ValueFromInPlaceMutation { method_name } => {
+                format!(
+                    "`{}` changes the collection in place and returns nothing — call it as a statement (`xs.{}();`) and keep using `xs`",
+                    method_name, method_name
+                )
+            }
+            TypeError::DivisionByZeroLiteral => {
+                "division by the literal zero".to_string()
+            }
+            TypeError::UnannotatedLambdaParam { param_name } => {
+                format!(
+                    "lambda parameter `{}` needs a type here: a lambda stored in a variable has nothing to infer from. Write the type (e.g. `(int {}) => ...`), or pass the lambda straight to the call that consumes it",
+                    param_name, param_name
+                )
             }
             TypeError::MissingAwait { method_name } => {
                 format!(
@@ -229,6 +247,8 @@ impl TypeError {
             TypeError::ContractSignatureMismatch { method_name, .. } => Some(method_name.as_str()),
             TypeError::AwaitOnNonAsync { method_name } => Some(method_name.as_str()),
             TypeError::MissingAwait { method_name } => Some(method_name.as_str()),
+            TypeError::UnannotatedLambdaParam { param_name } => Some(param_name.as_str()),
+            TypeError::ValueFromInPlaceMutation { method_name } => Some(method_name.as_str()),
             TypeError::AssignToConst { name } => Some(name.as_str()),
             TypeError::FieldTypeMismatch { field_name, .. } => Some(field_name.as_str()),
             TypeError::WrongArgumentCount { callee, .. } => Some(callee.as_str()),
@@ -1090,6 +1110,32 @@ impl TypeChecker {
                             });
                         }
                     }
+                    // `xs.sort()` sorts in place and evaluates to nothing; binding that gave rustc
+                    // "no method named `__varg_fmt` found for unit type". Name the mistake instead.
+                    if let Expression::MethodCall { method_name, caller, .. } = value {
+                        const IN_PLACE: &[&str] = &["sort", "push"];
+                        let is_user_method = matches!(&**caller, Expression::Identifier(_))
+                            && self.lookup_is_async(method_name).is_some();
+                        if IN_PLACE.contains(&method_name.as_str()) && !is_user_method {
+                            return Err(TypeError::ValueFromInPlaceMutation {
+                                method_name: method_name.clone(),
+                            });
+                        }
+                    }
+                    // A lambda passed straight to `.filter(...)` gets its parameter type from the
+                    // collection. One bound to a variable has no such context, and the generated
+                    // closure left rustc with "type annotations needed". Ask for the annotation
+                    // here instead, where the message can point at the parameter.
+                    if let Expression::Lambda { params, .. } = value {
+                        if let Some(p) = params
+                            .iter()
+                            .find(|p| matches!(&p.ty, TypeNode::Custom(n) if n == "Dynamic"))
+                        {
+                            return Err(TypeError::UnannotatedLambdaParam {
+                                param_name: p.name.clone(),
+                            });
+                        }
+                    }
                     let val_type = self.infer_expression_type(value)?;
                     if let Some(expected_ty) = ty {
                         if !self.types_match(expected_ty, &val_type) {
@@ -1694,6 +1740,22 @@ impl TypeChecker {
             Expression::BinaryOp { left, operator, right } => {
                 let left_ty = self.infer_expression_type(left)?;
                 let right_ty = self.infer_expression_type(right)?;
+                // An unhandled Result in an operand is a forgotten `?`/`or`, exactly as in `print`
+                // and interpolation. `parse_int("17") + 1` reached rustc as "cannot add {integer}
+                // to Result<i64, String>".
+                for ty in [&left_ty, &right_ty] {
+                    if matches!(ty, TypeNode::Result(_, _)) {
+                        return Err(TypeError::TypeMismatch {
+                            expected: "a plain value — handle the Result with `?` or `or`".to_string(),
+                            found: format!("{:?}", ty),
+                        });
+                    }
+                }
+                if matches!(operator, BinaryOperator::Div | BinaryOperator::Mod)
+                    && matches!(right.as_ref(), Expression::Int(0))
+                {
+                    return Err(TypeError::DivisionByZeroLiteral);
+                }
                 match operator {
                     BinaryOperator::Eq | BinaryOperator::NotEq |
                     BinaryOperator::Lt | BinaryOperator::Gt |
@@ -3246,7 +3308,17 @@ impl TypeChecker {
                     }
                     // Plan 33: Check known standalone functions first
                     if let Some(sig) = self.known_functions.get(method_name).cloned() {
-                        self.check_call_signature(method_name, &sig.args, &sig.type_params, args)?;
+                        // `5 |> inc` parses as a call on the piped value, which becomes the
+                        // function's first argument — so the caller counts as one. Without this
+                        // the arity check saw zero arguments and rejected every pipeline.
+                        let piped = !matches!(&**caller, Expression::Identifier(n) if n == "self");
+                        if piped {
+                            let mut effective = vec![(**caller).clone()];
+                            effective.extend(args.iter().cloned());
+                            self.check_call_signature(method_name, &sig.args, &sig.type_params, &effective)?;
+                        } else {
+                            self.check_call_signature(method_name, &sig.args, &sig.type_params, args)?;
+                        }
                         return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
                     }
                     // Closure variable invocation: var f = (x) => x*2; f(3)
@@ -3492,15 +3564,18 @@ impl TypeChecker {
                 for param in params {
                     self.env.insert(param.name.clone(), param.ty.clone());
                 }
-                match body.as_ref() {
-                    LambdaBody::Expression(expr) => {
-                        let _body_ty = self.infer_expression_type(expr)?;
-                    },
-                    LambdaBody::Block(block) => {
-                        self.check_block(block)?;
-                    },
-                }
+                // A `return` inside a lambda body returns from the *lambda*, not from the method
+                // that contains it. Without clearing this, `(int x) => { return x * 3; }` written
+                // inside a void method was read as that method returning a value. The lambda's own
+                // return type is not enforced here (it is usually inferred, not written).
+                let saved_return_ty = self.current_return_ty.take();
+                let result = match body.as_ref() {
+                    LambdaBody::Expression(expr) => self.infer_expression_type(expr).map(|_| ()),
+                    LambdaBody::Block(block) => self.check_block(block),
+                };
+                self.current_return_ty = saved_return_ty;
                 self.env = saved_env;
+                result?;
                 // Infer Func type from params and return type
                 let param_types: Vec<TypeNode> = params.iter().map(|p| p.ty.clone()).collect();
                 let ret = return_ty.as_ref().map(|t| *t.clone()).unwrap_or(TypeNode::Void);
@@ -10988,6 +11063,90 @@ mod tests {
         assert_rejected(
             "enum C { Red, Green, Blue }\nagent M { public void Run() { var c = C.Red; match c { Red => { print 1; } Green => { print 2; } } } }",
             "non-exhaustive",
+        );
+    }
+
+
+    // ===== Round three: what the probes over syntax and the remaining leaks turned up =====
+
+    /// `5 |> inc` parses as a call on the piped value, which becomes the first argument. The
+    /// arity check counted only the explicit arguments and so rejected every pipeline.
+    #[test]
+    fn a_piped_value_counts_as_the_first_argument() {
+        assert_accepted(
+            "fn inc(int x) -> int { return x + 1; }\nfn dbl(int x) -> int { return x * 2; }\nagent M { public void Run() { print 5 |> inc |> dbl; } }",
+        );
+        // A pipeline that really is short by an argument is still caught.
+        assert_rejected(
+            "fn add(int a, int b) -> int { return a + b; }\nagent M { public void Run() { print 5 |> add; } }",
+            "takes 2 argument(s)",
+        );
+    }
+
+    /// A `return` inside a lambda returns from the lambda, not from the method around it. Without
+    /// that distinction, a lambda with a block body written inside a void method was read as that
+    /// method returning a value.
+    #[test]
+    fn a_return_inside_a_lambda_belongs_to_the_lambda() {
+        assert_accepted(
+            "agent M { public void Run() { var f = (int x) => { return x * 3; }; print f(3); } }",
+        );
+    }
+
+    /// A lambda handed straight to a call gets its parameter type from that call. One bound to a
+    /// variable has no such context, and the generated closure left rustc asking for annotations.
+    #[test]
+    fn a_lambda_in_a_variable_needs_its_parameter_typed() {
+        assert_rejected(
+            "agent M { public void Run() { var f = (x) => x * 2; print f(2); } }",
+            "needs a type here",
+        );
+        assert_accepted("agent M { public void Run() { var f = (int x) => x * 2; print f(2); } }");
+        // Untyped is still fine where the collection supplies the type.
+        assert_accepted("agent M { public void Run() { var xs = [1, 2, 3]; print xs.filter((n) => n > 1).len(); } }");
+    }
+
+    /// `xs.sort()` sorts in place and evaluates to nothing; binding it gave rustc "no method
+    /// named `__varg_fmt` found for unit type".
+    #[test]
+    fn the_result_of_an_in_place_mutation_cannot_be_bound() {
+        assert_rejected(
+            "agent M { public void Run() { var n = [3, 1, 2]; var s = n.sort(); print s; } }",
+            "in place and returns nothing",
+        );
+        // As a statement it is the normal way to sort, and the collection stays usable.
+        assert_accepted(
+            "agent M { public void Run() { var n = [3, 1, 2]; n.sort(); print n.len(); } }",
+        );
+    }
+
+    /// An unhandled Result in an operand is a forgotten `?`/`or`, exactly as in `print` and
+    /// interpolation, and used to reach rustc as "cannot add {integer} to Result".
+    #[test]
+    fn arithmetic_on_an_unhandled_result_is_rejected() {
+        assert_rejected(
+            "agent M { public void Run() { print parse_int(\"17\") + 1; } }",
+            "handle the Result",
+        );
+        assert_accepted("agent M { public void Run() { var n = parse_int(\"17\") or 0; print n + 1; } }");
+    }
+
+    #[test]
+    fn division_by_a_literal_zero_is_rejected() {
+        assert_rejected("agent M { public void Run() { print 10 / 0; } }", "literal zero");
+        assert_rejected("agent M { public void Run() { print 10 % 0; } }", "literal zero");
+        assert_accepted("agent M { public void Run() { print 10 / 2; } }");
+    }
+
+    /// Nullable and contract parameters are adapted at the call site (Option and Box); passing a
+    /// plain value to either used to be a Rust type error against generated code.
+    #[test]
+    fn nullable_and_contract_parameters_accept_plain_values() {
+        assert_accepted(
+            "fn describe(string? name) -> string { return \"got\"; }\nagent M { public void Run() { print describe(\"ada\"); print describe(null); } }",
+        );
+        assert_accepted(
+            "contract IS { int area(); }\nagent S implements IS { public int area() { return 4; } }\nfn area_of(IS s) -> int { return s.area(); }\nagent M { public void Run() { print area_of(S()); } }",
         );
     }
 

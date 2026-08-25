@@ -1,0 +1,83 @@
+/// Lexer and parser surface, checked by running it.
+///
+/// The semantic rounds never touched syntax, so this is the first time the literal forms,
+/// separators and precedence are pinned by an executed program. Three things here did not work
+/// before: hex/binary/underscored numbers, exponent floats, and trailing commas.
+enum Colour {
+    Red,
+    Rgb(int r, int g, int b),
+}
+
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+
+fn add(int a, int b,) -> int { return a + b; }
+
+fn inc(int x) -> int { return x + 1; }
+fn dbl(int x) -> int { return x * 2; }
+
+agent Main {
+    public void Run() {
+        // ── number literals ──────────────────────────────────────────────
+        print check("hex", $"{0xFF}", "255");
+        print check("hex_lower", $"{0xff}", "255");
+        print check("binary", $"{0b1010}", "10");
+        print check("underscores", $"{1_000_000}", "1000000");
+        print check("float_exp", $"{1.5e3}", "1500");
+        print check("float_exp_neg", $"{2E-4}", "0.0002");
+        print check("float_underscore", $"{1_000.5}", "1000.5");
+        print check("plain_float", $"{3.14}", "3.14");
+
+        // ── trailing commas ──────────────────────────────────────────────
+        var xs = [1, 2, 3,];
+        var m = {"a": 1, "b": 2,};
+        print check("trailing_array", $"{xs.len()}", "3");
+        print check("trailing_map", $"{m.len()}", "2");
+        print check("trailing_call", $"{add(1, 2,)}", "3");
+        var c = Colour.Rgb(1, 2, 3,);
+        match c {
+            Red => { print check("trailing_enum", "red", "rgb"); }
+            Rgb(r, g, b) => { print check("trailing_enum", $"{r + g + b}", "6"); }
+        }
+
+        // ── escapes and interpolation ────────────────────────────────────
+        print check("escape_tab", "a\tb".len() as string, "3");
+        print check("escape_quote", "say \"hi\"", "say " + "\"hi\"");
+        print check("escape_backslash", "a\b".len() as string, "3");
+        var name = "varg";
+        print check("interp_call", $"{name.to_upper()}", "VARG");
+        print check("interp_nested_literal", $"{name.replace("a", "A")}", "vArg");
+        print check("interp_repeat", $"{name}-{name}", "varg-varg");
+        print check("brace_literal", "{ literal }", "{ literal }");
+
+        var multi = """one
+two""";
+        print check("multiline", $"{multi.lines().len()}", "2");
+
+        // ── operators and precedence ─────────────────────────────────────
+        print check("precedence_mul", $"{1 + 2 * 3}", "7");
+        print check("precedence_paren", $"{(1 + 2) * 3}", "9");
+        print check("left_assoc", $"{10 - 2 - 3}", "5");
+        print check("modulo", $"{10 % 4}", "2");
+        print check("unary_minus", $"{-2 + 3}", "1");
+        print check("unary_not", $"{!(1 > 2)}", "true");
+        print check("pipe_chain", $"{5 |> inc |> dbl |> inc}", "13");
+
+        // ── compound assignment and ranges ───────────────────────────────
+        var acc = 10;
+        acc += 5;
+        acc -= 3;
+        acc *= 2;
+        acc /= 4;
+        print check("compound_assign", $"{acc}", "6");
+
+        var ex = 0;
+        for i in 0..3 { ex += i; }
+        print check("range_exclusive", $"{ex}", "3");
+        var inc_total = 0;
+        for i in 0..=3 { inc_total += i; }
+        print check("range_inclusive", $"{inc_total}", "6");
+    }
+}
