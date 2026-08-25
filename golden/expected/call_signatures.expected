@@ -1,0 +1,9 @@
+OK   defaults_none
+OK   defaults_one
+OK   defaults_all
+OK   contract_param
+OK   generic_param
+OK   method_default
+OK   method_explicit
+OK   capability_arg
+OK   lambda_arg

@@ -59,6 +59,15 @@ pub enum TypeError {
     // Wave 39: Agent graph validation
     AgentSpawnUnknown { spawner: String, target: String },
     AgentGraphCycle { cycle: Vec<String> },
+    // Call-site checking of user-defined functions and methods
+    WrongArgumentCount { callee: String, expected: String, found: usize },
+    ArgumentTypeMismatch {
+        callee: String,
+        position: usize,
+        param_name: String,
+        expected: String,
+        found: String,
+    },
 }
 
 impl TypeError {
@@ -122,6 +131,18 @@ impl TypeError {
             TypeError::AgentGraphCycle { cycle } => {
                 format!("agent spawn cycle detected: {} → {}", cycle.join(" → "), cycle[0])
             }
+            TypeError::WrongArgumentCount { callee, expected, found } => {
+                format!(
+                    "`{}` takes {} argument(s), but {} were given",
+                    callee, expected, found
+                )
+            }
+            TypeError::ArgumentTypeMismatch { callee, position, param_name, expected, found } => {
+                format!(
+                    "argument {} of `{}` (`{}`) expects `{}`, found `{}`",
+                    position, callee, param_name, expected, found
+                )
+            }
         }
     }
 
@@ -138,6 +159,8 @@ impl TypeError {
             TypeError::TraitBoundViolation { type_name, .. } => Some(type_name),
             TypeError::AgentSpawnUnknown { target, .. } => Some(target),
             TypeError::AgentGraphCycle { .. } => None,
+            TypeError::WrongArgumentCount { callee, .. } => Some(callee.as_str()),
+            TypeError::ArgumentTypeMismatch { callee, .. } => Some(callee.as_str()),
             _ => None,
         }
     }
@@ -221,8 +244,13 @@ pub struct TypeChecker {
 #[derive(Debug, Clone)]
 struct MethodSignature {
     return_ty: Option<TypeNode>,
-    #[allow(dead_code)]
+    /// Declared parameters. Used to check arity and argument types at the call site — they were
+    /// collected but never read, so `add(1)` against `fn add(int, int)` only failed once rustc
+    /// saw the generated code.
     args: Vec<FieldDecl>,
+    /// The callee's own generic parameters (`fn max<T>(T a, T b)`). A parameter whose declared
+    /// type names one of these is not checked against the argument: `T` is whatever was passed.
+    type_params: Vec<String>,
 }
 
 impl Default for TypeChecker {
@@ -394,8 +422,27 @@ impl TypeChecker {
             "fts_open", "fts_add", "fts_commit", "fts_search", "fts_delete", "fts_close",
             "rag_hybrid_search",
         ];
-        candidates.extend(builtins.iter());
-        let suggestions = suggest_similar(method_name, &candidates);
+        // The receiver here is always a user-declared struct, agent or contract, so its own
+        // members are the likely intent and most builtins cannot apply to it at all. Mixing the
+        // ~250 builtin names in answered a typo'd struct method with "did you mean `pop`?" — a
+        // collection builtin the type does not have. Offer the type's own methods; fall back to
+        // builtins only when none is close, and then only on an exact-adjacent match, which is
+        // the case where someone really did mean a builtin (`lenght` → `len`).
+        let own_suggestions = suggest_similar(method_name, &candidates);
+        let suggestions = if own_suggestions.is_empty() {
+            // Fall back to builtins only for names that start with the same letter. Edit distance
+            // alone is too coarse here: `lenght` → `length` and `nope` → `pop` are both distance
+            // 2, but only the first is a plausible typo. The shared initial separates them.
+            let initial = method_name.chars().next();
+            let near: Vec<&str> = builtins
+                .iter()
+                .copied()
+                .filter(|b| b.chars().next() == initial)
+                .collect();
+            suggest_similar(method_name, &near)
+        } else {
+            own_suggestions
+        };
         TypeError::UnknownMethod { type_name: type_name.to_string(), method_name: method_name.to_string(), suggestions }
     }
 
@@ -652,6 +699,7 @@ impl TypeChecker {
                     methods.insert(method.name.clone(), MethodSignature {
                         return_ty: method.return_ty.clone(),
                         args: method.args.clone(),
+                        type_params: method.type_params.clone(),
                     });
                     if !method.constraints.is_empty() {
                         constraints_map.insert(method.name.clone(), (method.type_params.clone(), method.constraints.clone()));
@@ -738,6 +786,7 @@ impl TypeChecker {
                 self.known_functions.insert(f.name.clone(), MethodSignature {
                     return_ty: f.return_ty.clone(),
                     args: f.params.clone(),
+                    type_params: f.type_params.clone(),
                 });
                 self.env.clear();
                 self.available_capabilities.clear();
@@ -783,6 +832,7 @@ impl TypeChecker {
                     method_sigs.insert(method.name.clone(), MethodSignature {
                         return_ty: method.return_ty.clone(),
                         args: method.args.clone(),
+                        type_params: method.type_params.clone(),
                     });
                 }
                 self.method_signatures.insert(type_name.clone(), method_sigs);
@@ -1534,9 +1584,12 @@ impl TypeChecker {
                         .map_or(false, |(_, cs)| !cs.is_empty());
                     if !has_bounds {
                         if let Some(sig) = self.method_signatures.get(&tn).and_then(|m| m.get(method_name)).cloned() {
-                            // Resolve to the user method's return type. Arity/default-param checking
-                            // is left to the general path (methods may have default params, so a
-                            // strict len comparison here would reject valid shorter calls).
+                            // This branch returns, so the general resolution path below never sees
+                            // the call — the arity and argument types have to be checked here or
+                            // not at all, which is why `h.combine(1)` on a two-parameter method
+                            // used to reach rustc. `check_call_signature` honours default
+                            // parameters, so a shorter-but-valid call is still accepted.
+                            self.check_call_signature(method_name, &sig.args, &sig.type_params, args)?;
                             return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
                         }
                     }
@@ -2914,7 +2967,8 @@ impl TypeChecker {
                         }
                     }
                     // Plan 33: Check known standalone functions first
-                    if let Some(sig) = self.known_functions.get(method_name) {
+                    if let Some(sig) = self.known_functions.get(method_name).cloned() {
+                        self.check_call_signature(method_name, &sig.args, &sig.type_params, args)?;
                         return Ok(sig.return_ty.clone().unwrap_or(TypeNode::Void));
                     }
                     // Closure variable invocation: var f = (x) => x*2; f(3)
@@ -2981,6 +3035,12 @@ impl TypeChecker {
                                     }
                                 }
                             }
+                            let sig_type_params = self.method_signatures
+                                .get(&type_name[..])
+                                .and_then(|m| m.get(&method_name[..]))
+                                .map(|sig| sig.type_params.clone())
+                                .unwrap_or_default();
+                            self.check_call_signature(method_name, &sig_args, &sig_type_params, args)?;
                             return Ok(ret_ty.unwrap_or(TypeNode::Void));
                         }
                         if has_type {
@@ -2995,6 +3055,16 @@ impl TypeChecker {
                                     return Ok(m.return_ty.clone().unwrap_or(TypeNode::Void));
                                 }
                             }
+                            return Err(self.unknown_method_error(type_name, method_name));
+                        }
+                        // A struct or agent that declares no methods at all still has a fully
+                        // known shape, so a call to something it does not have is a mistake — not
+                        // an opaque call into an external crate. Without this, only types with at
+                        // least one method were checked: `struct P { int x; }` with no impl block
+                        // accepted `p.anything()` and let rustc report it.
+                        if self.struct_fields.contains_key(&type_name[..])
+                            || self.agent_fields.contains_key(&type_name[..])
+                        {
                             return Err(self.unknown_method_error(type_name, method_name));
                         }
                     }
@@ -3347,6 +3417,99 @@ impl TypeChecker {
         cur
     }
 
+    /// Check a call against a user-declared signature: argument count, then argument types.
+    ///
+    /// Until now nothing consulted the declared parameters of a user function or method, so
+    /// `add(1)` against `fn add(int a, int b)`, and `add("a", "b")` against the same, only failed
+    /// once rustc saw the generated Rust — reported in Rust's terms, about generated code the
+    /// author never wrote.
+    ///
+    /// Deliberately conservative: it must never reject a program that would have compiled, so
+    /// every position it cannot reason about precisely is skipped rather than guessed at.
+    fn check_call_signature(
+        &mut self,
+        callee: &str,
+        params: &[FieldDecl],
+        type_params: &[String],
+        args: &[Expression],
+    ) -> Result<(), TypeError> {
+        // Parameters carrying a default value may be omitted at the call site.
+        let required = params.iter().filter(|p| p.default_value.is_none()).count();
+        let total = params.len();
+        if args.len() < required || args.len() > total {
+            let expected = if required == total {
+                total.to_string()
+            } else {
+                format!("{}-{}", required, total)
+            };
+            return Err(TypeError::WrongArgumentCount {
+                callee: callee.to_string(),
+                expected,
+                found: args.len(),
+            });
+        }
+
+        for (idx, (param, arg)) in params.iter().zip(args.iter()).enumerate() {
+            if self.param_type_is_unconstrained(&param.ty, type_params) {
+                continue;
+            }
+            // A lambda's inferred type does not model its parameter list, so comparing it against
+            // a declared type would reject working code.
+            if matches!(arg, Expression::Lambda { .. }) {
+                continue;
+            }
+            // If the argument's own type cannot be inferred, there is nothing to compare against.
+            let Ok(actual) = self.infer_expression_type(arg) else { continue };
+            if self.arg_type_is_unconstrained(&actual) {
+                continue;
+            }
+            if !self.types_match(&param.ty, &actual) {
+                return Err(TypeError::ArgumentTypeMismatch {
+                    callee: callee.to_string(),
+                    position: idx + 1,
+                    param_name: param.name.clone(),
+                    expected: format!("{:?}", param.ty),
+                    found: format!("{:?}", actual),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// A declared parameter type that cannot be meaningfully compared to an argument: the
+    /// callee's own generic parameters (`fn max<T>(T a, T b)` accepts whatever T turns out to
+    /// be), type variables, and the opaque `Dynamic` placeholder.
+    fn param_type_is_unconstrained(&self, ty: &TypeNode, type_params: &[String]) -> bool {
+        match self.resolve_alias(ty) {
+            TypeNode::Custom(ref n) => {
+                type_params.iter().any(|tp| tp == n)
+                    || n == "Dynamic"
+                    // A single upper-case letter is the conventional spelling of a type parameter
+                    // and is never a declared struct/agent/contract in practice. Without this,
+                    // generic signatures whose params the parser did not record would be checked
+                    // against a type that does not exist.
+                    || (n.len() == 1
+                        && n.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+                        && !self.struct_fields.contains_key(n)
+                        && !self.agent_fields.contains_key(n)
+                        && !self.known_contracts.contains_key(n))
+            }
+            TypeNode::TypeVar(_) => true,
+            _ => false,
+        }
+    }
+
+    /// An inferred argument type that carries no information to check against.
+    fn arg_type_is_unconstrained(&self, ty: &TypeNode) -> bool {
+        match ty {
+            TypeNode::Custom(n) => n == "Dynamic",
+            TypeNode::TypeVar(_) => true,
+            // Void here means "could not work out what this is", not "returns nothing".
+            TypeNode::Void => true,
+            _ => false,
+        }
+    }
+
     fn types_match(&self, expected: &TypeNode, actual: &TypeNode) -> bool {
         if expected == actual {
             return true;
@@ -3404,6 +3567,21 @@ impl TypeChecker {
                     || **err1 == TypeNode::Error || **err2 == TypeNode::Error
                     || self.types_match(err1, err2);
                 ok_compat && err_compat
+            },
+            // A capability token has two spellings that mean the same thing: the declared
+            // parameter type `FileAccess cap` is Capability(FileAccess), while the value produced
+            // by `FileAccess {}` infers as Custom("FileAccess"). They must compare equal —
+            // otherwise passing a token to a method that asks for one looks like a type error.
+            (TypeNode::Capability(cap), TypeNode::Custom(name))
+            | (TypeNode::Custom(name), TypeNode::Capability(cap)) => {
+                let cap_name = match cap {
+                    CapabilityType::NetworkAccess => "NetworkAccess",
+                    CapabilityType::FileAccess => "FileAccess",
+                    CapabilityType::DbAccess => "DbAccess",
+                    CapabilityType::LlmAccess => "LlmAccess",
+                    CapabilityType::SystemAccess => "SystemAccess",
+                };
+                name == cap_name
             },
             (TypeNode::TypeVar(_), _) => {
                 // MVP Generic Substitution: A TypeVar (e.g. T) natively accepts the instanced type
@@ -7598,6 +7776,7 @@ mod tests {
         methods.insert("Calculate".to_string(), MethodSignature {
             return_ty: Some(TypeNode::Int),
             args: vec![],
+            type_params: vec![],
         });
         checker.method_signatures.insert("MathHelper".to_string(), methods);
         checker.env.insert("m".to_string(), TypeNode::Custom("MathHelper".to_string()));
@@ -8357,6 +8536,7 @@ mod tests {
         checker.known_functions.insert("helper".to_string(), MethodSignature {
             return_ty: Some(TypeNode::String),
             args: vec![FieldDecl { name: "x".to_string(), ty: TypeNode::String, default_value: None }],
+            type_params: vec![],
         });
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
@@ -9638,6 +9818,7 @@ mod tests {
         caller_methods.insert("run".to_string(), MethodSignature {
             return_ty: Some(TypeNode::Void),
             args: vec![FieldDecl { name: "item".to_string(), ty: TypeNode::Custom("T".to_string()), default_value: None }],
+            type_params: vec![],
         });
         checker.method_signatures.insert("Caller".to_string(), caller_methods);
         let mut caller_mc = std::collections::HashMap::new();
@@ -9978,7 +10159,7 @@ mod tests {
         let mut c = TypeChecker::new();
         // An agent Box with a 0-arg get() returning int.
         let mut methods = HashMap::new();
-        methods.insert("get".to_string(), MethodSignature { return_ty: Some(TypeNode::Int), args: vec![] });
+        methods.insert("get".to_string(), MethodSignature { return_ty: Some(TypeNode::Int), args: vec![], type_params: vec![] });
         c.method_signatures.insert("Box".to_string(), methods);
         c.agent_fields.insert("Box".to_string(), vec![]);
         c.env.insert("b".to_string(), TypeNode::Custom("Box".to_string()));
@@ -9986,6 +10167,192 @@ mod tests {
         // 2 args and would otherwise raise an arity error).
         let expr = method_call(Expression::Identifier("b".to_string()), "get", vec![]);
         assert_eq!(c.infer_expression_type(&expr).unwrap(), TypeNode::Int);
+    }
+
+    // ===== Call-site checking of user functions and methods =====
+    //
+    // These all reached rustc before: the declared parameters of a user function or method were
+    // recorded and never read, so a wrong call was reported in Rust terms, about generated code
+    // the author never wrote.
+
+    fn field(name: &str, ty: TypeNode) -> FieldDecl {
+        FieldDecl { name: name.to_string(), ty, default_value: None }
+    }
+
+    fn field_with_default(name: &str, ty: TypeNode, default: Expression) -> FieldDecl {
+        FieldDecl { name: name.to_string(), ty, default_value: Some(default) }
+    }
+
+    /// Register `fn add(int a, int b) -> int`.
+    fn checker_with_add() -> TypeChecker {
+        let mut c = TypeChecker::new();
+        c.known_functions.insert("add".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::Int),
+            args: vec![field("a", TypeNode::Int), field("b", TypeNode::Int)],
+            type_params: vec![],
+        });
+        c
+    }
+
+    fn bare_call(name: &str, args: Vec<Expression>) -> Expression {
+        method_call(Expression::Identifier("self".to_string()), name, args)
+    }
+
+    #[test]
+    fn call_with_too_few_arguments_is_rejected() {
+        let mut c = checker_with_add();
+        let err = c.infer_expression_type(&bare_call("add", vec![Expression::Int(1)])).unwrap_err();
+        assert!(
+            matches!(err, TypeError::WrongArgumentCount { ref callee, ref expected, found }
+                     if callee == "add" && expected == "2" && found == 1),
+            "expected an arity error, got: {:?}", err
+        );
+    }
+
+    #[test]
+    fn call_with_too_many_arguments_is_rejected() {
+        let mut c = checker_with_add();
+        let call = bare_call("add", vec![Expression::Int(1), Expression::Int(2), Expression::Int(3)]);
+        let err = c.infer_expression_type(&call).unwrap_err();
+        assert!(
+            matches!(err, TypeError::WrongArgumentCount { found: 3, .. }),
+            "expected an arity error, got: {:?}", err
+        );
+    }
+
+    #[test]
+    fn call_with_wrong_argument_type_is_rejected() {
+        let mut c = checker_with_add();
+        let call = bare_call("add", vec![
+            Expression::String("x".to_string()),
+            Expression::Int(2),
+        ]);
+        let err = c.infer_expression_type(&call).unwrap_err();
+        assert!(
+            matches!(err, TypeError::ArgumentTypeMismatch { position: 1, ref param_name, .. }
+                     if param_name == "a"),
+            "expected an argument-type error naming parameter `a`, got: {:?}", err
+        );
+    }
+
+    #[test]
+    fn method_call_arity_is_checked() {
+        let mut c = TypeChecker::new();
+        let mut methods = HashMap::new();
+        methods.insert("combine".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::Int),
+            args: vec![field("a", TypeNode::Int), field("b", TypeNode::Int)],
+            type_params: vec![],
+        });
+        c.method_signatures.insert("Helper".to_string(), methods);
+        c.agent_fields.insert("Helper".to_string(), vec![]);
+        c.env.insert("h".to_string(), TypeNode::Custom("Helper".to_string()));
+        let call = method_call(Expression::Identifier("h".to_string()), "combine", vec![Expression::Int(1)]);
+        let err = c.infer_expression_type(&call).unwrap_err();
+        assert!(
+            matches!(err, TypeError::WrongArgumentCount { .. }),
+            "expected an arity error, got: {:?}", err
+        );
+    }
+
+    /// A method on a type that declares no methods at all was previously unchecked: only types
+    /// with at least one registered method were examined, so `struct P { int x; }` with no impl
+    /// block accepted any call.
+    #[test]
+    fn unknown_method_on_a_type_without_methods_is_rejected() {
+        let mut c = TypeChecker::new();
+        c.struct_fields.insert("P".to_string(), vec![field("x", TypeNode::Int)]);
+        c.env.insert("p".to_string(), TypeNode::Custom("P".to_string()));
+        let call = method_call(Expression::Identifier("p".to_string()), "nope", vec![]);
+        let err = c.infer_expression_type(&call).unwrap_err();
+        assert!(
+            matches!(err, TypeError::UnknownMethod { ref method_name, .. } if method_name == "nope"),
+            "expected an unknown-method error, got: {:?}", err
+        );
+    }
+
+    // ---- the checks must not reject working code ----
+
+    #[test]
+    fn omitting_a_defaulted_parameter_is_accepted() {
+        let mut c = TypeChecker::new();
+        c.known_functions.insert("greet".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::Void),
+            args: vec![
+                field("a", TypeNode::Int),
+                field_with_default("b", TypeNode::Int, Expression::Int(10)),
+            ],
+            type_params: vec![],
+        });
+        assert!(c.infer_expression_type(&bare_call("greet", vec![Expression::Int(1)])).is_ok());
+        let both = bare_call("greet", vec![Expression::Int(1), Expression::Int(2)]);
+        assert!(c.infer_expression_type(&both).is_ok());
+    }
+
+    /// A parameter naming the callees own generic parameter accepts whatever is passed.
+    #[test]
+    fn generic_parameter_accepts_any_argument() {
+        let mut c = TypeChecker::new();
+        c.known_functions.insert("identity".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::Int),
+            args: vec![field("v", TypeNode::Custom("T".to_string()))],
+            type_params: vec!["T".to_string()],
+        });
+        let call = bare_call("identity", vec![Expression::String("anything".to_string())]);
+        assert!(c.infer_expression_type(&call).is_ok());
+    }
+
+    /// A capability token has two spellings: `Capability(FileAccess)` as a declared parameter
+    /// type, `Custom("FileAccess")` as the inferred type of `FileAccess {}`. Passing one to a
+    /// method that asks for one must not look like a type error.
+    #[test]
+    fn capability_token_matches_its_declared_parameter_type() {
+        let mut c = TypeChecker::new();
+        c.known_functions.insert("load".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::String),
+            args: vec![field("cap", TypeNode::Capability(CapabilityType::FileAccess))],
+            type_params: vec![],
+        });
+        c.env.insert("cap".to_string(), TypeNode::Custom("FileAccess".to_string()));
+        let call = bare_call("load", vec![Expression::Identifier("cap".to_string())]);
+        assert!(
+            c.infer_expression_type(&call).is_ok(),
+            "passing a capability token must be accepted"
+        );
+    }
+
+    /// Suggestions for an unknown method must come from the type, not from the ~250 builtin
+    /// names: a mistyped struct method used to be answered with "did you mean `pop`?".
+    #[test]
+    fn unknown_method_suggests_the_types_own_methods() {
+        let mut c = TypeChecker::new();
+        let mut methods = HashMap::new();
+        methods.insert("compute".to_string(), MethodSignature {
+            return_ty: Some(TypeNode::Int), args: vec![], type_params: vec![],
+        });
+        c.method_signatures.insert("Helper".to_string(), methods);
+        c.agent_fields.insert("Helper".to_string(), vec![]);
+        c.env.insert("h".to_string(), TypeNode::Custom("Helper".to_string()));
+
+        let typo = method_call(Expression::Identifier("h".to_string()), "comput", vec![]);
+        match c.infer_expression_type(&typo).unwrap_err() {
+            TypeError::UnknownMethod { suggestions, .. } => {
+                assert_eq!(suggestions, vec!["compute".to_string()]);
+            }
+            other => panic!("expected UnknownMethod, got {:?}", other),
+        }
+
+        let unrelated = method_call(Expression::Identifier("h".to_string()), "nope", vec![]);
+        match c.infer_expression_type(&unrelated).unwrap_err() {
+            TypeError::UnknownMethod { suggestions, .. } => {
+                assert!(
+                    suggestions.is_empty(),
+                    "`nope` must not be answered with an unrelated builtin, got {:?}",
+                    suggestions
+                );
+            }
+            other => panic!("expected UnknownMethod, got {:?}", other),
+        }
     }
 
     // ===== Generic body method resolution =====

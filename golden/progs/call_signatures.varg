@@ -1,0 +1,71 @@
+/// The call shapes the new call-site checking must keep accepting.
+///
+/// The typechecker now checks arity and argument types of user functions and methods, which had
+/// been recorded and never read. A check like that earns its keep only if it never rejects
+/// working code, so the awkward cases live here: defaulted parameters, capability tokens,
+/// contract-typed parameters, generic parameters and lambdas.
+contract IShape { int area(); }
+
+agent Square implements IShape {
+    int side;
+    public Square(int s) { self.side = s; }
+    public int area() { return self.side * self.side; }
+}
+
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+
+/// Defaulted parameters may be omitted from the right.
+fn connect(string host = "localhost", int port = 8080) -> string {
+    return $"{host}:{port}";
+}
+
+/// A contract-typed parameter takes any implementing agent — the call site boxes it.
+fn area_of(IShape shape) -> int { return shape.area(); }
+
+/// A generic parameter accepts whatever satisfies its bound.
+fn labelled<T: IShape>(T shape) -> int { return shape.area(); }
+
+/// A capability token is passed positionally.
+fn read_or(string path, string default_text, FileAccess cap) -> string {
+    return fs_read(path) or default_text;
+}
+
+agent Counter {
+    int total;
+    public void on_start() { total = 0; }
+    /// Method with a defaulted parameter.
+    public int bump(int by = 1) {
+        total += by;
+        return total;
+    }
+}
+
+agent Main {
+    public void Run() {
+        print check("defaults_none", connect(), "localhost:8080");
+        print check("defaults_one", connect("example.com"), "example.com:8080");
+        print check("defaults_all", connect("example.com", 9000), "example.com:9000");
+
+        print check("contract_param", $"{area_of(Square(3))}", "9");
+        print check("generic_param", $"{labelled(Square(4))}", "16");
+
+        var c = Counter();
+        var first = c.bump();
+        var second = c.bump(10);
+        print check("method_default", $"{first}", "1");
+        print check("method_explicit", $"{second}", "11");
+
+        unsafe {
+            var cap = FileAccess {};
+            print check("capability_arg", read_or("no_such_file.txt", "default", cap), "default");
+        }
+
+        // A lambda argument is not compared against a declared type.
+        var nums = [3, 1, 2];
+        var big = nums.filter((n) => n > 1);
+        print check("lambda_arg", $"{big.len()}", "2");
+    }
+}
