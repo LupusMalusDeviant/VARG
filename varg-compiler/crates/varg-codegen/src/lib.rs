@@ -156,6 +156,12 @@ pub struct RustGenerator {
     map_vars: HashSet<String>,
     /// Plan 40: Default parameter values per function — fn_name → ordered list of Option<Expression>
     known_function_defaults: HashMap<String, Vec<Option<Expression>>>,
+    /// Default parameter values of agent/impl methods, keyed by method name. `None` marks a name
+    /// that two types declare with *different* defaults — ambiguous, so nothing is filled in
+    /// rather than guessing. Standalone functions already had this (known_function_defaults);
+    /// methods did not, so `greet(1)` against `greet(int a, int b = 10)` type-checked and then
+    /// produced a Rust call missing an argument.
+    known_method_defaults: HashMap<String, Option<Vec<Option<Expression>>>>,
     /// Named-arg support: fn_name → ordered param declarations (name + type + default)
     known_function_params: HashMap<String, Vec<FieldDecl>>,
     /// Method names defined in user impl blocks — these take priority over builtin dispatch
@@ -195,6 +201,7 @@ impl RustGenerator {
             contract_typed_fields: HashSet::new(),
             map_vars: HashSet::new(),
             known_function_defaults: HashMap::new(),
+            known_method_defaults: HashMap::new(),
             known_function_params: HashMap::new(),
             user_impl_methods: HashSet::new(),
             in_try_block: false,
@@ -262,6 +269,7 @@ impl RustGenerator {
             // Collect user impl method names so they take priority over builtin dispatch
             if let Item::Impl { methods, .. } = item {
                 for m in methods {
+                    Self::record_method_defaults(&mut self.known_method_defaults, m);
                     self.user_impl_methods.insert(m.name.clone());
                 }
             }
@@ -270,6 +278,7 @@ impl RustGenerator {
             // Rust. Same priority rule as impl methods.
             if let Item::Agent(a) = item {
                 for m in &a.methods {
+                    Self::record_method_defaults(&mut self.known_method_defaults, m);
                     self.user_impl_methods.insert(m.name.clone());
                 }
             }
@@ -368,7 +377,10 @@ impl RustGenerator {
                         // `&mut self` contract method (agent methods mutate), so bind it `mut`.
                         // #![allow(unused_mut)] in the header keeps this warning-free otherwise.
                         let is_type_param = matches!(&p.ty, TypeNode::Custom(n) if f.type_params.contains(n));
-                        let mut_kw = if is_type_param { "mut " } else { "" };
+                        // A contract-typed parameter is a `Box<dyn Trait>` whose methods also take
+                        // `&mut self`, so it needs the same treatment as a generic one.
+                        let is_contract = matches!(&p.ty, TypeNode::Custom(n) if self.known_contract_methods.contains_key(n));
+                        let mut_kw = if is_type_param || is_contract { "mut " } else { "" };
                         format!("{}{}: {}", mut_kw, esc_ident(&p.name), self.gen_type(&p.ty))
                     })
                     .collect();
@@ -1831,6 +1843,44 @@ impl RustGenerator {
         }
     }
 
+    /// Record a method's default parameter values under its bare name. Two types declaring the
+    /// same method name with different defaults makes the name ambiguous at the call site (codegen
+    /// keys method dispatch by bare name), so the entry is poisoned and nothing gets filled in.
+    fn record_method_defaults(
+        table: &mut HashMap<String, Option<Vec<Option<Expression>>>>,
+        m: &MethodDecl,
+    ) {
+        let defaults: Vec<Option<Expression>> =
+            m.args.iter().map(|p| p.default_value.clone()).collect();
+        if !defaults.iter().any(|d| d.is_some()) {
+            return;
+        }
+        match table.get(&m.name) {
+            Some(Some(existing)) if *existing == defaults => {}
+            Some(_) => {
+                table.insert(m.name.clone(), None);
+            }
+            None => {
+                table.insert(m.name.clone(), Some(defaults));
+            }
+        }
+    }
+
+    /// Append the declared defaults for any trailing parameter the call site omitted.
+    fn pad_method_defaults(&mut self, method_name: &str, args: &mut Vec<String>) {
+        let Some(Some(defaults)) = self.known_method_defaults.get(method_name).cloned() else {
+            return;
+        };
+        for (i, default) in defaults.iter().enumerate() {
+            if i >= args.len() {
+                if let Some(def_expr) = default {
+                    let rendered = self.gen_expression(def_expr);
+                    args.push(rendered);
+                }
+            }
+        }
+    }
+
     fn gen_operand(&mut self, expr: &Expression) -> String {
         let needs_parens = match expr {
             Expression::BinaryOp { operator, left, right } => {
@@ -2356,7 +2406,24 @@ impl RustGenerator {
                     // Known standalone function — either bare call (self.fn) or pipe (val |> fn)
                     let is_self_caller = matches!(**caller, Expression::Identifier(ref n) if n == "self");
                     let pipe_arg = if !is_self_caller { Some(self.gen_cloned_arg(caller)) } else { None };
-                    let mut final_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    // A contract-typed parameter is a `Box<dyn Trait>`; a concrete agent passed to
+                    // one has to be boxed. Constructors already did this for dependency injection,
+                    // but standalone functions did not, so `fn total(IShape s)` could not be called
+                    // with `total(Sq())` at all.
+                    let contract_params: Vec<bool> = self.known_function_params
+                        .get(method_name.as_str())
+                        .map(|ps| ps.iter().map(|p| {
+                            matches!(&p.ty, TypeNode::Custom(n) if self.known_contract_methods.contains_key(n))
+                        }).collect())
+                        .unwrap_or_default();
+                    let mut final_args: Vec<String> = args.iter().enumerate().map(|(i, a)| {
+                        let raw = self.gen_cloned_arg(a);
+                        if contract_params.get(i).copied().unwrap_or(false) {
+                            format!("Box::new({})", raw)
+                        } else {
+                            raw
+                        }
+                    }).collect();
                     if let Some(pipe_val) = pipe_arg {
                         final_args.insert(0, pipe_val);
                     }
@@ -2375,7 +2442,8 @@ impl RustGenerator {
                 // User impl methods take priority over builtin dispatch to avoid shadowing.
                 // e.g. `impl Point { fn sum() }` must not dispatch to Vec::iter().sum().
                 if self.user_impl_methods.contains(method_name.as_str()) {
-                    let cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    let mut cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                    self.pad_method_defaults(method_name, &mut cloned_args);
                     return format!("{}.{}({})", self.gen_expression(caller), method_name, cloned_args.join(", "));
                 }
                 if method_name == "encrypt" {
@@ -3430,7 +3498,8 @@ impl RustGenerator {
                         format!("{}({})", method_name, cloned_args.join(", "))
                     } else {
                         // Plan 22: Defensive cloning for user-defined method calls
-                        let cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                        let mut cloned_args: Vec<String> = args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                        self.pad_method_defaults(method_name, &mut cloned_args);
                         format!("{}.{}({})", self.gen_expression(caller), method_name, cloned_args.join(", "))
                     }
                 }
