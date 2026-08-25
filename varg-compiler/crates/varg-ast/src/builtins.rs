@@ -130,4 +130,70 @@ mod tests {
         }
     }
 
+    /// Builtins that cannot be exercised by a golden program without reaching the network.
+    /// Everything else must be covered; this list is the only permitted excuse and is kept
+    /// deliberately tiny.
+    const NETWORK_ONLY: &[&str] = &["fetch", "http_download_base64"];
+
+    /// Ratchet on end-to-end coverage.
+    ///
+    /// The unit suite checks that a builtin *type-checks and generates code*; it does not run the
+    /// result. Every silent-wrong-value and silent-no-op defect found so far lived in a builtin
+    /// that no running program ever called — `abs(-5.0)` returning -5, `parse_int` turning bad
+    /// input into 0, agent messages being dropped, the whole tensor API being uncallable. Coverage
+    /// was 29% when that was measured. This test keeps it from sliding back: a new builtin has to
+    /// arrive with a golden program that runs it and checks what it produced.
+    #[test]
+    fn golden_programs_exercise_at_least_95_percent_of_builtins() {
+        let progs = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../golden/progs");
+        let Ok(entries) = std::fs::read_dir(&progs) else {
+            // Running outside a checkout (e.g. a packaged crate): nothing to measure.
+            return;
+        };
+        let mut source = String::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("varg") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    source.push_str(&text);
+                    source.push('\n');
+                }
+            }
+        }
+        assert!(!source.is_empty(), "no golden programs found at {}", progs.display());
+
+        // A call site is the name followed by `(`, not preceded by an identifier character —
+        // so `len(` and `x.len(` both count, but `channel_len(` does not count as `len`.
+        let calls = |name: &str| -> bool {
+            let bytes = source.as_bytes();
+            source.match_indices(name).any(|(i, _)| {
+                let before_ok = i == 0 || {
+                    let c = bytes[i - 1] as char;
+                    !(c.is_ascii_alphanumeric() || c == '_')
+                };
+                let after = source[i + name.len()..].trim_start();
+                before_ok && after.starts_with('(')
+            })
+        };
+
+        let candidates: Vec<&str> = known_builtin_names()
+            .iter()
+            .copied()
+            .filter(|n| !NETWORK_ONLY.contains(n))
+            .collect();
+        let uncovered: Vec<&str> = candidates.iter().copied().filter(|n| !calls(n)).collect();
+        let covered = candidates.len() - uncovered.len();
+        let pct = 100.0 * covered as f64 / candidates.len() as f64;
+
+        assert!(
+            pct >= 95.0,
+            "golden coverage fell to {:.1}% ({}/{}). Uncovered: {:?}\n\
+             Add a golden program that calls the missing builtins and checks their results.",
+            pct,
+            covered,
+            candidates.len(),
+            uncovered
+        );
+    }
 }
