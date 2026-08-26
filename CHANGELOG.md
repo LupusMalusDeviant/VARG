@@ -46,6 +46,34 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Fixed — five defects found by running the documentation
+
+Type-checking the documentation was not enough. Running the newly documented builtins, rather
+than only checking them, turned up five things that type-checked perfectly:
+
+- **`"abc".reverse()` emitted `String::reverse`**, which does not exist. The comment in the
+  code generator already said strings should reverse through their characters; only the comment
+  did.
+- **`clamp(15, 0, 10)` became `self.clamp(15, 0)`**, so rustc reported that the agent struct is
+  not `Ord`. It is method-only like the string builtins, but a number is exactly what it is for,
+  so it needed its own list — the one that rejects a scalar receiver would have rejected the
+  correct spelling too. The same applies to `to_hex`, `to_binary` and `to_fixed`.
+- **`or` never compared its fallback** against the value it stands in for. `proc_spawn(cmd) or
+  "failed"` reached rustc as "expected `Arc<Mutex<ProcState>>`, found `String`".
+- **`fold`, `map`, `enumerate` and `flatten` consumed the collection**, so a list could be used
+  exactly once and the second use failed with "use of moved value". `filter` had already been
+  fixed this way; these had not.
+- **`unique` and `distinct` shared `dedup`'s implementation**, which removes only *adjacent*
+  duplicates: `[3, 1, 2, 1].unique()` returned all four elements. They de-duplicate properly
+  now, in first-seen order; `dedup` keeps the adjacent-only meaning its name states.
+
+Also: `pad_left`, `pad_right` and `repeat` accepted a second argument and dropped it, so
+`"x".pad_left(3, ".")` padded with spaces without a word about the fill character.
+
+`golden/progs/documented_builtins.varg` runs 52 checks over the documented surface, because the
+doc gate checks types and golden runs programs.
+
+
 ### Added — the other 117 builtins are documented
 
 The reference and the guide between them covered 290 of the 407 builtins the compiler knows. The

@@ -1,0 +1,5 @@
+// @probe reject: is a method on the value, not a free function
+// `clamp(15, 0, 10)` lowered to `self.clamp(15, 0)`, so rustc reported that the agent struct is
+// not `Ord`. It is method-only like the string builtins, but valid on a number, so it needs its
+// own list: the one that rejects a scalar receiver would have rejected the correct spelling too.
+agent Main { public void Run() { print clamp(15, 0, 10); } }

@@ -2065,6 +2065,11 @@ impl TypeChecker {
                 // languages would accept — compiled to `self.to_uppercase()`, so rustc reported
                 // that `&mut A` has no such method.
                 const FREE_FORM_OK: &[&str] = &["len", "length"];
+                // Method-only like the rest, but a number is exactly what they are for, so they
+                // must not join the list that rejects a scalar receiver. `clamp(15, 0, 10)`
+                // lowered to `self.clamp(15, 0)` and rustc reported that the agent is not `Ord`.
+                const NUMERIC_RECEIVER_METHODS: &[&str] =
+                    &["clamp", "to_hex", "to_binary", "to_fixed"];
                 // Receiver builtins that take nothing in method form. Their branches further
                 // down return a type without ever looking at `args`, so `"a".to_upper("x")`
                 // type-checked and ran: codegen drops the extra argument, and nothing told the
@@ -2076,7 +2081,9 @@ impl TypeChecker {
                 ];
                 let caller_is_synthetic_self =
                     matches!(&**caller, Expression::Identifier(n) if n == "self");
-                if RECEIVER_METHODS.contains(&method_name) {
+                if RECEIVER_METHODS.contains(&method_name)
+                    || NUMERIC_RECEIVER_METHODS.contains(&method_name)
+                {
                     if caller_is_synthetic_self && !FREE_FORM_OK.contains(&method_name) {
                         return Err(TypeError::ReceiverBuiltinCalledFree {
                             method_name: method_name.to_string(),
@@ -2305,7 +2312,17 @@ impl TypeChecker {
                     Ok(TypeNode::Array(Box::new(TypeNode::String)))
                 } else if method_name == "repeat" {
                     Ok(TypeNode::String)
-                } else if method_name == "pad_left" || method_name == "pad_right" {
+                } else if method_name == "pad_left" || method_name == "pad_right" || method_name == "repeat" {
+                    // Unchecked, so a second argument was accepted and then dropped by codegen:
+                    // `"x".pad_left(3, ".")` padded with spaces and said nothing about the fill
+                    // character it had been handed.
+                    if args.len() != 1 {
+                        return Err(TypeError::WrongArgumentCount {
+                            callee: method_name.to_string(),
+                            expected: "1".to_string(),
+                            found: args.len(),
+                        });
+                    }
                     Ok(TypeNode::String)
                 } else if method_name == "split" {
                     if args.len() != 1 {
@@ -3909,11 +3926,32 @@ impl TypeChecker {
             Expression::OrDefault { expr, default } => {
                 let expr_ty = self.infer_expression_type(expr)?;
                 let default_ty = self.infer_expression_type(default)?;
-                // If expr is Result<T, E>, return T (the unwrapped type)
-                if let TypeNode::Result(ok_ty, _) = expr_ty {
-                    Ok(*ok_ty)
-                } else {
-                    Ok(default_ty)
+                // The fallback has to be usable where the value would have been. It was never
+                // compared, so `proc_spawn(cmd) or "failed"` type-checked and reached rustc as
+                // "expected `Arc<Mutex<ProcState>>`, found `String`" — a complaint naming a
+                // runtime type the author never wrote. Deliberately narrow: only a handle given
+                // a primitive fallback, or two definite primitives of different kinds. Anything
+                // the checker cannot pin down passes, as before.
+                let inner = match &expr_ty {
+                    TypeNode::Result(ok, _) | TypeNode::Nullable(ok) => Some((**ok).clone()),
+                    _ => None,
+                };
+                if let Some(inner_ty) = &inner {
+                    let handle_vs_value = matches!(inner_ty, TypeNode::Custom(n)
+                        if n != "Dynamic" && Self::is_definite_primitive(&default_ty));
+                    let both_primitive = Self::is_definite_primitive(inner_ty)
+                        && Self::is_definite_primitive(&default_ty)
+                        && !self.types_match(inner_ty, &default_ty);
+                    if handle_vs_value || both_primitive {
+                        return Err(TypeError::TypeMismatch {
+                            expected: format!("a fallback usable as `{:?}`", inner_ty),
+                            found: format!("{:?}", default_ty),
+                        });
+                    }
+                }
+                match inner {
+                    Some(ok_ty) if matches!(expr_ty, TypeNode::Result(_, _)) => Ok(ok_ty),
+                    _ => Ok(default_ty),
                 }
             },
             // Wave 11: If-expression — returns type of then-block's last expr

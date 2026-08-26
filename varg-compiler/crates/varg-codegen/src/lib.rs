@@ -2684,9 +2684,16 @@ impl RustGenerator {
                 } else if method_name == "pop" {
                     format!("{}.pop().unwrap()", self.gen_expression(caller))
                 } else if method_name == "reverse" {
-                    // In-place reverse for arrays (Vec::reverse); strings: chars().rev()
+                    // Arrays reverse in place; a string has no such method in Rust, so it
+                    // reverses through its characters. The comment here already said so while
+                    // the code emitted `.reverse()` for both, which type-checked and then left
+                    // rustc to report that `String` has no method `reverse`.
                     let c = self.gen_expression(caller);
-                    format!("{{ {c}.reverse() }}", c = c)
+                    if matches!(self.resolve_type(caller), Some(TypeNode::String)) {
+                        format!("{{ {c}.chars().rev().collect::<String>() }}", c = c)
+                    } else {
+                        format!("{{ {c}.reverse() }}", c = c)
+                    }
                 } else if method_name == "is_empty" {
                     format!("{}.is_empty()", self.gen_expression(caller))
                 } else if method_name == "keys" {
@@ -2784,7 +2791,10 @@ impl RustGenerator {
                 } else if method_name == "map" {
                     let lambda = self.gen_expression(&args[0]);
                     let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().map({}).collect::<Vec<_>>()", caller_code, lambda)
+                    // Clone first: `into_iter()` alone consumed the collection, so a list could
+                    // be used exactly once and a second call reached rustc as "use of moved
+                    // value". `filter` above was already fixed; these were not.
+                    format!("{}.clone().into_iter().map({}).collect::<Vec<_>>()", caller_code, lambda)
                 } else if method_name == "any" {
                     let lambda = self.gen_expression(&args[0]);
                     let caller_code = self.gen_expression(caller);
@@ -2809,7 +2819,7 @@ impl RustGenerator {
                     format!("{}.into_iter().zip({}.into_iter()).collect::<Vec<_>>()", caller_code, other)
                 } else if method_name == "enumerate" {
                     let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().enumerate().collect::<Vec<_>>()", caller_code)
+                    format!("{}.clone().into_iter().enumerate().collect::<Vec<_>>()", caller_code)
                 } else if method_name == "take" {
                     let n = &arg_strs[0];
                     let caller_code = self.gen_expression(caller);
@@ -2822,16 +2832,29 @@ impl RustGenerator {
                     let init = self.gen_expression(&args[0]);
                     let lambda = self.gen_expression(&args[1]);
                     let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().fold({}, {})", caller_code, init, lambda)
+                    format!("{}.clone().into_iter().fold({}, {})", caller_code, init, lambda)
                 } else if method_name == "sum" {
                     let caller_code = self.gen_expression(caller);
                     format!("{}.iter().sum::<i64>()", caller_code)
                 } else if method_name == "flatten" {
                     let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().flatten().collect::<Vec<_>>()", caller_code)
-                } else if method_name == "unique" || method_name == "dedup" || method_name == "distinct" {
+                    format!("{}.clone().into_iter().flatten().collect::<Vec<_>>()", caller_code)
+                } else if method_name == "dedup" {
+                    // `dedup` is Rust's: adjacent duplicates only, which is what the name says.
                     let caller_code = self.gen_expression(caller);
-                    format!("{{ let mut __v = {}; __v.dedup(); __v }}", caller_code)
+                    format!("{{ let mut __v = {}.clone(); __v.dedup(); __v }}", caller_code)
+                } else if method_name == "unique" || method_name == "distinct" {
+                    // These shared `dedup`'s implementation, so `[3, 1, 2, 1].unique()` returned
+                    // all four elements: no two duplicates were adjacent. A name that promises
+                    // uniqueness has to deliver it, in first-seen order.
+                    let caller_code = self.gen_expression(caller);
+                    format!(
+                        "{{ let mut __seen = Vec::new(); \
+                         for __x in {}.clone().into_iter() {{ \
+                             if !__seen.contains(&__x) {{ __seen.push(__x); }} \
+                         }} __seen }}",
+                        caller_code
+                    )
                 } else if method_name == "lines" {
                     // string.lines() → Vec<String>
                     format!("{}.lines().map(|l| l.to_string()).collect::<Vec<_>>()", self.gen_expression(caller))

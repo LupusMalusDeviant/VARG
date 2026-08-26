@@ -1,0 +1,4 @@
+// @probe reject: pad_left
+// Unchecked arity: the fill character was accepted and then dropped, so `"x".pad_left(3, ".")`
+// padded with spaces and said nothing about the argument it had been handed.
+agent Main { public void Run() { print "x".pad_left(3, "."); } }

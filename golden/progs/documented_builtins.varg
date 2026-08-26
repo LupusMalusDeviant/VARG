@@ -1,0 +1,124 @@
+/// Every builtin documented in the round that closed the documentation gaps, run rather than
+/// merely type-checked.
+///
+/// The doc gate only calls `vargc check`, and that turned out not to be enough: five defects sat
+/// behind snippets that type-checked perfectly. `"abc".reverse()` emitted `String::reverse`,
+/// which does not exist; `clamp(15, 0, 10)` became `self.clamp(15, 0)`; `or` accepted a fallback
+/// of any type; `fold`/`map`/`enumerate` consumed the collection so a list could be used once;
+/// and `unique` shared `dedup`'s implementation, so `[3, 1, 2, 1].unique()` returned all four.
+///
+/// Self-checking: each line prints OK or FAIL with what it wanted, so a wrong value shows up in
+/// the diff instead of being baked into the golden file.
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            // ── Sammlungen: falten, entdoppeln, plaetten ──────────────────
+            var xs = [3, 1, 2, 1];
+            print check("fold", $"{xs.fold(0, (acc, x) => acc + x)}", "7");
+            print check("reduce", $"{xs.reduce(0, (acc, x) => acc + x)}", "7");
+            print check("unique", $"{xs.unique().len()}", "3");
+            print check("distinct", $"{xs.distinct().len()}", "3");
+            var nested = [[1, 2], [3]];
+            print check("flatten", $"{nested.flatten().len()}", "3");
+            print check("enumerate", $"{xs.enumerate().len()}", "4");
+            print check("join", ["a", "b"].join(", "), "a, b");
+            var words = ["a b", "c"].flat_map((s) => s.split(" "));
+            print check("flat_map", $"{words.len()}", "3");
+
+            // sort ist eine Anweisung, kein Kettenglied
+            var names = ["b", "a"];
+            names.sort();
+            print check("sort", names.join(","), "a,b");
+
+            // ── String-Methoden, die nirgends standen ─────────────────────
+            var s = "  Hello  ";
+            print check("trim_start", s.trim_start() + "|", "Hello  |");
+            print check("trim_end", "|" + s.trim_end(), "|  Hello");
+            print check("ltrim", s.ltrim() + "|", "Hello  |");
+            print check("rtrim", "|" + s.rtrim(), "|  Hello");
+            print check("count_occurrences", $"{"aab".count_occurrences("a")}", "2");
+            print check("repeat", "ab".repeat(2), "abab");
+            print check("reverse", "abc".reverse(), "cba");
+            print check("chars", $"{"abc".chars().len()}", "3");
+            print check("pad_left", "[" + "x".pad_left(3) + "]", "[  x]");
+            print check("pad_right", "[" + "x".pad_right(3) + "]", "[x  ]");
+
+            // split_once: Treffer und Nicht-Treffer sind unterscheidbar
+            var hit = "key=value".split_once("=") or ("", "");
+            var miss = "novalue".split_once("=") or ("<kein>", "<trenner>");
+            print check("split_once_hit", $"{hit}", "(\"key\", \"value\")");
+            print check("split_once_miss", $"{miss}", "(\"<kein>\", \"<trenner>\")");
+
+            // Die freien Formen
+            print check("str_trim", str_trim("  x  "), "x");
+            print check("str_replace", str_replace("a-b", "-", "_"), "a_b");
+            print check("str_split", $"{str_split("a,b", ",").len()}", "2");
+
+            // Zahlen rendern
+            var n = 255;
+            print check("to_string", n.to_string(), "255");
+            print check("to_hex", n.to_hex(), "ff");
+            print check("to_binary", $"{5.to_binary()}", "101");
+            print check("to_fixed", 3.14159.to_fixed(2), "3.14");
+
+            // ── Result und Optional befragen ──────────────────────────────
+            var okr = parse_int("42");
+            var badr = parse_int("x");
+            print check("is_ok", $"{okr.is_ok()}", "true");
+            print check("is_err", $"{badr.is_err()}", "true");
+            print check("unwrap", $"{okr.unwrap()}", "42");
+            var some = json_get("{\"a\": 1}", "a");
+            var none = json_get("{}", "a");
+            print check("is_some", $"{some.is_some()}", "true");
+            print check("is_none", $"{none.is_none()}", "true");
+
+            // ── JSON: lesen und schreiben ─────────────────────────────────
+            var doc = "{\"a\": 1, \"b\": 2}";
+            print check("json_has", $"{json_has(doc, "a")}", "true");
+            print check("json_keys", $"{json_keys(doc).len()}", "2");
+            print check("json_values", $"{json_values(doc).len()}", "2");
+            var withC = json_set(doc, "c", "3") or "<fehler>";
+            print check("json_set", json_get(withC, "c") or "<none>", "3");
+            var merged = json_merge(doc, "{\"b\": 9}") or "<fehler>";
+            print check("json_merge", json_get(merged, "b") or "<none>", "9");
+
+            // ── Zahlen & Identitaeten ─────────────────────────────────────
+            print check("clamp", $"{15.clamp(0, 10)}", "10");
+            var r = random_int(1, 6);
+            print check("random_int_range", $"{r >= 1 and r <= 6}", "true");
+            print check("uuid_len", $"{uuid().len()}", "36");
+
+            // ── Dateien: Bytes und Metadaten ──────────────────────────────
+            fs_write("nd_probe.txt", "hallo")?;
+            print check("fs_size", $"{fs_size("nd_probe.txt") or -1}", "5");
+            var bytes = fs_read_bytes("nd_probe.txt") or [];
+            print check("fs_read_bytes", $"{bytes.len()}", "5");
+            fs_write_bytes("nd_copy.bin", bytes)?;
+            print check("is_file", $"{is_file("nd_copy.bin")}", "true");
+            print check("is_dir", $"{is_dir("nd_copy.bin")}", "false");
+            fs_copy("nd_probe.txt", "nd_c2.txt")?;
+            print check("fs_copy", $"{is_file("nd_c2.txt")}", "true");
+            fs_rename("nd_c2.txt", "nd_c3.txt")?;
+            print check("fs_rename", $"{is_file("nd_c3.txt")}", "true");
+            print check("home_dir", $"{home_dir().len() > 0}", "true");
+            print check("config_dir", $"{config_dir().len() > 0}", "true");
+
+            // ── Kindprozess ───────────────────────────────────────────────
+            var proc = proc_spawn("echo hallo")?;
+            print check("proc_pid", $"{proc_pid(proc) > 0}", "true");
+            var line = proc_read_line(proc) or "<keine zeile>";
+            print check("proc_read_line", line.trim(), "hallo");
+            var code = proc_wait(proc) or -1;
+            print check("proc_wait", $"{code}", "0");
+
+            delete_file("nd_probe.txt")?;
+            delete_file("nd_copy.bin")?;
+            delete_file("nd_c3.txt")?;
+        }
+    }
+}

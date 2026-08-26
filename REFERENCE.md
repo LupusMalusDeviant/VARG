@@ -1283,8 +1283,8 @@ s.trim_end();                 // trailing whitespace only
 s.ltrim();                    // same as trim_start
 s.rtrim();                    // same as trim_end
 s.count_occurrences("l");     // 3
-s.pad_left(20, ".");          // width 20, padded on the left
-s.pad_right(20, ".");
+s.pad_left(20);               // width 20, padded with spaces on the left
+s.pad_right(20);
 s.repeat(2);                  // "Hello, World!Hello, World!"
 s.chars();                    // ["H", "e", ...]
 s.reverse();                  // "!dlroW ,olleH"
@@ -1324,7 +1324,7 @@ f.to_fixed(2);                // "3.14"
 var n = random_int(1, 6);         // int, both ends inclusive
 var f = random_float();           // float in 0.0..1.0
 var id = uuid();                  // string
-var c = clamp(15, 0, 10);         // 10 — hold a value inside a range
+var c = 15.clamp(0, 10);          // 10 — a method on the value, like the other numeric ones
 ```
 
 ### Logging
