@@ -304,6 +304,12 @@ impl TypeError {
 pub struct SpannedTypeError {
     pub error: TypeError,
     pub span: Option<Range<usize>>,
+    /// Name of the agent, contract, struct, enum or function the error was found in.
+    ///
+    /// An error with no identifier to search for — a plain type mismatch, say — has no way to be
+    /// located in a program spread across files. The enclosing item's name is one, and it is the
+    /// only thing known about the error's whereabouts at the point it is raised.
+    pub item_name: Option<String>,
 }
 
 impl SpannedTypeError {
@@ -614,7 +620,18 @@ impl TypeChecker {
     /// it land on the call. A name that occurs only in prose now yields nothing, and the caller
     /// falls back to the enclosing item — vague, but not actively misleading.
     fn find_name_span(&self, name: &str) -> Option<Range<usize>> {
-        let src = self.source.as_ref()?;
+        find_name_span_in(self.source.as_ref()?, name)
+    }
+}
+
+/// The same search over any source text.
+///
+/// A program is one merged AST with no record of which file each item came from, so an error
+/// about something declared in an imported module found nothing in the entry file and was
+/// reported against the entry file's first line ~ which told the reader neither the module nor
+/// the line. Exposed so the driver can ask the same question of each module it loaded.
+pub fn find_name_span_in(src: &str, name: &str) -> Option<Range<usize>> {
+    {
         if name.is_empty() {
             return None;
         }
@@ -677,6 +694,9 @@ impl TypeChecker {
         }
         None
     }
+}
+
+impl TypeChecker {
 
     /// Check if the current scope has a specific capability token
     fn has_capability(&self, cap: &CapabilityType) -> bool {
@@ -751,6 +771,15 @@ impl TypeChecker {
         let mut errors = Vec::new();
         for item in &program.items {
             // Set current item span for error context
+            let item_name = match item {
+                Item::Agent(a) => Some(a.name.clone()),
+                Item::Contract(c) => Some(c.name.clone()),
+                Item::Struct(st) => Some(st.name.clone()),
+                Item::Enum(e) => Some(e.name.clone()),
+                Item::Function(f) => Some(f.name.clone()),
+                Item::PromptTemplate(p) => Some(p.name.clone()),
+                _ => None,
+            };
             self.current_item_span = match item {
                 Item::Agent(a) => self.find_name_span(&a.name),
                 Item::Contract(c) => self.find_name_span(&c.name),
@@ -765,12 +794,12 @@ impl TypeChecker {
                 let span = e.search_hint()
                     .and_then(|hint| self.find_name_span(hint))
                     .or_else(|| self.current_item_span.clone());
-                errors.push(SpannedTypeError { error: e, span });
+                errors.push(SpannedTypeError { error: e, span, item_name: item_name.clone() });
             }
         }
         // Wave 39: Phase 2 — agent spawn graph validation (unknown + cycles)
         for e in self.check_agent_graph(program) {
-            errors.push(SpannedTypeError { error: e, span: None });
+            errors.push(SpannedTypeError { error: e, span: None, item_name: None });
         }
         if errors.is_empty() {
             Ok(())

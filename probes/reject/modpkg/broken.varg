@@ -1,0 +1,6 @@
+// A module with a mistake several lines in, so the reported line has to be this file's own.
+// (The probe runner globs `reject/*.varg` and does not recurse, so this file is not a probe.)
+
+fn helper(int n) -> int {
+    return n + missing_thing;
+}

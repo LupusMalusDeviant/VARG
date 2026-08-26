@@ -1255,9 +1255,26 @@ ohne `_`, ebenfalls. Der Codegen hatte dieselbe Lücke, dort textuell gestellt (
 erzeugte Zeile mit `return`?"): nach einem `unsafe`-Block steht dort `}`, also wurde ein `Ok(())`
 hinter einen Wert gehängt. Beide Stellen fragen jetzt den AST.
 
+### 7. Ein Fehler im Modul zeigte auf die Einstiegsdatei
+
+Die Module werden zu **einem** AST verschmolzen, der nicht festhält, woher ein Item stammt. Der
+Checker sucht den Namen aus der Fehlermeldung im Quelltext der Einstiegsdatei — bei etwas, das
+ein Modul deklariert, findet er dort nichts und meldete gegen **Zeile 1 der Einstiegsdatei**,
+ohne Modul und ohne Zeile. Bei mehreren Dateien ist das fast der ganze Nutzen einer Fehlermeldung.
+
+`vargc` merkt sich jetzt jede geladene Datei mit ihrem Text und stellt dieselbe Frage an jedes
+Modul. Fehler ohne Namen (ein reiner Typkonflikt nennt keinen) fallen auf den Namen des
+umgebenden Items zurück — und zwar nur, wenn die Einstiegsdatei dieses Item nicht selbst
+deklariert, damit ein Fehler dort weiterhin dort gemeldet wird.
+
+```
+error: use of undeclared variable `missing_thing`
+  ┌─ pkg/broken2.varg:3:16
+```
+
 ### Stand danach
 
-Das System läuft end-to-end. Alle Netze grün: 1248 Unittests, 30 Golden-Programme, 82
+Das System läuft end-to-end. Alle Netze grün: 1248 Unittests, 30 Golden-Programme, 83
 Ablehnungsproben, drei Doku-Tore, und alle 19 echten Programme bauen zu nativen Binaries.
 
 ---

@@ -1179,13 +1179,49 @@ fn report_parse_error(filename: &str, source: &str, err: &ParseError) {
 }
 
 fn report_semantic_error(filename: &str, source: &str, err: &varg_typechecker::SpannedTypeError) {
+    // The checker searches the entry file for the name the error mentions. When the name is
+    // declared in an imported module it is not there, and the error landed on the entry file's
+    // first line — naming neither the module nor the line, which is most of what an error is for
+    // once a program is spread across files. Ask each loaded module the same question.
+    let mut filename = filename.to_string();
+    let mut source = source.to_string();
+    let mut span = err.span.clone();
+    if let Ok(files) = LOADED_FILES.lock() {
+        // What to look for: the name the error mentions, else the name of the item it was found
+        // in — a plain type mismatch mentions nothing, and the enclosing item is then the only
+        // thing known about where it is.
+        //
+        // The item's own name is used only when the entry file does not declare it, so a mistake
+        // in the entry file keeps pointing there.
+        let hint = err.error.search_hint().map(|h| h.to_string());
+        let needle = match (&hint, &err.item_name) {
+            (Some(h), _) if span.is_none() => Some(h.clone()),
+            (None, Some(item)) if varg_typechecker::find_name_span_in(&source, item).is_none() => {
+                Some(item.clone())
+            }
+            _ => None,
+        };
+        if let Some(needle) = needle {
+            for (path, text) in files.iter().skip(1) {
+                if let Some(found) = varg_typechecker::find_name_span_in(text, &needle) {
+                    filename = path.clone();
+                    source = text.clone();
+                    span = Some(found);
+                    break;
+                }
+            }
+        }
+    }
+    let filename = filename.as_str();
+    let source = source.as_str();
+
     let mut files = SimpleFiles::new();
     let file_id = files.add(filename, source);
     let writer = StandardStream::stderr(ColorChoice::Auto);
     let config = term::Config::default();
 
-    let span = err.span.clone().unwrap_or(0..0);
-    let label_msg = if err.span.is_some() { "here" } else { "in this file" };
+    let label_msg = if span.is_some() { "here" } else { "in this file" };
+    let span = span.unwrap_or(0..0);
 
     let diagnostic = Diagnostic::error()
         .with_message(err.message())
@@ -1292,6 +1328,14 @@ fn parse_and_generate(input_path: &str) -> (String, varg_ast::ast::Program) {
 /// opposite of what laying a system out in directories is for.
 static ENTRY_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// Every file that went into the program, in load order, with its text.
+///
+/// The modules are merged into one AST that records nothing about where each item came from, so
+/// an error about something declared in a module found nothing in the entry file's text and was
+/// reported against that file's first line: neither the module nor the line was named. Keeping
+/// the sources lets the reporter ask each of them where the name is.
+static LOADED_FILES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
 fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mut std::collections::HashSet<String>) {
     let _ = ENTRY_ROOT.set(
         Path::new(path)
@@ -1308,6 +1352,10 @@ fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mu
         eprintln!("Error reading {}: {}", path, err);
         exit(1);
     });
+
+    if let Ok(mut files) = LOADED_FILES.lock() {
+        files.push((path.to_string(), source.clone()));
+    }
 
     let mut parser = Parser::new(&source);
     let parsed = parser.parse_program().unwrap_or_else(|err| {

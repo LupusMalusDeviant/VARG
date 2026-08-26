@@ -1,0 +1,11 @@
+// @probe reject: broken.varg:5
+// An error in an imported module was reported against the ENTRY file's first line, naming
+// neither the module nor the line -- which is most of what an error is for once a program is
+// spread across files. The expected fragment is the module's own file and line.
+import modpkg.broken;
+
+agent Main {
+    public void Run() {
+        print $"{helper(1)}";
+    }
+}
