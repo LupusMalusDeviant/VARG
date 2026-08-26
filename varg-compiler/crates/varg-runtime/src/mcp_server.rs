@@ -359,3 +359,205 @@ mod tests {
         assert!(resp.contains("Method not found"));
     }
 }
+
+// ── Wave 23: JSON-RPC helpers for the generated server loop ───────────────────
+//
+// An `@[McpTool]` method already gets a schema and a CLI dispatch arm from vargc. What was
+// missing is the protocol itself, so a real MCP client can call it.
+//
+// The envelope and parsing live here rather than in generated code: they are the same for every
+// program, and here they can be tested directly. The *dispatch* has to stay in generated code —
+// it calls a method on the entry agent, and a `Fn + Send + Sync` handler could not hold `&mut`
+// to it.
+//
+// These use serde_json rather than the hand-rolled extraction above. The older helpers predate
+// the dependency being available; a real client sends nested objects and escaped strings, which
+// substring scanning gets wrong.
+
+fn rpc_id(request: &serde_json::Value) -> serde_json::Value {
+    request.get("id").cloned().unwrap_or(serde_json::Value::Null)
+}
+
+/// The JSON-RPC method name, or "" if the request is not parseable.
+pub fn __varg_mcp_rpc_method(request: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(request)
+        .ok()
+        .and_then(|v| v.get("method").and_then(|m| m.as_str()).map(String::from))
+        .unwrap_or_default()
+}
+
+/// The request id, rendered as JSON so it can be echoed back verbatim (it may be a number,
+/// a string, or absent).
+pub fn __varg_mcp_rpc_id(request: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(request)
+        .map(|v| rpc_id(&v).to_string())
+        .unwrap_or_else(|_| "null".to_string())
+}
+
+/// `params.name` of a tools/call request.
+pub fn __varg_mcp_rpc_tool_name(request: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(request)
+        .ok()
+        .and_then(|v| {
+            v.get("params")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_default()
+}
+
+/// One argument of a tools/call request, as text. Numbers and booleans are rendered without
+/// quotes so the generated code can parse them into the declared parameter type; a missing
+/// argument yields "".
+pub fn __varg_mcp_rpc_argument(request: &str, name: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(request) else {
+        return String::new();
+    };
+    let arg = v
+        .get("params")
+        .and_then(|p| p.get("arguments"))
+        .and_then(|a| a.get(name));
+    match arg {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+fn envelope(id: &str, body: serde_json::Value) -> String {
+    let id_value: serde_json::Value =
+        serde_json::from_str(id).unwrap_or(serde_json::Value::Null);
+    serde_json::json!({ "jsonrpc": "2.0", "id": id_value, "result": body }).to_string()
+}
+
+pub fn __varg_mcp_rpc_initialize(id: &str, name: &str, version: &str) -> String {
+    envelope(
+        id,
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": { "tools": {} },
+            "serverInfo": { "name": name, "version": version }
+        }),
+    )
+}
+
+/// `tools_json` is the array vargc already builds from the `@[McpTool]` annotations.
+pub fn __varg_mcp_rpc_tools_list(id: &str, tools_json: &str) -> String {
+    let tools: serde_json::Value =
+        serde_json::from_str(tools_json).unwrap_or(serde_json::Value::Array(vec![]));
+    envelope(id, serde_json::json!({ "tools": tools }))
+}
+
+/// A tool result. MCP wraps it in a content array; the text is whatever the method returned.
+pub fn __varg_mcp_rpc_result(id: &str, text: &str) -> String {
+    envelope(
+        id,
+        serde_json::json!({ "content": [{ "type": "text", "text": text }] }),
+    )
+}
+
+pub fn __varg_mcp_rpc_error(id: &str, code: i64, message: &str) -> String {
+    let id_value: serde_json::Value =
+        serde_json::from_str(id).unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id_value,
+        "error": { "code": code, "message": message }
+    })
+    .to_string()
+}
+
+// ── Wave 23: JSON-RPC helper tests ───────────────────────────────────────────
+#[cfg(test)]
+mod rpc_tests {
+    use super::*;
+
+    fn call_request() -> String {
+        // What a real client sends: nested params, a string and a number argument, and text
+        // containing the very characters substring scanning gets wrong.
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "search_docs",
+                "arguments": { "query": "say \"hi\", {braces}", "top_k": 5, "exact": true }
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn method_and_id_are_read_back() {
+        let r = call_request();
+        assert_eq!(__varg_mcp_rpc_method(&r), "tools/call");
+        assert_eq!(__varg_mcp_rpc_id(&r), "7");
+        assert_eq!(__varg_mcp_rpc_tool_name(&r), "search_docs");
+    }
+
+    /// A string id must survive as a string, and a missing id as null — the client matches
+    /// responses on it, so echoing it back in the wrong shape loses the reply.
+    #[test]
+    fn ids_keep_their_json_shape() {
+        let s = serde_json::json!({"id": "abc", "method": "tools/list"}).to_string();
+        assert_eq!(__varg_mcp_rpc_id(&s), "\"abc\"");
+        let none = serde_json::json!({"method": "tools/list"}).to_string();
+        assert_eq!(__varg_mcp_rpc_id(&none), "null");
+        assert_eq!(__varg_mcp_rpc_id("not json at all"), "null");
+    }
+
+    #[test]
+    fn arguments_come_out_as_text_the_caller_can_parse() {
+        let r = call_request();
+        // Strings unquoted, so they can be used directly.
+        assert_eq!(__varg_mcp_rpc_argument(&r, "query"), "say \"hi\", {braces}");
+        // Non-strings keep their JSON rendering, so an int parameter can parse them.
+        assert_eq!(__varg_mcp_rpc_argument(&r, "top_k"), "5");
+        assert_eq!(__varg_mcp_rpc_argument(&r, "exact"), "true");
+        // A missing argument is empty rather than an error: the generated code applies the
+        // parameter's own default handling.
+        assert_eq!(__varg_mcp_rpc_argument(&r, "absent"), "");
+    }
+
+    #[test]
+    fn envelopes_are_valid_json_rpc() {
+        let init = __varg_mcp_rpc_initialize("1", "demo", "0.1.0");
+        let v: serde_json::Value = serde_json::from_str(&init).unwrap();
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["result"]["serverInfo"]["name"], "demo");
+        assert!(v["result"]["capabilities"]["tools"].is_object());
+    }
+
+    #[test]
+    fn tools_list_carries_the_generated_schema() {
+        let tools = r#"[{"name":"search_docs","description":"Search","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]"#;
+        let out = __varg_mcp_rpc_tools_list("2", tools);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let listed = &v["result"]["tools"][0];
+        assert_eq!(listed["name"], "search_docs");
+        // The schema must arrive as an object, not as a string containing JSON.
+        assert!(listed["inputSchema"]["properties"]["query"].is_object());
+        assert_eq!(listed["inputSchema"]["required"][0], "query");
+    }
+
+    /// Result text is escaped by serde, so a tool returning quotes or newlines cannot break the
+    /// response the client parses.
+    #[test]
+    fn result_text_survives_awkward_output() {
+        let out = __varg_mcp_rpc_result("3", "line1\nsaid \"ok\"\tdone");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["result"]["content"][0]["type"], "text");
+        assert_eq!(v["result"]["content"][0]["text"], "line1\nsaid \"ok\"\tdone");
+    }
+
+    #[test]
+    fn errors_use_the_error_member() {
+        let out = __varg_mcp_rpc_error("4", -32601, "Tool not found: nope");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["error"]["code"], -32601);
+        assert_eq!(v["error"]["message"], "Tool not found: nope");
+        assert!(v.get("result").is_none());
+    }
+}

@@ -209,6 +209,11 @@ impl ToToolArgs for HashMap<String, String> {
     }
 }
 
+// Argument maps stay `HashMap<String, String>` on purpose. Adding impls for numeric and boolean
+// maps looked like an obvious convenience, but it made the empty literal `{}` — "this tool takes
+// no arguments", the most common call of all — ambiguous, because Rust could no longer infer the
+// value type. Mixed or numeric arguments go through the JSON string form below, which is also the
+// only way to express a heterogeneous object: a Varg map literal is homogeneous.
 impl ToToolArgs for String {
     fn to_arguments(&self) -> serde_json::Value {
         // Forward a JSON object as-is; anything else becomes an empty object rather than
