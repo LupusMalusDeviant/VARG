@@ -19,7 +19,15 @@ pub fn __varg_install_panic_hook() {
             .strip_prefix("Varg runtime error: ")
             .unwrap_or(&msg);
         eprintln!("\x1b[1;31mRuntime error:\x1b[0m {}", clean);
-        std::process::exit(1);
+        // Exit only when the *main* thread failed. A spawned agent runs on its own thread,
+        // and exiting here took the whole process down over one bad message — the
+        // dispatcher's catch_unwind never got a chance, so an agent could not be marked
+        // failed and kept running. Returning normally lets the unwind reach that
+        // catch_unwind instead. Threads spawned by std are unnamed, so the name is what
+        // distinguishes them.
+        if std::thread::current().name() == Some("main") {
+            std::process::exit(1);
+        }
     }));
 }
 
@@ -47,6 +55,7 @@ pub use regex_utils::*;
 pub mod graph;         // Wave 20: Knowledge Graph
 pub mod memory;        // Wave 21: Agent Memory (3 layers)
 pub mod trace;         // Wave 22: Observability & Tracing
+pub mod agents;        // Wave 22b: agent registry behind the dashboard live agent list
 pub mod mcp_server;    // Wave 23: MCP Server Mode
 pub mod mcp;           // F41-8: MCP Protocol (std::process)
 pub mod pipeline;      // Wave 24: Reactive Pipelines
