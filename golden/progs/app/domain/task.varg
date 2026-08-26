@@ -1,0 +1,15 @@
+/// The domain layer of the `system_wiring` program: what a task is, and what a priority is worth.
+
+enum Priority { Low, Normal, Urgent }
+
+/// One arm per variant and no `_`, which is how a function over an enum is written.
+///
+/// Only a wildcard counted as covering every path, so this exact shape was rejected with
+/// "not all code paths return a value" and had to be written with a redundant `_` arm.
+fn priority_weight(Priority p) -> int {
+    match p {
+        Priority.Low => { return 1; }
+        Priority.Normal => { return 5; }
+        Priority.Urgent => { return 10; }
+    }
+}

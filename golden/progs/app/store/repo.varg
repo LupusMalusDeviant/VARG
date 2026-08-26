@@ -1,0 +1,70 @@
+/// The storage layer, in a directory of its own and reaching across to the domain layer.
+///
+/// A module resolved its own imports only against its own directory, so `store/` could not see
+/// `domain/` and every subdirectory was an island.
+import app.domain.task;
+
+contract ITaskStore {
+    void save(string id, string title);
+    string load(string id);
+}
+
+/// The real store. Its `save` uses `?`, so the method is fallible; it is nonetheless reached
+/// through a contract whose signature has no error channel.
+agent SqliteStore implements ITaskStore {
+    string path;
+
+    public void open() {
+        unsafe {
+            var db = DbAccess {};
+            var h = db_open(self.path)?;
+            db_execute(h, "CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, title TEXT)", [])?;
+        }
+    }
+
+    public void save(string id, string title) {
+        unsafe {
+            var db = DbAccess {};
+            var h = db_open(self.path)?;
+            db_execute(h, "INSERT OR REPLACE INTO tasks (id, title) VALUES (?1, ?2)", [id, title])?;
+        }
+    }
+
+    /// A `return` inside `unsafe`, which is where every capability-guarded method has to put it.
+    public string load(string id) {
+        unsafe {
+            var db = DbAccess {};
+            var h = db_open(self.path)?;
+            var rows = db_query(h, "SELECT title FROM tasks WHERE id = ?1", [id]) or [];
+            if rows.len() == 0 { return "<missing>"; }
+            return rows[0].get("title", "<missing>");
+        }
+    }
+}
+
+/// The stand-in, so the same service can run without a database.
+agent MemoryStore implements ITaskStore {
+    public void save(string id, string title) { }
+    public string load(string id) { return "in-memory " + id; }
+}
+
+/// Handed its store rather than choosing one. The constructor parameter is named after the field
+/// it fills, which is the obvious way to write it -- and which used to make the constructor
+/// vanish from the generated code entirely.
+agent TaskService {
+    ITaskStore store;
+
+    public TaskService(ITaskStore store) {
+        self.store = store;
+    }
+
+    public string remember(string id, string title, Priority p) {
+        self.store.save(id, title);
+        var weight = priority_weight(p);
+        return $"{id}@{weight}";
+    }
+
+    public string recall(string id) {
+        return self.store.load(id);
+    }
+}

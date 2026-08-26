@@ -1286,7 +1286,19 @@ fn parse_and_generate(input_path: &str) -> (String, varg_ast::ast::Program) {
     (source, merged_ast)
 }
 
+/// Directory of the file the compilation started from, used as a second place to look for an
+/// imported module. Imports used to resolve only relative to the importing file, so a module in
+/// `store/` could not import one in `domain/` — each subdirectory was an island, which is the
+/// opposite of what laying a system out in directories is for.
+static ENTRY_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mut std::collections::HashSet<String>) {
+    let _ = ENTRY_ROOT.set(
+        Path::new(path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".")),
+    );
     let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
     let path_str = abs_path.to_string_lossy().into_owned();
     if loaded.contains(&path_str) { return; }
@@ -1349,20 +1361,31 @@ fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mu
                 let segments: Vec<&str> = dotted.split('.').collect();
                 let mut tried: Vec<std::path::PathBuf> = Vec::new();
                 let mut actual_path = None;
-                for take in (1..=segments.len()).rev() {
-                    let prefix = segments[..take].join("/");
-                    for candidate in [
-                        parent_dir.join(format!("{}.varg", prefix)),
-                        parent_dir.join(&prefix).join("mod.varg"),
-                    ] {
-                        if candidate.exists() {
-                            actual_path = Some(candidate);
-                            break;
+                // The importing file's own directory first, so a neighbour still wins; then the
+                // entry file's directory, so modules in sibling subdirectories can reach one
+                // another. Without the second, every subdirectory was an island.
+                let roots: Vec<PathBuf> = {
+                    let mut r = vec![parent_dir.to_path_buf()];
+                    if let Some(entry) = ENTRY_ROOT.get() {
+                        if entry != parent_dir {
+                            r.push(entry.clone());
                         }
-                        tried.push(candidate);
                     }
-                    if actual_path.is_some() {
-                        break;
+                    r
+                };
+                'search: for take in (1..=segments.len()).rev() {
+                    let prefix = segments[..take].join("/");
+                    for root in &roots {
+                        for candidate in [
+                            root.join(format!("{}.varg", prefix)),
+                            root.join(&prefix).join("mod.varg"),
+                        ] {
+                            if candidate.exists() {
+                                actual_path = Some(candidate);
+                                break 'search;
+                            }
+                            tried.push(candidate);
+                        }
                     }
                 }
                 let actual_path = match actual_path {

@@ -1,0 +1,60 @@
+/// A program laid out the way a system is: a domain package, a storage package, and an entry
+/// point that wires them together. Every check here stands for a defect that let a program of
+/// this shape either miscompile silently or not compile at all.
+///
+/// The modules live under `progs/app/`, which the golden runner skips because it globs
+/// `progs/*.varg` and does not recurse.
+import app.domain.task;
+import app.store.repo;
+
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+/// A field, a parameter named after it, and a local named after it.
+///
+/// A bare name inside an agent method was rewritten to `self.<name>` whenever the agent had a
+/// field of that name, whatever else was in scope: `greet("world")` returned the field and threw
+/// the argument away. It compiled, it ran, and it gave the wrong answer.
+agent Greeter {
+    string name;
+
+    public string greet(string name) {
+        return "hello " + name;
+    }
+
+    public string local_shadows() {
+        var name = "the local";
+        return name;
+    }
+
+    public string field_still_reachable() {
+        return self.name;
+    }
+}
+
+agent Main {
+    public void Run() {
+        var g = Greeter { name: "the field" };
+        print check("param_shadows_field", g.greet("the argument"), "hello the argument");
+        print check("local_shadows_field", g.local_shadows(), "the local");
+        print check("field_still_reachable", g.field_still_reachable(), "the field");
+
+        // The real store, injected. Passing a variable hands it over; it used to be cloned
+        // defensively, and an agent behind a contract has no `Clone`.
+        var real = SqliteStore { path: "system_wiring.db" };
+        real.open();
+        var service = TaskService(real);
+
+        print check("di_ctor_param_named_like_field", service.remember("t-1", "write it up", Priority.Urgent), "t-1@10");
+        print check("contract_method_using_try", service.recall("t-1"), "write it up");
+        print check("return_inside_unsafe", service.recall("t-9"), "<missing>");
+
+        // The same service against the stand-in.
+        var fake = TaskService(MemoryStore {});
+        print check("same_service_other_store", fake.recall("t-9"), "in-memory t-9");
+
+        print check("exhaustive_match_returns", $"{priority_weight(Priority.Normal)}", "5");
+    }
+}

@@ -122,6 +122,10 @@ fn expr_contains_try_propagate(expr: &Expression) -> bool {
 pub struct RustGenerator {
     /// Plan 19: Agent field names for self-prefix resolution in methods
     agent_field_names: HashSet<String>,
+    /// Names bound by a parameter or a local, innermost scope last. A bare identifier inside an
+    /// agent method was rewritten to `self.<name>` whenever the agent had a field of that name,
+    /// with nothing consulted about what else was in scope.
+    local_scopes: Vec<HashSet<String>>,
     /// T1: resolved type of in-scope variables/fields/params (declared or inferred). The start
     /// of a type-annotated codegen — lets dispatch/formatting decisions consult real types
     /// instead of name heuristics. Flat (no block scoping), matching the existing string_vars.
@@ -186,9 +190,43 @@ pub struct RustGenerator {
 }
 
 impl RustGenerator {
+    /// Does every path through this block leave the function?
+    ///
+    /// Whether to append an implicit `Ok(())` was decided by looking at the *generated text* —
+    /// "does the last line start with `return`". A block ending in `unsafe { ... return x; }`
+    /// ends in `}`, so an `Ok(())` was appended after a return that had already produced a value,
+    /// and rustc reported the type clash against Rust the author never wrote. A `return` spanning
+    /// several lines fooled it the same way. The question is about control flow, so it is asked
+    /// of the AST.
+    ///
+    /// A match counts when all its arms return: a match that does not cover its subject is
+    /// rejected by rustc on its own account, so exhaustiveness need not be re-derived here.
+    fn block_leaves_function(block: &Block) -> bool {
+        let last = match block.statements.last() {
+            Some(s) => s,
+            None => return false,
+        };
+        match last {
+            Statement::Return(_) => true,
+            Statement::Throw(_) => true,
+            Statement::UnsafeBlock(b) => Self::block_leaves_function(b),
+            Statement::If { then_block, else_block: Some(else_b), .. } => {
+                Self::block_leaves_function(then_block) && Self::block_leaves_function(else_b)
+            }
+            Statement::TryCatch { try_block, catch_block, .. } => {
+                Self::block_leaves_function(try_block) && Self::block_leaves_function(catch_block)
+            }
+            Statement::Match { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|a| Self::block_leaves_function(&a.body))
+            }
+            _ => false,
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             agent_field_names: HashSet::new(),
+            local_scopes: Vec::new(),
             known_agents: HashMap::new(),
             use_async: false,
             known_functions: HashSet::new(),
@@ -411,6 +449,7 @@ impl RustGenerator {
                 let prev = self.in_result_function;
                 self.in_result_function = uses_try;
                 self.register_string_params(&f.params);
+                self.open_param_scope(&f.params);
                 // Wave 19: Implicit return — if function has return type and last statement is Expr,
                 // convert it to Return for codegen
                 let mut func_body = f.body.clone();
@@ -426,7 +465,7 @@ impl RustGenerator {
                 self.in_result_function = prev;
                 // Wave 14: If uses_try, wrap implicit return with Ok(())
                 // Skip if the body already ends with an explicit return statement
-                if uses_try {
+                if uses_try && !Self::block_leaves_function(&func_body) {
                     let last_stmt = body.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
                     if !last_stmt.trim().starts_with("return") {
                         body.push_str("    Ok(())\n");
@@ -564,6 +603,7 @@ impl RustGenerator {
                 for method in &a.methods {
                     // B5: string-typed params of this method become string vars in its body.
                     self.register_string_params(&method.args);
+                    self.open_param_scope(&method.args);
                     // Agent construction: a method named like the agent is its constructor. Emit an
                     // associated `fn Name(args) -> Self` that default-inits the fields and then runs
                     // the constructor body through a private `&mut self` initializer — so `self.x`
@@ -712,8 +752,8 @@ impl RustGenerator {
                             out.push_str(&self.gen_block(body, 2));
                         }
                         self.in_result_function = prev;
-                        // Only add Ok(()) if body doesn't already end with explicit return
-                        {
+                        // Only add Ok(()) if the body doesn't already leave the function.
+                        if !method.body.as_ref().map(Self::block_leaves_function).unwrap_or(false) {
                             let last_stmt = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
                             if !last_stmt.trim().starts_with("return") {
                                 out.push_str("        Ok(())\n");
@@ -774,7 +814,9 @@ impl RustGenerator {
                         self.in_result_function = prev;
                         self.trace_method = prev_trace;
                         self.trace_method_name = prev_method_name;
-                        if uses_try {
+                        if uses_try
+                            && !method.body.as_ref().map(Self::block_leaves_function).unwrap_or(false)
+                        {
                             let last_stmt = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
                             if !last_stmt.trim().starts_with("return") {
                                 out.push_str("        Ok(())\n");
@@ -801,10 +843,43 @@ impl RustGenerator {
                     let contract_methods = self.known_contract_methods.get(contract_name).cloned().unwrap_or_default();
                     for method in &a.methods {
                         if contract_methods.contains(&method.name) {
+                            // Delegate to the inherent method rather than emitting the body a
+                            // second time. The inherent one carries the error handling — it is
+                            // Result-shaped and routes a failure to `on_error` — while the trait
+                            // fixes the signature the contract declared. Re-emitting the body
+                            // here put `?` inside a method returning `()`, so an agent that
+                            // implemented a contract and used `?` could not compile at all; the
+                            // two copies could also drift apart. Rust resolves an inherent method
+                            // before a trait one, so this call does not recurse.
+                            let call_args: Vec<String> = method
+                                .args
+                                .iter()
+                                .map(|arg| esc_ident(&arg.name))
+                                .collect();
+                            let call = format!(
+                                "{}::{}(self{}{})",
+                                a.name,
+                                esc_ident(&method.name),
+                                if call_args.is_empty() { "" } else { ", " },
+                                call_args.join(", ")
+                            );
+                            // A method using `?` has a Result-shaped inherent form unless an
+                            // `on_error` hook already unwraps it. The contract's signature has no
+                            // error channel, so unwrap here: a failure becomes a runtime failure,
+                            // which `try` can catch and which otherwise reports and exits non-zero.
+                            // Discarding it would be the one outcome that hides a broken store.
+                            let uses_try = method
+                                .body
+                                .as_ref()
+                                .map_or(false, |b| block_contains_try_propagate(b));
                             out.push_str(&format!("    {} {{\n", self.gen_method_signature(method, true)));
-                            self.set_context(format!("agent {}.{} (impl {})", a.name, method.name, contract_name));
-                            if let Some(body) = &method.body {
-                                out.push_str(&self.gen_block(body, 2));
+                            if uses_try && !has_on_error {
+                                out.push_str(&format!("        match {} {{\n", call));
+                                out.push_str("            Ok(__v) => __v,\n");
+                                out.push_str("            Err(__e) => panic!(\"{}\", __e),\n");
+                                out.push_str("        }\n");
+                            } else {
+                                out.push_str(&format!("        {}\n", call));
                             }
                             out.push_str("    }\n");
                         }
@@ -893,8 +968,14 @@ impl RustGenerator {
     /// constructor set contract-typed (`Box<dyn>`) fields, which cannot be default-initialized.
     fn try_ctor_struct_literal(&mut self, a: &AgentDef, method: &MethodDecl) -> Option<String> {
         let body = method.body.as_ref()?;
-        // Collect self.field = expr assignments; bail on anything else.
+        // Collect `self.field = expr` assignments into a struct literal. Anything else that does
+        // not touch `self` — a log line, a validation, a local computing a value to store — is
+        // kept and emitted before the literal. Only assignments were allowed before, and a
+        // constructor that did anything else was dropped from the output without a word: for an
+        // agent with a contract-typed field this was the only lowering, so the constructor simply
+        // did not exist and the call site failed against generated Rust.
         let mut assigned: HashMap<String, String> = HashMap::new();
+        let mut prelude: Vec<String> = Vec::new();
         for stmt in &body.statements {
             match stmt {
                 Statement::PropertyAssign { target, property, value } => {
@@ -908,7 +989,17 @@ impl RustGenerator {
                     }
                     assigned.insert(property.clone(), rhs);
                 }
-                _ => return None,
+                other => {
+                    // There is no object yet, so anything reaching for `self` cannot run here.
+                    let code = self.gen_block(
+                        &Block { statements: vec![other.clone()] },
+                        2,
+                    );
+                    if code.contains("self") {
+                        return None;
+                    }
+                    prelude.push(code);
+                }
             }
         }
         let mut parts: Vec<String> = Vec::new();
@@ -924,7 +1015,11 @@ impl RustGenerator {
                 parts.push(format!("{}: {}", field.name, self.gen_type_default(&field.ty)));
             }
         }
-        Some(format!("{} {{ {} }}", a.name, parts.join(", ")))
+        let literal = format!("{} {{ {} }}", a.name, parts.join(", "));
+        if prelude.is_empty() {
+            return Some(literal);
+        }
+        Some(format!("{}        {}", prelude.concat(), literal))
     }
 
     fn gen_method_signature(&self, method: &MethodDecl, force_no_vis: bool) -> String {
@@ -1314,7 +1409,7 @@ impl RustGenerator {
     fn gen_cloned_arg(&mut self, expr: &Expression) -> String {
         match expr {
             Expression::Identifier(name) => {
-                let is_self_field = self.agent_field_names.contains(name);
+                let is_self_field = self.is_agent_field(name);
                 let base = if is_self_field {
                     format!("self.{}", name)
                 } else {
@@ -1343,7 +1438,30 @@ impl RustGenerator {
         }
     }
 
+    /// Does this bare name refer to an agent field, or has something nearer shadowed it?
+    ///
+    /// `agent_field_names` was consulted alone, so a parameter or a local of the same name as a
+    /// field was ignored in favour of the field: `greet(string name)` on an agent with a `name`
+    /// field printed the field and dropped the argument — no error, no warning, the wrong value.
+    /// A nearer binding wins, as it does in every language that has both.
+    fn is_agent_field(&self, name: &str) -> bool {
+        self.agent_field_names.contains(name)
+            && !self.local_scopes.iter().any(|scope| scope.contains(name))
+    }
+
+    fn bind_local(&mut self, name: &str) {
+        if let Some(scope) = self.local_scopes.last_mut() {
+            scope.insert(name.to_string());
+        }
+    }
+
+    /// Begin a method or function body with its parameters in scope.
+    fn open_param_scope(&mut self, params: &[FieldDecl]) {
+        self.local_scopes = vec![params.iter().map(|p| p.name.clone()).collect()];
+    }
+
     fn gen_block(&mut self, block: &Block, indent_level: usize) -> String {
+        self.local_scopes.push(HashSet::new());
         // Wave 13: Pre-pass to count variable usages for last-use optimization
         let saved_usage = self.usage_remaining.clone();
         let counts = self.count_usages_in_block(block);
@@ -1367,6 +1485,7 @@ impl RustGenerator {
             }
             match stmt {
                 Statement::Let { name, ty, value } => {
+                    self.bind_local(name);
                     // T1: record the variable's type — declared type wins, else infer from value.
                     if let Some(t) = ty.clone().or_else(|| self.resolve_type(value)) {
                         self.var_types.insert(name.clone(), t);
@@ -1413,7 +1532,7 @@ impl RustGenerator {
                 },
                 Statement::Assign { name, value } => {
                     // Plan 19: Resolve field name with self. prefix
-                    let resolved_name = if self.agent_field_names.contains(name) {
+                    let resolved_name = if self.is_agent_field(name) {
                         format!("self.{}", esc_ident(name))
                     } else {
                         esc_ident(name)  // B3
@@ -1754,6 +1873,7 @@ impl RustGenerator {
 
         // Wave 13: Restore parent block's usage counts
         self.usage_remaining = saved_usage;
+        self.local_scopes.pop();
         out
     }
 
@@ -1907,7 +2027,13 @@ impl RustGenerator {
     fn adapt_arg_to_param(&mut self, declared: &TypeNode, arg: &Expression, rendered: String) -> String {
         match declared {
             TypeNode::Custom(n) if self.known_contract_methods.contains_key(n) => {
-                format!("Box::new({})", rendered)
+                // Render the argument again rather than reusing `rendered`: arguments are cloned
+                // defensively to keep the caller's variable usable, but an agent behind a
+                // contract has no `Clone` — a contract field may itself hold a `Box<dyn Trait>`.
+                // The defensive `.clone()` therefore did not compile at every DI call site that
+                // passed a variable. Injecting a dependency hands it over, so it moves; using the
+                // variable afterwards is then rejected by name, not by a missing `clone`.
+                format!("Box::new({})", self.gen_expression(arg))
             }
             TypeNode::Nullable(_) => {
                 let already_optional = matches!(arg, Expression::Null)
@@ -2384,7 +2510,7 @@ impl RustGenerator {
             Expression::Bool(b) => b.to_string(),
             Expression::Identifier(name) => {
                 // Plan 19: Agent fields are accessed via self.
-                if self.agent_field_names.contains(name) {
+                if self.is_agent_field(name) {
                     format!("self.{}", esc_ident(name))
                 } else {
                     esc_ident(name)  // B3: escape Rust-keyword identifiers
@@ -2528,11 +2654,16 @@ impl RustGenerator {
                             }).collect())
                             .unwrap_or_default();
                         let cloned: Vec<String> = args.iter().enumerate().map(|(i, a)| {
-                            let raw = self.gen_cloned_arg(a);
                             if contract_params.get(i).copied().unwrap_or(false) {
-                                format!("Box::new({})", raw)
+                                // Not `gen_cloned_arg`: arguments are cloned defensively to keep
+                                // the caller's variable usable, but an agent behind a contract
+                                // has no `Clone` — a contract field may itself hold a
+                                // `Box<dyn Trait>`. The defensive clone therefore did not compile
+                                // at any DI call site passing a variable. Injecting a dependency
+                                // hands it over, so it moves.
+                                format!("Box::new({})", self.gen_expression(a))
                             } else {
-                                raw
+                                self.gen_cloned_arg(a)
                             }
                         }).collect();
                         if has_ctor {

@@ -252,6 +252,28 @@ system agent MemoryManager {
 
 ---
 
+### A name in scope wins over a field
+
+Inside an agent method a bare name refers to the nearest binding: a parameter, then a local, and
+only then a field of the agent. Write `self.<name>` when you mean the field and something nearer
+carries the same name.
+
+```csharp
+agent Greeter {
+    string name;
+
+    public string greet(string name) {
+        return "hello " + name;        // the parameter
+    }
+
+    public string whoami() {
+        return self.name;              // the field
+    }
+}
+```
+
+---
+
 ## Structs
 
 ```csharp
@@ -387,6 +409,52 @@ agent MyService implements Loggable, Serializable {
     }
 }
 ```
+
+### Dependency injection
+
+A field typed by a contract holds any agent implementing it, and a constructor named after the
+agent takes it. The same service then runs against the real implementation or a stand-in without
+changing a line of it.
+
+```csharp
+contract IStore {
+    string load(string id);
+}
+
+agent MemoryStore implements IStore {
+    public string load(string id) { return "in-memory " + id; }
+}
+
+agent Service {
+    IStore store;
+
+    public Service(IStore store, string label) {
+        print "wiring " + label;          // work that does not touch `self` is fine
+        self.store = store;               // the parameter may be named after the field
+    }
+
+    public string recall(string id) {
+        return self.store.load(id);
+    }
+}
+
+agent Main {
+    public void Run() {
+        var svc = Service(MemoryStore {}, "svc");
+        print svc.recall("t-1");          // in-memory t-1
+    }
+}
+```
+
+Two rules follow from how such a constructor is built. It runs before the object exists, so it
+may assign `self.<field> = ...` and do work that does not touch `self`, but it cannot read
+`self.<field>` or call one of its own methods — the compiler says so by name. And injecting a
+dependency hands it over: the variable passed moves into the new agent and is not usable
+afterwards.
+
+A method reached through a contract has the signature the contract declares, which has no error
+channel. If the implementation uses `?` and the failure is not handled by an `on_error` hook, it
+surfaces as a runtime failure — catchable by `try`, and otherwise reported with a non-zero exit.
 
 ---
 
@@ -862,6 +930,25 @@ import serde_json::Value;
 import axum::{Router, Json};
 import tokio::*;
 ```
+
+### A program across several directories
+
+A dotted import names a path: `import store.repo;` reads `store/repo.varg`, and
+`import util.text.casing;` reads `util/text/casing.varg`. A directory can also carry a
+`mod.varg`, which is what `import store;` reads.
+
+A module resolves its own imports first against its own directory, then against the directory of
+the entry file — the one passed to `vargc`. The second is what lets packages reach each other, so
+a layout like this works in both directions:
+
+```text
+main.varg              import domain.task;  import store.repo;
+domain/task.varg
+store/repo.varg        import domain.task;   <- found via the entry directory
+```
+
+Without that second step every directory would be an island: a module could only import its own
+neighbours, which is the opposite of what laying a system out in directories is for.
 
 ---
 

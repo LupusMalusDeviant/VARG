@@ -70,6 +70,8 @@ pub enum TypeError {
     FieldTypeMismatch { type_name: String, field_name: String, expected: String, found: String },
     // Plan 29: Contract Enforcement
     MissingContractMethod { agent_name: String, contract_name: String, method_name: String },
+    /// A constructor of an agent with a contract-typed field reached for `self`.
+    ConstructorReadsSelf { agent_name: String, member: String },
     ContractNotDefined { agent_name: String, contract_name: String },
     // Plan 57: Generic type argument count mismatch
     WrongTypeArgumentCount { type_name: String, expected: usize, found: usize },
@@ -224,6 +226,9 @@ impl TypeError {
                 }
                 msg
             }
+            TypeError::ConstructorReadsSelf { agent_name, member } => {
+                format!("constructor of agent `{}` reads `self.{}`, but the object does not exist yet at that point; a constructor of an agent with a contract-typed field may only assign `self.<field> = ...` and do work that does not touch `self`", agent_name, member)
+            }
             TypeError::MissingContractMethod { agent_name, contract_name, method_name } => {
                 format!("agent `{}` implements `{}` but is missing method `{}`", agent_name, contract_name, method_name)
             }
@@ -267,6 +272,7 @@ impl TypeError {
             TypeError::UnknownField { field_name, .. } => Some(field_name),
             TypeError::UnknownMethod { method_name, .. } => Some(method_name),
             TypeError::MissingContractMethod { method_name, .. } => Some(method_name),
+            TypeError::ConstructorReadsSelf { agent_name, .. } => Some(agent_name),
             TypeError::ContractNotDefined { contract_name, .. } => Some(contract_name),
             TypeError::MissingReturn { function_name } => Some(function_name),
             TypeError::MissingCapability { operation, .. } => Some(operation),
@@ -939,6 +945,43 @@ impl TypeChecker {
                     self.method_constraints.insert(agent.name.clone(), constraints_map);
                 }
 
+                // A constructor of an agent with a contract-typed field becomes a struct literal:
+                // there is no object while it runs, so nothing in it can reach for `self` beyond
+                // the `self.field = ...` assignments the literal is built from. A body that did
+                // reach for `self` could not be lowered and was dropped from the output without a
+                // word — the constructor then did not exist, and the call site failed against
+                // generated Rust naming a Rust item the author never wrote.
+                let has_contract_field = agent.fields.iter().any(|f| {
+                    matches!(&f.ty, TypeNode::Custom(n) if self.known_contracts.contains_key(n))
+                });
+                if has_contract_field {
+                    // `self_use_in_expr` recognises a call on `self` only while the agent being
+                    // checked is known, and that is set further down, when its methods are walked.
+                    let saved_agent = self.current_agent_name.clone();
+                    self.current_agent_name = Some(agent.name.clone());
+                    let verdict = (|checker: &Self| -> Option<(String, String)> {
+                        let ctor = agent.methods.iter().find(|m| m.name == agent.name)?;
+                        let body = ctor.body.as_ref()?;
+                        for stmt in &body.statements {
+                            let reaches_self = match stmt {
+                                Statement::PropertyAssign { target, value, .. }
+                                    if matches!(target, Expression::Identifier(n) if n == "self") =>
+                                {
+                                    checker.self_use_in_expr(value)
+                                }
+                                other => checker.self_use_in_stmt(other),
+                            };
+                            if let Some(member) = reaches_self {
+                                return Some((agent.name.clone(), member));
+                            }
+                        }
+                        None
+                    })(self);
+                    self.current_agent_name = saved_agent;
+                    if let Some((agent_name, member)) = verdict {
+                        return Err(TypeError::ConstructorReadsSelf { agent_name, member });
+                    }
+                }
                 // Plan 29: Contract enforcement — check all implemented contracts
                 for contract_name in &agent.implements {
                     if let Some(contract) = self.known_contracts.get(contract_name).cloned() {
@@ -1073,7 +1116,7 @@ impl TypeChecker {
                 self.current_type_param_bounds.clear();
                 // Plan 58: Validate all code paths return for non-void functions
                 if let Some(ref ret_ty) = f.return_ty {
-                    if *ret_ty != TypeNode::Void && !Self::block_always_returns(&f.body) {
+                    if *ret_ty != TypeNode::Void && !Self::block_always_returns(&f.body, &self.enum_defs) {
                         self.current_return_ty = None;
                         return Err(TypeError::MissingReturn { function_name: f.name.clone() });
                     }
@@ -1196,7 +1239,7 @@ impl TypeChecker {
             self.check_block(body)?;
             // Plan 58: Validate all code paths return for non-void methods
             if let Some(ref ret_ty) = method.return_ty {
-                if *ret_ty != TypeNode::Void && !Self::block_always_returns(body) {
+                if *ret_ty != TypeNode::Void && !Self::block_always_returns(body, &self.enum_defs) {
                     self.current_return_ty = None;
                     return Err(TypeError::MissingReturn { function_name: method.name.clone() });
                 }
@@ -1763,22 +1806,27 @@ impl TypeChecker {
         }
     }
 
-    fn block_always_returns(block: &Block) -> bool {
+    fn block_always_returns(block: &Block, enums: &HashMap<String, Vec<EnumVariant>>) -> bool {
         if block.statements.is_empty() {
             return false;
         }
         match block.statements.last().unwrap() {
             Statement::Return(Some(_)) => true,
             Statement::If { then_block, else_block: Some(else_b), .. } => {
-                Self::block_always_returns(then_block) && Self::block_always_returns(else_b)
+                Self::block_always_returns(then_block, enums) && Self::block_always_returns(else_b, enums)
             },
             // try/catch was missing: a try whose body and handler both return does return on every
             // path, but it was reported as "not all code paths return a value".
             Statement::TryCatch { try_block, catch_block, .. } => {
-                Self::block_always_returns(try_block) && Self::block_always_returns(catch_block)
+                Self::block_always_returns(try_block, enums) && Self::block_always_returns(catch_block, enums)
             },
             // `throw` leaves the block just like a return does.
             Statement::Throw(_) => true,
+            // `unsafe` marks a capability; it does not swallow control flow, so a `return` inside
+            // one returns from the function. It was not counted, which meant every method doing
+            // its work behind a capability — every method that touches a file, a socket or a
+            // database — was reported as "not all code paths return a value".
+            Statement::UnsafeBlock(b) => Self::block_always_returns(b, enums),
             Statement::Match { arms, .. } => {
                 if arms.is_empty() { return false; }
                 // All arms must return AND there must be a wildcard or exhaustive coverage
@@ -1795,8 +1843,28 @@ impl TypeChecker {
                         _ => false,
                     }
                 }
+                fn collect_variants(p: &Pattern, out: &mut std::collections::HashSet<String>) {
+                    match p {
+                        Pattern::Variant(name, _) => { out.insert(name.clone()); }
+                        Pattern::Or(alts) => { for a in alts { collect_variants(a, out); } }
+                        _ => {}
+                    }
+                }
+                // A match naming every variant of an enum leaves no path uncovered, so it returns
+                // as surely as one ending in `_`. Only the wildcard counted, so the natural shape
+                // of a function over an enum — one arm per variant, no `_` — was rejected. A
+                // match with a hole in it is caught by the exhaustiveness check, so a covered
+                // variant set here really does mean every path.
+                let mut named = std::collections::HashSet::new();
+                for arm in arms.iter() {
+                    collect_variants(&arm.pattern, &mut named);
+                }
+                let covers_an_enum = enums.values().any(|variants| {
+                    !variants.is_empty() && variants.iter().all(|v| named.contains(&v.name))
+                });
                 let has_wildcard = arms.iter().any(|arm| pat_has_wildcard(&arm.pattern));
-                has_wildcard && arms.iter().all(|arm| Self::block_always_returns(&arm.body))
+                (has_wildcard || covers_an_enum)
+                    && arms.iter().all(|arm| Self::block_always_returns(&arm.body, enums))
             },
             _ => false,
         }
@@ -11456,6 +11524,105 @@ mod tests {
         TypeChecker::new()
             .check_program(&program)
             .map_err(|errs| errs[0].error.message())
+    }
+
+    #[test]
+    fn a_match_over_every_variant_returns() {
+        // A function over an enum is written as a match with one arm per variant and no `_`.
+        // Only a wildcard counted as covering every path, so exactly that shape was rejected
+        // with "not all code paths return a value".
+        assert_accepted(
+            r#"
+            enum Priority { Low, Normal, Urgent }
+            fn weight(Priority p) -> int {
+                match p {
+                    Priority.Low => { return 1; }
+                    Priority.Normal => { return 5; }
+                    Priority.Urgent => { return 10; }
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn a_match_leaving_a_variant_out_still_does_not_return() {
+        // The exhaustiveness check owns this message; what matters here is that the hole is
+        // still refused rather than waved through by the coverage rule above.
+        assert!(
+            check_source(
+                r#"
+            enum Priority { Low, Normal, Urgent }
+            fn weight(Priority p) -> int {
+                match p {
+                    Priority.Low => { return 1; }
+                    Priority.Normal => { return 5; }
+                }
+            }
+            "#,
+            )
+            .is_err(),
+            "a match missing a variant covers no path for it"
+        );
+    }
+
+    #[test]
+    fn a_return_inside_unsafe_returns() {
+        // `unsafe` marks a capability, it does not swallow control flow. Not counting it meant
+        // every method that reads a file, opens a socket or queries a database -- all of which
+        // must do their work inside `unsafe` -- was reported as missing a return.
+        assert_accepted(
+            r#"
+            agent Reader {
+                public string load(string path) {
+                    unsafe {
+                        var cap = FileAccess {};
+                        return fs_read(path) or "<missing>";
+                    }
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn a_di_constructor_reaching_for_self_is_refused() {
+        // There is no object yet while this runs, so it cannot be lowered — and it used to be
+        // dropped from the output instead, leaving the constructor missing entirely.
+        assert_rejected(
+            r#"
+            contract ILog { void log(string m); }
+            agent Service {
+                ILog logger;
+                string tag;
+                public Service(ILog l) {
+                    self.logger = l;
+                    self.tag = self.describe();
+                }
+                public string describe() { return "svc"; }
+            }
+            "#,
+            "does not exist yet",
+        );
+    }
+
+    #[test]
+    fn a_di_constructor_may_do_work_that_does_not_touch_self() {
+        assert_accepted(
+            r#"
+            contract ILog { void log(string m); }
+            agent Service {
+                ILog logger;
+                string tag;
+                public Service(ILog logger, string name) {
+                    print "wiring " + name;
+                    var t = "[" + name + "]";
+                    self.logger = logger;
+                    self.tag = t;
+                }
+            }
+            "#,
+        );
     }
 
     #[track_caller]

@@ -1,0 +1,8 @@
+OK   param_shadows_field
+OK   local_shadows_field
+OK   field_still_reachable
+OK   di_ctor_param_named_like_field
+OK   contract_method_using_try
+OK   return_inside_unsafe
+OK   same_service_other_store
+OK   exhaustive_match_returns

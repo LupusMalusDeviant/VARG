@@ -1,0 +1,19 @@
+// @probe reject: does not exist yet
+// A constructor of an agent with a contract-typed field becomes a struct literal, so there is no
+// object to read from while it runs. Such a constructor used to be dropped from the output
+// silently, and the call site then failed against a Rust item the author never wrote.
+contract ILog { void log(string m); }
+
+agent Service {
+    ILog logger;
+    string tag;
+
+    public Service(ILog l) {
+        self.logger = l;
+        self.tag = self.describe();
+    }
+
+    public string describe() { return "svc"; }
+}
+
+agent Main { public void Run() { print "unreachable"; } }

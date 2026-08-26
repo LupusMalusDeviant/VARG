@@ -1187,6 +1187,81 @@ löschen sie wieder, parallel. Elf umgebungsberührende Tests des Moduls teilen 
 ---
 
 
+## Programme über mehrere Verzeichnisse (Stufe 28)
+
+Die Frage war, ob sich in Varg ein **vollwertiges System** schreiben lässt und nicht nur ein
+Programm. Also wurde eines geschrieben: 206 Zeilen, eine Domänenschicht, eine Speicherschicht,
+Agenten mit Nachrichten, Konfigurationskaskade, Tracing und eine HTTP-API — verteilt auf
+`domain/`, `store/`, `agents/`, `api/` und eine Einstiegsdatei.
+
+Es ließ sich zuerst **nicht übersetzen**, und zwar an sechs unabhängigen Stellen. Alle sechs
+betrafen genau die Konstruktionen, mit denen ein Programm über eine Datei hinauswächst. Jede ist
+jetzt gefixt und liegt als laufendes Golden-Programm (`system_wiring`) im Netz.
+
+### 1. Jedes Verzeichnis war eine Insel
+
+`store/repo.varg` mit `import domain.task;` schlug fehl: Importe wurden **nur** gegen das
+Verzeichnis der importierenden Datei aufgelöst. Ein Modul konnte damit ausschließlich seine
+eigenen Nachbarn sehen — das Gegenteil dessen, wofür man ein System auf Verzeichnisse verteilt.
+Jetzt wird zusätzlich gegen das Verzeichnis der Einstiegsdatei gesucht, Nachbar zuerst.
+
+### 2. Ein Parameter verlor gegen ein gleichnamiges Feld — still
+
+Der schlimmste Fund der Runde, weil er kompiliert, läuft und die **falsche Antwort** gibt:
+
+```
+agent A { string name; public void greet(string name) { print "hello " + name; } }
+a.greet("the argument")   ->   hello the field
+```
+
+Ein bloßer Name in einer Agenten-Methode wurde zu `self.<name>`, sobald der Agent ein Feld so
+hieß — ohne zu prüfen, was sonst in Reichweite war. Der Codegen hat jetzt eine Scope-Kette;
+Parameter und lokale Bindungen verdecken das Feld, wie in jeder Sprache, die beides kennt.
+
+### 3. Ein DI-Konstruktor verschwand spurlos
+
+`public TaskService(ITaskStore store) { self.store = store; }` — der Parameter heißt wie das Feld,
+was die naheliegende Schreibweise ist. Wegen (2) wurde die rechte Seite zu `self.store`, die
+Konstruktorsenkung brach ab, und der Konstruktor wurde **kommentarlos aus der Ausgabe gelassen**.
+Sichtbar wurde das erst als `rustc`-Fehler an der Aufrufstelle, über einem Rust-Item, das niemand
+geschrieben hat.
+
+Zusätzlich darf ein solcher Konstruktor jetzt Arbeit verrichten, die `self` nicht anfasst (loggen,
+prüfen, einen Wert vorbereiten) — vorher waren ausschließlich Zuweisungen erlaubt. Was sich
+weiterhin nicht senken lässt (Lesen von `self`, bevor das Objekt existiert), **lehnt der
+Typechecker jetzt namentlich ab**, statt es still fallen zu lassen.
+
+### 4. Ein Contract-Agent mit `?` ließ sich gar nicht übersetzen
+
+Der Rumpf einer Contract-Methode wurde ein zweites Mal erzeugt, roh, unter der Signatur des
+Traits — also `?` in einer Methode, die `()` zurückgibt. Jetzt delegiert der Trait-Impl an die
+inherente Methode, wo die Fehlerbehandlung ohnehin liegt; ist diese Result-förmig, wird hier
+ausgepackt: ein Fehler wird zur Laufzeitstörung (von `try` fangbar, sonst Exitcode ungleich null)
+statt verworfen.
+
+### 5. Eine injizierte Abhängigkeit wurde geklont
+
+Argumente werden vorsorglich geklont, damit die Variable des Aufrufers benutzbar bleibt. Ein Agent
+hinter einem Contract hat aber kein `Clone` — ein Contract-Feld kann selbst ein `Box<dyn Trait>`
+halten. Damit ließ sich **keine** DI-Aufrufstelle übersetzen, die eine Variable übergab. Eine
+Abhängigkeit zu injizieren heißt sie zu übergeben, also wird jetzt verschoben.
+
+### 6. `return` zählte nicht durch `unsafe` und nicht durch ein vollständiges `match`
+
+Zwei Lücken derselben Familie wie seinerzeit `try/catch`. Jede Methode, die ihre Arbeit hinter
+einer Capability tut — also jede, die eine Datei, einen Socket oder eine Datenbank anfasst — galt
+als „not all code paths return a value". Und eine Funktion über ein Enum, ein Arm pro Variante
+ohne `_`, ebenfalls. Der Codegen hatte dieselbe Lücke, dort textuell gestellt („beginnt die letzte
+erzeugte Zeile mit `return`?"): nach einem `unsafe`-Block steht dort `}`, also wurde ein `Ok(())`
+hinter einen Wert gehängt. Beide Stellen fragen jetzt den AST.
+
+### Stand danach
+
+Das System läuft end-to-end. Alle Netze grün: 1248 Unittests, 30 Golden-Programme, 82
+Ablehnungsproben, drei Doku-Tore, und alle 19 echten Programme bauen zu nativen Binaries.
+
+---
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests
