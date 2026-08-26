@@ -1995,13 +1995,13 @@ impl TypeChecker {
                     if args.len() < 1 || args.len() > 2 {
                         return Err(TypeError::TypeMismatch { expected: "1 or 2 arguments (prompt, [model])".to_string(), found: format!("{} arguments", args.len()) });
                     }
-                    Ok(TypeNode::String)
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "llm_chat" {
                     self.check_ocap(&CapabilityType::LlmAccess, "llm_chat")?;
                     if args.len() < 2 || args.len() > 3 {
                         return Err(TypeError::TypeMismatch { expected: "2 or 3 arguments (context, prompt, [model])".to_string(), found: format!("{} arguments", args.len()) });
                     }
-                    Ok(TypeNode::String)
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "encrypt" || method_name == "decrypt" {
                     if args.len() != 2 {
                         return Err(TypeError::TypeMismatch { expected: "2 arguments".to_string(), found: format!("{} arguments", args.len()) });
@@ -5125,10 +5125,10 @@ mod tests {
                     args: vec![FieldDecl { name: "llm".to_string(), ty: TypeNode::Capability(CapabilityType::LlmAccess), default_value: None }],
                     return_ty: Some(TypeNode::String),
                     body: Some(Block { statements: vec![
-                            Statement::Return(Some(Expression::MethodCall {
+                            Statement::Return(Some(Expression::TryPropagate(Box::new(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
                                 method_name: "llm_infer".to_string(),
-                                args: vec![Expression::String("What is 2+2?".to_string())] }))
+                                args: vec![Expression::String("What is 2+2?".to_string())] }))))
                         ]
                     })
                 }]

@@ -52,7 +52,9 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         // Only builtins whose codegen actually emits a Result (env→std::env::var,
         // fs_read→read_to_string().map_err, exec→…map_err). fetch/http_download_base64 return a
         // bare String (see the String group above) despite looking fallible.
-        "fs_read" | "exec" | "env" =>
+        // LLM calls reach the network and can fail. They used to hand the provider's error
+        // payload back as the answer, so a failure was indistinguishable from a reply.
+        "fs_read" | "exec" | "env" | "llm_infer" | "llm_chat" =>
             TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)),
 
         // ── Result<Int/Float, Error> ─────────────────────────────────────────────
@@ -100,7 +102,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "json_has", "json_get_bool", "channel_is_closed", "proc_is_alive",
         "registry_is_installed",
         // Result<String, Error>
-        "fs_read", "exec", "env",
+        "fs_read", "exec", "env", "llm_infer", "llm_chat",
     ]
 }
 
@@ -135,7 +137,13 @@ mod tests {
     /// Builtins that cannot be exercised by a golden program without reaching the network.
     /// Everything else must be covered; this list is the only permitted excuse and is kept
     /// deliberately tiny.
-    const NETWORK_ONLY: &[&str] = &["fetch", "http_download_base64"];
+    const NETWORK_ONLY: &[&str] = &[
+        "fetch",
+        "http_download_base64",
+        // LLM calls need a live provider; there is nothing deterministic to assert without one.
+        "llm_infer",
+        "llm_chat",
+    ];
 
     /// Ratchet on end-to-end coverage.
     ///

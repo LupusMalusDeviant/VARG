@@ -201,17 +201,23 @@ fn single_prompt_messages(prompt: &str) -> String {
     format!("[{{\"role\": \"user\", \"content\": \"{}\"}}]", safe)
 }
 
+/// Fallible on purpose. This used to end in `parse_response(&res).unwrap_or(res)`: when the
+/// call failed, the error payload was returned *as the answer*, so an agent stored
+/// `{"error": "Network error: ..."}` in its memory and carried on as if the model had replied.
+/// A failure that looks like a success is the worst shape an error can take.
 /// Non-streaming LLM inference (single prompt → single response)
-pub fn __varg_llm_infer(prompt: &str, model: &str) -> String {
+pub fn __varg_llm_infer(prompt: &str, model: &str) -> Result<String, String> {
     let provider = LlmProvider::detect();
     let messages_json = single_prompt_messages(prompt);
     let body = provider.build_body(model, &messages_json, false);
     let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body);
-    provider.parse_response(&res).unwrap_or(res)
+    provider.parse_response(&res).ok_or(res)
 }
 
 /// Non-streaming LLM chat with context (multi-turn conversation)
-pub fn __varg_llm_chat(ctx: &mut Context, prompt: &str, model: &str) -> String {
+/// Fallible for the same reason as `llm_infer`. On failure the context keeps the user turn but
+/// gains no assistant turn, so a retry does not replay a phantom reply.
+pub fn __varg_llm_chat(ctx: &mut Context, prompt: &str, model: &str) -> Result<String, String> {
     let provider = LlmProvider::detect();
     ctx.push("user", prompt);
     let messages_json = serde_json::to_string(&ctx.messages).unwrap_or_else(|_| "[]".to_string());
@@ -219,9 +225,9 @@ pub fn __varg_llm_chat(ctx: &mut Context, prompt: &str, model: &str) -> String {
     let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body);
     if let Some(content) = provider.parse_response(&res) {
         ctx.push("assistant", &content);
-        content
+        Ok(content)
     } else {
-        res
+        Err(res)
     }
 }
 

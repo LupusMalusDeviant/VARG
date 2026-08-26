@@ -1,0 +1,13 @@
+// @probe reject: handle the Result
+// An LLM call that fails used to return the provider's error payload *as the answer*, so an agent
+// stored `{"error": "Network error: ..."}` in its memory and carried on. A failure that looks like
+// a success is the worst shape an error can take, so the call is fallible and must be handled.
+agent Main {
+    public void Run() {
+        unsafe {
+            var llm = LlmAccess {};
+            var reply = llm_infer("hi", "gpt-4o-mini");
+            print reply;
+        }
+    }
+}
