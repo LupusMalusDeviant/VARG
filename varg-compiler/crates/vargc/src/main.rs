@@ -1407,8 +1407,10 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
                 main_method_name = Some("run_cli".to_string());
                 break;
             }
-            // A 0-arg Run/Main makes this the entry agent.
-            if let Some(run_m) = a.methods.iter().find(|m| (m.name == "Run" || m.name == "Main") && m.args.is_empty()) {
+            // A 0-arg Run/Main makes this the entry agent. A constructor shares the agent's name,
+            // so `agent Main { public Main() {...} }` would otherwise be picked as the entry method
+            // and called as `instance.Main()` — which is an associated fn, not a method.
+            if let Some(run_m) = a.methods.iter().find(|m| (m.name == "Run" || m.name == "Main") && m.args.is_empty() && m.name != a.name) {
                 main_agent_name = Some(a.name.clone());
                 main_method_name = Some(run_m.name.clone());
                 main_method_is_async = run_m.is_async;
@@ -1437,13 +1439,31 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
     }
     
     if let Some(agent) = main_agent_name {
-        // Plan 19: Use new() if agent has fields, otherwise empty struct
-        let main_agent_has_fields = ast.items.iter().any(|item| {
-            if let varg_ast::ast::Item::Agent(a) = item {
-                a.name == agent && !a.fields.is_empty()
-            } else { false }
+        // How the entry agent is constructed. It is built by the generated main(), so a
+        // constructor that takes parameters cannot be satisfied — there is nobody to pass them.
+        // A zero-argument constructor can, and used to leak rustc's "no method named `Main`"
+        // because main() called `new()` while codegen emits the constructor under the agent's
+        // own name.
+        let entry_agent = ast.items.iter().find_map(|item| match item {
+            varg_ast::ast::Item::Agent(a) if a.name == agent => Some(a),
+            _ => None,
         });
-        if main_agent_has_fields {
+        let entry_ctor = entry_agent
+            .and_then(|a| a.methods.iter().find(|m| m.name == agent));
+        if let Some(ctor) = entry_ctor {
+            if !ctor.args.is_empty() {
+                eprintln!(
+                    "\x1b[1;31merror:\x1b[0m the entry agent `{}` has a constructor that takes {} parameter(s), but the runtime constructs it with none.",
+                    agent, ctor.args.len());
+                eprintln!(
+                    "       Give `{}` a parameterless constructor and do the wiring inside `Run()` — `var s = Service(ConsoleLog());` — or move the injected agent one level down.", agent);
+                std::process::exit(1);
+            }
+        }
+        let main_agent_has_fields = entry_agent.map(|a| !a.fields.is_empty()).unwrap_or(false);
+        if entry_ctor.is_some() {
+            final_rust_source.push_str(&format!("    let mut instance = {}::{}();\n", agent, agent));
+        } else if main_agent_has_fields {
             final_rust_source.push_str(&format!("    let mut instance = {}::new();\n", agent));
         } else {
             final_rust_source.push_str(&format!("    let mut instance = {} {{}};\n", agent));
@@ -1803,6 +1823,17 @@ fn {handler_name}(body: String) -> String {{
     let mut extra_deps = String::new();
     for item in &ast.items {
         if let varg_ast::ast::Item::CrateImport { crate_name, version, features } = item {
+            // serde and serde_json are always in the generated Cargo.toml, so importing one of the
+            // most ordinary crates produced a bare "duplicate key" from Cargo and broke the build.
+            // Importing an already-present crate is harmless; skip it here. tokio, chrono and rand
+            // are only present *conditionally*, so they are deduplicated further down where it is
+            // known whether they were pulled in.
+            const ALWAYS_PRESENT: &[&str] = &[
+                "serde", "serde_json", "varg-os-types", "varg-runtime",
+            ];
+            if ALWAYS_PRESENT.contains(&crate_name.as_str()) {
+            continue;
+            }
             if features.is_empty() {
                 extra_deps.push_str(&format!("{} = \"{}\"\n", crate_name, version));
             } else {
@@ -1839,6 +1870,24 @@ fn {handler_name}(body: String) -> String {{
     let chrono_dep = if final_rust_source.contains("chrono::") {
         "chrono = { version = \"0.4\", features = [\"clock\"] }\n"
     } else { "" };
+
+    // tokio, chrono and rand are added above only when something actually uses them. If the
+    // program also imported one explicitly, drop the explicit line so Cargo does not see the
+    // key twice.
+    let extra_deps = {
+        let mut kept = String::new();
+        for line in extra_deps.lines() {
+            let name = line.split(" =").next().unwrap_or("").trim();
+            let already = (name == "tokio" && !tokio_dep_str.is_empty())
+                || (name == "chrono" && !chrono_dep.is_empty())
+                || (name == "rand" && !rand_dep.is_empty());
+            if !already {
+                kept.push_str(line);
+                kept.push('\n');
+            }
+        }
+        kept
+    };
 
     let cargo_toml = format!(r#"
 [package]

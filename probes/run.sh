@@ -51,6 +51,41 @@ for v in reject/*.varg; do
   fi
 done
 
+# ── Rejected at build time rather than by `check` ─────────────────────────────
+# A few rules are properties of code generation, not of the program's types — which agent the
+# runtime constructs, for instance. `check` cannot see those, but they must still be *our* error
+# with *our* wording, not a leaked rustc one. Both halves are asserted: check accepts, build
+# rejects, and the message says what was wrong.
+for v in reject-at-build/*.varg; do
+  [ -e "$v" ] || continue
+  base="$(basename "${v%.varg}")"
+  want="$(sed -n 's|^// @probe reject-at-build: *||p' "$v" | head -1)"
+  if [ -z "$want" ]; then
+    echo "NO-DIRECTIVE  $base — add a '// @probe reject-at-build: <message fragment>' line"
+    fail=1; continue
+  fi
+  checked=$((checked + 1))
+  if ! "$VARGC" check "$v" >/dev/null 2>&1; then
+    echo "NOW-CAUGHT    $base — the front end rejects this at check time now; move it to reject/"
+    fail=1
+    continue
+  fi
+  out="$("$VARGC" build "$v" 2>&1)"
+  if [ $? -eq 0 ]; then
+    echo "NOT-REJECTED  $base — the build accepts this now"
+    fail=1
+  elif printf '%s' "$out" | grep -qa "src.main.rs"; then
+    echo "RUSTC-LEAK    $base — rejected by rustc, not by us"
+    fail=1
+  elif ! printf '%s' "$out" | strip_ansi | grep -qF -- "$want"; then
+    echo "WRONG-REASON  $base"
+    echo "              wanted a message containing: $want"
+    fail=1
+  else
+    echo "PASS (build)  $base"
+  fi
+done
+
 # ── Documented exceptions ─────────────────────────────────────────────────────
 # These are invalid but caught by rustc rather than by us. Asserting both halves keeps the
 # exception list from rotting: if the front end ever learns to catch one, this fails and says so.

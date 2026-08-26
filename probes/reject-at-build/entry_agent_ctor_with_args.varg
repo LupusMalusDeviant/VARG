@@ -1,0 +1,11 @@
+// @probe reject-at-build: the entry agent `Main` has a constructor that takes 1 parameter(s)
+// The entry agent is constructed by the generated main(), so a constructor taking parameters
+// cannot be satisfied — there is nobody to pass them. This used to leak rustc's "no associated
+// item `new`" instead of saying so and pointing at the way that does work.
+contract ILog { void write(string m); }
+agent ConsoleLog implements ILog { public void write(string m) { print m; } }
+agent Main {
+    ILog logger;
+    public Main(ILog l) { self.logger = l; }
+    public void Run() { self.logger.write("hi"); }
+}
