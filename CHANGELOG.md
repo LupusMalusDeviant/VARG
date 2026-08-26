@@ -6,6 +6,50 @@ Varg uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Changed — breaking
+
+- **The JSON accessors are Nullable.** `json_get`, `json_get_int`, `json_get_bool` and
+  `json_get_array` return `string?` / `int?` / `bool?` / `string[]?` instead of a plain value
+  with a default baked in. `""`, `0` and `false` used to mean an absent key, a value of the
+  wrong kind, an explicit JSON null, a genuinely empty value and an unparseable document all at
+  once — five situations, one answer, none of them distinguishable from the others. `null` now
+  means "nothing there" and nothing else; resolve it with `or`, or test it with `== null`.
+- **`json_get` renders values it used to discard.** A number, a bool or a nested object comes
+  back as its text (`42`, `true`, `{"b":1}`) rather than as `""`. `json_get_array` renders
+  non-string elements instead of dropping them, so `[1, 2]` yields `["1", "2"]`.
+- **The typed accessors are strict.** `json_get_int` on the string `"42"` answers `null`.
+- **An optional prints as its value, or as `null`.** It used to render through Rust's `Debug`,
+  so a `string?` printed `Some("x")`. This affects `find`, `first` and `last` too.
+
+Migration: add `or <fallback>` at call sites that relied on the old default, or handle the
+absent case explicitly. The compiler points at every site — arithmetic on an optional and
+comparing one against a real value are now compile errors naming `or`.
+
+### Fixed
+
+- **`or` on an optional did not compile.** It always lowered to `unwrap_or_else(|_| …)`, whose
+  closure arity fits `Result` but not `Option`. Nullable types were effectively unusable: the
+  one way to resolve them was rejected.
+- **`first` and `last` were typed as the element type** while codegen emitted an `Option`, so
+  the declared type never matched the generated code.
+- **Concatenating or doing arithmetic on an optional leaked a rustc error** about
+  `Option<String>` / `Option<i64>` instead of a Varg diagnostic.
+- **Error spans could point into comments and strings.** The span for an error is recovered by
+  searching the source for the name it mentions, which was a plain substring search — an error
+  about `check` underlined the word "checked" inside a doc comment. The search now skips
+  comments and string literals and requires identifier boundaries.
+
+### Known limitation
+
+- **Lambda bodies are not type-checked.** Undeclared variables, mismatched comparisons and
+  invalid arithmetic inside a lambda pass the typechecker and surface, if at all, as rustc
+  errors. This covers route handlers, MCP tool handlers, pipeline steps and `map`/`filter`.
+
+---
+
+
 ## [1.0.0] — 2026-04-26
 
 **First stable release.** The language spec, core builtins, OCAP model, and CLI are

@@ -947,13 +947,48 @@ var resp = http_request(url, "POST", headers, body)?;    // JSON with status/bod
 ### JSON
 
 ```csharp
-var obj = json_parse(json_string);         // JsonValue
-var name = json_get(obj, "name");          // string
-var age = json_get_int(obj, "age");        // int
-var active = json_get_bool(obj, "active"); // bool
-var items = json_get_array(obj, "items");  // string[]
-var out = json_stringify(obj);             // string
+var obj = json_parse(json_string);                  // JsonValue
+
+// The accessors are Nullable: `null` means "nothing there" and nothing else.
+var name   = json_get(obj, "name") or "";           // string?    -> string
+var age    = json_get_int(obj, "age") or 0;         // int?       -> int
+var active = json_get_bool(obj, "active") or false; // bool?      -> bool
+var items  = json_get_array(obj, "items") or [];    // string[]?  -> string[]
+var out    = json_stringify(obj);                   // string
 ```
+
+A path either has a value or it has none, and those are the only two answers:
+
+| situation | `json_get` answers |
+|-----------|--------------------|
+| `{"a": "x"}` | `"x"` |
+| `{"a": 42}` | `"42"` — numbers render as text |
+| `{"a": true}` | `"true"` |
+| `{"a": {"b": 1}}` | `{"b":1}` — nested values render as JSON text |
+| `{"a": ""}` | `""` — a present empty string is a value |
+| key absent | `null` |
+| `{"a": null}` | `null` — an explicit JSON null is absence |
+| unparseable input | `null` |
+
+The typed accessors are strict: `json_get_int` on `"42"` answers `null`, because a string is not
+an integer — read it with `json_get` and `parse_int` when a document carries numbers as text.
+`json_get_array` renders non-string elements instead of dropping them, so `[1, 2]` yields
+`["1", "2"]`.
+
+Resolve an optional with `or`, or ask about it directly:
+
+```csharp
+if (json_get(obj, "name") == null) { print "no name given"; }
+```
+
+Printing an optional without resolving it shows the value, or `null` when there is none.
+Arithmetic on one, and comparing one against a real value, are rejected at compile time —
+supply a fallback with `or` first.
+
+> **Changed in this release.** These four used to return a plain value with a default baked in,
+> so `""`/`0`/`false` meant an absent key, a value of the wrong kind, a JSON null, a genuinely
+> empty value and an unparseable document all at once — five situations, one answer. Code that
+> relied on the old default needs an explicit `or`.
 
 ### Shell (requires SystemAccess)
 

@@ -1542,11 +1542,16 @@ var code   = exec_status("git pull", sys);
 ### JSON
 ```csharp
 var parsed  = json_parse(text);
-var val     = json_get(parsed, "key");
-var num     = json_get_int(parsed, "count");
-var flag    = json_get_bool(parsed, "active");
-var arr     = json_get_array(parsed, "items");
+
+// The accessors are Nullable — `null` means "nothing there", so decide what absence means.
+var val     = json_get(parsed, "key") or "";
+var num     = json_get_int(parsed, "count") or 0;
+var flag    = json_get_bool(parsed, "active") or false;
+var arr     = json_get_array(parsed, "items") or [];
 var out     = json_stringify(data);
+
+// Or ask whether there is a value at all, and react instead of substituting one.
+if (json_get(parsed, "key") == null) { print "key is required"; }
 ```
 
 ### Crypto
@@ -2358,8 +2363,13 @@ agent ApiServer {
 
         http_route(server, "POST", "/users", (req) => {
             var data = json_parse(req.body);
-            var name  = json_get(data, "name");
-            var email = json_get(data, "email");
+            // A missing field is not an empty one: reject the request instead of
+            // creating a user called "".
+            var name  = json_get(data, "name") or "";
+            var email = json_get(data, "email") or "";
+            if (name == "" or email == "") {
+                return http_response(400, "{\"error\":\"name and email required\"}");
+            }
             self.users.create(name, email);
             return http_response(201, "{\"ok\":true}");
         });

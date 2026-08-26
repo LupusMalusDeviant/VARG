@@ -897,6 +897,78 @@ Design-Entscheidung, keine Bugfix. Notiert, nicht geändert.
 
 ---
 
+## Nullable statt eingebackener Defaults (Stufe 24)
+
+Stufe 23 hatte notiert, dass die JSON-Accessoren fünf Situationen auf **eine** Antwort abbilden.
+Diese Stufe hat das aufgelöst — in der Reihenfolge 1-2-3, weil Schritt 2 ohne Schritt 1 eine
+Falle gewesen wäre.
+
+### Schritt 1 — `or` auf Option reparieren
+
+`or` lowerte immer zu `unwrap_or_else(|_| …)`. Das passt zu `Result` (der Fehler geht in die
+Closure), nicht zu `Option` (die Closure bekommt nichts). Solange das nicht ging, war jedes
+Nullable in Varg unbenutzbar: der einzige Weg, es aufzulösen, kompilierte nicht.
+
+Dabei fiel ein Drift auf, den kein Test sah: der Typechecker typisierte `first`/`last` als
+**Element**, der Codegen emittiert `.first().cloned()` — also ein `Option`. `print xs.first()`
+gab die ganze Zeit `Some(...)` aus. Der Test dazu (`test_first_returns_element_type`) behauptete
+den falschen Typ und hielt den Drift damit unsichtbar; korrigiert. `pop` bleibt Element-typisiert,
+weil der Codegen es tatsächlich auspackt.
+
+### Schritt 2 — Die Accessoren entkoppeln
+
+`json_get` filterte mit `as_str()` und defaultete auf `""`. Damit waren ununterscheidbar:
+fehlender Schlüssel, Zahl, Bool, verschachteltes Objekt, kaputtes Dokument — und ein echt leerer
+String. `json_get_array` verwarf zusätzlich still jedes Nicht-String-Element, machte also aus
+`[1, 2]` ein leeres Array.
+
+Zwei orthogonale Defekte, zwei Antworten:
+
+| | vorher | jetzt |
+|---|---|---|
+| Wert fehlt | `""` | `null` — die **einzige** Situation, die `null` ergibt |
+| Wert ist Zahl/Bool/Objekt | `""` | rendert als Text (`42`, `true`, `{"b":1}`) |
+| Wert ist leerer String | `""` | `""` — ein vorhandener Wert, unterscheidbar von `null` |
+| Array mit Zahlen | `[]` | `["1", "2"]` |
+| `json_get_int` auf `"42"` | `0` | `null` — ein String ist keine Zahl |
+
+### Drei rustc-Leaks, die die Umstellung sichtbar gemacht hat
+
+Nullable war im Compiler nur halb verdrahtet. Was vorher nicht auffiel, weil es kaum ein Nullable
+gab, traf jetzt jede Zeile:
+
+1. **Verkettung**: `"x: " + json_get(d, "k")` erreichte rustc als Display-Trait-Fehler über
+   `Option<String>`. Jetzt über `__varg_fmt` gerendert.
+2. **Arithmetik/Vergleich**: `json_get_int(a, "n") * 2` → *„cannot multiply `Option<i64>` by
+   `{integer}`"*. Jetzt eine Typechecker-Meldung, die auf `or` zeigt — gleiche Regel wie beim
+   unbehandelten `Result`. `== null` und `!= null` bleiben erlaubt, das ist Vargs Art zu fragen.
+3. **Darstellung**: ein Optional rendert über Rusts `Debug`, also `Some("x")` / `None` — die
+   Vokabeln der Wirtssprache in der Ausgabe einer Sprache, die dasselbe `x == null` schreibt.
+   Jetzt: der Wert, oder `null`.
+
+### Ein Diagnose-Bug als Beifang
+
+Der Fehler-Span wird ermittelt, indem der Typechecker den Namen **im Quelltext sucht** (das AST
+hat keine Spans pro Ausdruck) — mit einem blanken `str::find`. Also traf ein Fehler über `check`
+das Wort *checked* in einem Doc-Kommentar 36 Zeilen weiter oben, und der Caret zeigte auf Prosa.
+Die Suche überspringt jetzt Kommentare und String-Literale und verlangt Bezeichner-Grenzen.
+
+### Offen — und größer als es aussieht
+
+**Lambda-Rümpfe werden gar nicht typgeprüft.** Gefunden, weil der neue Nullable-Guard in einem
+MCP-Handler nicht griff. Gemessen: undeklarierte Variablen, `5 > "x"`, `true + 1` — innerhalb
+eines Lambdas meldet der Typechecker **nichts**. Das trifft Varg an der empfindlichsten Stelle,
+denn `http_route`, `ws_route`, `mcp_server_register`, Pipeline-Schritte und `map`/`filter` sind
+alle Lambdas: genau dort, wo Agenten-Code steht. Bewusst nicht in dieser Stufe angefasst — das
+Binden untypisierter Parameter ohne Falschmeldungen ist eine eigene, sorgfältige Runde.
+
+### Stand danach
+1243 Unit-Tests (default) / 1396 (`--features full`) · Golden **38/38** · Probes **57/57** ·
+18 Programme (examples + spikes + dashboard) bauen.
+
+---
+
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests
