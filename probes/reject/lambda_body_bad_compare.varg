@@ -1,0 +1,3 @@
+// @probe reject: comparable
+// Every error class the checker knows was blind inside a lambda, not just undeclared names.
+agent Main { public void Run() { var xs = [1]; var y = xs.filter((n) => 5 > "x"); print y.len(); } }

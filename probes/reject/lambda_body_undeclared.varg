@@ -1,0 +1,4 @@
+// @probe reject: use of undeclared variable `nope`
+// Lambda bodies were never type-checked: a call's arguments had their inference errors
+// swallowed, and a lambda argument is a block of code, not a value with an uncertain type.
+agent Main { public void Run() { var xs = [1]; var y = xs.map((n) => nope + n); print y.len(); } }

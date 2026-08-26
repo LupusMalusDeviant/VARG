@@ -1,0 +1,11 @@
+// @probe reject: use of undeclared variable `nope`
+// The blind spot mattered most here: http_route/ws_route/mcp_server_register handlers are
+// lambdas, so the construct agent programs are mostly made of was the unchecked one.
+agent Main {
+    public void Run() {
+        unsafe {
+            var s = http_serve();
+            http_route(s, "GET", "/x", (req) => { return http_response(200, nope); });
+        }
+    }
+}

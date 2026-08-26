@@ -1,0 +1,4 @@
+// @probe reject: use of undeclared variable `nope`
+// Not lambda-specific: `to_upper(nope)` type-checked clean and compiled to `self.to_uppercase()`,
+// so rustc reported that `&mut A` has no such method.
+agent Main { public void Run() { print to_upper(nope); } }

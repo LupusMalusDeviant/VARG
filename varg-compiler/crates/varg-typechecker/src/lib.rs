@@ -1952,12 +1952,18 @@ impl TypeChecker {
                 // every argument through full inference, but surface ONLY capability violations —
                 // other inference errors are left to the existing per-builtin checks so programs
                 // that type-checked before continue to do so.
-                if let Err(e @ TypeError::MissingCapability { .. }) = self.infer_expression_type(caller) {
-                    return Err(e);
+                if let Err(e) = self.infer_expression_type(caller) {
+                    if Self::error_is_not_an_inference_gap(&e, caller) {
+                        return Err(e);
+                    }
                 }
                 for arg in args.iter() {
                     match self.infer_expression_type(arg) {
-                        Err(e @ TypeError::MissingCapability { .. }) => return Err(e),
+                        Err(e) => {
+                            if Self::error_is_not_an_inference_gap(&e, arg) {
+                                return Err(e);
+                            }
+                        }
                         // An unhandled Result passed *into* a builtin is a forgotten `?`/`or`,
                         // the same mistake `print` and arithmetic already catch. Without this it
                         // reached rustc as a mismatch against the builtin's parameter — about
@@ -4127,6 +4133,42 @@ impl TypeChecker {
     /// Numbers compare with numbers (int and float mix, matching the arithmetic promotion),
     /// strings with strings, bools with bools. Anything not definitely known passes: the point is
     /// to catch `5 > "x"`, not to guess about types the checker could not resolve.
+    /// Should an error from a call's caller or argument be reported, or is it just the checker
+    /// failing to pin a type down?
+    ///
+    /// Walking into callers and arguments started as a way to close an OCAP bypass, so it
+    /// surfaced capability violations and swallowed everything else — deliberately, because an
+    /// argument whose type simply cannot be inferred must not become an error. But the same
+    /// `_ => {}` also discarded errors that are nothing of the sort:
+    ///
+    /// - **Anything inside a lambda.** A lambda argument is not a value with an uncertain type,
+    ///   it is a block of the author's own code. Swallowing meant lambda bodies were never
+    ///   checked at all: undeclared variables, `5 > "x"` and `true + 1` all passed. That is
+    ///   where handler code lives — `http_route`, `ws_route`, `mcp_server_register`, pipeline
+    ///   steps, `map`/`filter` — so the construct agent programs are mostly made of was the one
+    ///   construct the typechecker never looked inside.
+    /// - **A name that does not resolve.** `to_upper(BOOM)` type-checked clean and compiled to
+    ///   `self.to_uppercase()`, so rustc reported that `&mut A` has no such method: a complaint
+    ///   about generated code, naming neither the undeclared name nor anything the author wrote.
+    ///
+    /// Everything else stays swallowed, so programs that type-checked before still do.
+    fn error_is_not_an_inference_gap(e: &TypeError, expr: &Expression) -> bool {
+        // Free-function builtins are parsed as a method call on a synthetic `self`, so outside an
+        // agent method — in a standalone `fn main()`, for instance — that receiver resolves to
+        // nothing. Reporting it would make every builtin call in a plain function an error about
+        // a receiver the author never wrote.
+        if matches!(expr, Expression::Identifier(n) if n == "self") {
+            return false;
+        }
+        if matches!(
+            e,
+            TypeError::MissingCapability { .. } | TypeError::UndeclaredVariable { .. }
+        ) {
+            return true;
+        }
+        matches!(expr, Expression::Lambda { .. })
+    }
+
     fn check_comparable(&self, left: &TypeNode, right: &TypeNode) -> Result<(), TypeError> {
         if !Self::is_definite_primitive(left) || !Self::is_definite_primitive(right) {
             return Ok(());
@@ -4283,6 +4325,21 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A checker with `names` already declared, for tests that build an AST fragment by hand.
+    ///
+    /// The identifiers in those fragments stand in for values a real program would have
+    /// declared. They worked undeclared only because a call's arguments had their inference
+    /// errors swallowed -- the swallow that also left every lambda body unchecked. Now that it
+    /// is closed, the fixture declares what it always meant. `Dynamic` is deliberately
+    /// unconstrained: these tests are about the builtin's own result, not its arguments.
+    fn checker_with(names: &[&str]) -> TypeChecker {
+        let mut c = TypeChecker::new();
+        for n in names {
+            c.env.insert((*n).to_string(), TypeNode::Custom("Dynamic".to_string()));
+        }
+        c
+    }
 
     #[test]
     fn test_ocap_query_violation() {
@@ -5926,6 +5983,17 @@ mod tests {
                     annotations: vec![], type_params: vec![], constraints: vec![],
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "worker".to_string(),
+                            ty: None,
+                            // `worker` was never declared: the send/request below had an
+                            // undeclared caller, and passed only because caller errors were
+                            // discarded. Spawning is what the fixture always meant.
+                            value: Expression::Spawn {
+                                agent_name: "Worker".to_string(),
+                                args: vec![],
+                            },
+                        },
                         Statement::Expr(Expression::MethodCall {
                             caller: Box::new(Expression::Identifier("worker".to_string())),
                             method_name: "send".to_string(),
@@ -5935,9 +6003,17 @@ mod tests {
                             ] }),
                     ]}),
                 }],
+            }), Item::Agent(AgentDef {
+                name: "Worker".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                implements: vec![],
+                fields: vec![],
+                methods: vec![],
             })],
         };
-        assert!(checker.check_program(&program).is_ok());
+        let result = checker.check_program(&program);
+        assert!(result.is_ok(), "{:?}", result);
     }
 
     #[test]
@@ -5957,6 +6033,17 @@ mod tests {
                     args: vec![], return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
                         Statement::Let {
+                            name: "worker".to_string(),
+                            ty: None,
+                            // `worker` was never declared: the send/request below had an
+                            // undeclared caller, and passed only because caller errors were
+                            // discarded. Spawning is what the fixture always meant.
+                            value: Expression::Spawn {
+                                agent_name: "Worker".to_string(),
+                                args: vec![],
+                            },
+                        },
+                        Statement::Let {
                             name: "result".to_string(),
                             ty: None,
                             value: Expression::MethodCall {
@@ -5969,6 +6056,13 @@ mod tests {
                         },
                     ]}),
                 }],
+            }), Item::Agent(AgentDef {
+                name: "Worker".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                implements: vec![],
+                fields: vec![],
+                methods: vec![],
             })],
         };
         assert!(checker.check_program(&program).is_ok());
@@ -8942,7 +9036,7 @@ mod tests {
 
     #[test]
     fn test_stdlib_json_get_type() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["json"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "json_get".to_string(),
@@ -8954,7 +9048,7 @@ mod tests {
 
     #[test]
     fn test_stdlib_json_get_int_type() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["json"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "json_get_int".to_string(),
@@ -8966,7 +9060,7 @@ mod tests {
 
     #[test]
     fn test_stdlib_json_get_array_type() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["json"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "json_get_array".to_string(),
@@ -9540,7 +9634,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_sse_client_connect_returns_handle() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["headers"]);
         checker.in_unsafe_block = true;
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
@@ -9562,7 +9656,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_sse_client_post_returns_handle() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["headers"]);
         checker.in_unsafe_block = true;
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
@@ -9579,7 +9673,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_sse_client_next_returns_result_string() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "sse_client_next".to_string(),
@@ -9594,7 +9688,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_sse_client_close_returns_result_void() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "sse_client_close".to_string(),
@@ -9641,7 +9735,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_proc_spawn_args_returns_handle() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["argv"]);
         checker.in_unsafe_block = true;
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
@@ -9657,7 +9751,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_proc_read_line_returns_string() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "proc_read_line".to_string(),
@@ -9672,7 +9766,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_proc_write_stdin_returns_void() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "proc_write_stdin".to_string(),
@@ -9690,7 +9784,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_proc_wait_returns_int() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "proc_wait".to_string(),
@@ -9705,7 +9799,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_proc_kill_returns_void() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "proc_kill".to_string(),
@@ -9720,7 +9814,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_proc_is_alive_returns_bool() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "proc_is_alive".to_string(),
@@ -9732,7 +9826,7 @@ mod tests {
 
     #[test]
     fn test_wave28b_proc_pid_returns_int() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "proc_pid".to_string(),
@@ -9954,7 +10048,7 @@ mod tests {
 
     #[test]
     fn test_wave29_readline_read_returns_result_string() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "readline_read".to_string(),
@@ -9972,7 +10066,7 @@ mod tests {
 
     #[test]
     fn test_wave29_readline_add_history_returns_result_void() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "readline_add_history".to_string(),
@@ -9990,7 +10084,7 @@ mod tests {
 
     #[test]
     fn test_wave29_readline_load_history_requires_file_access() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "readline_load_history".to_string(),
@@ -10005,7 +10099,7 @@ mod tests {
 
     #[test]
     fn test_wave29_readline_save_history_requires_file_access() {
-        let mut checker = TypeChecker::new();
+        let mut checker = checker_with(&["handle"]);
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
             method_name: "readline_save_history".to_string(),
@@ -10074,7 +10168,7 @@ mod tests {
 
     #[test]
     fn test_tc_channel_send_wrong_arg_count() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["ch"]);
         let err = c.infer_expression_type(&call("channel_send", vec![ident("ch")])).unwrap_err();
         assert!(matches!(err, TypeError::TypeMismatch { .. }), "channel_send needs 2 args");
     }
@@ -10088,14 +10182,14 @@ mod tests {
 
     #[test]
     fn test_tc_workflow_add_step_wrong_arg_count() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["w"]);
         let err = c.infer_expression_type(&call("workflow_add_step", vec![ident("w"), str_lit("step")])).unwrap_err();
         assert!(matches!(err, TypeError::TypeMismatch { .. }), "workflow_add_step needs 3 args");
     }
 
     #[test]
     fn test_tc_registry_install_wrong_arg_count() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["r"]);
         let err = c.infer_expression_type(&call("registry_install", vec![ident("r"), str_lit("pkg")])).unwrap_err();
         assert!(matches!(err, TypeError::TypeMismatch { .. }), "registry_install needs 3 args");
     }
@@ -10129,14 +10223,14 @@ mod tests {
 
     #[test]
     fn test_tc_llm_embed_batch_requires_llm_access() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["texts"]);
         let err = c.infer_expression_type(&call("llm_embed_batch", vec![ident("texts")])).unwrap_err();
         assert!(matches!(err, TypeError::MissingCapability { .. }));
     }
 
     #[test]
     fn test_tc_llm_vision_requires_llm_access() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["img"]);
         let err = c.infer_expression_type(&call("llm_vision", vec![
             ident("img"), str_lit("what is this?"), str_lit("gpt-4-vision")
         ])).unwrap_err();
@@ -10200,7 +10294,7 @@ mod tests {
     #[test]
     fn test_tc_mcp_server_register_accepts_handler_c3() {
         // C3: mcp_server_register accepts 3 args (stub) or 4 args (real handler); 5 is invalid.
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["srv", "handler", "extra"]);
         let three = c.infer_expression_type(&call("mcp_server_register", vec![
             ident("srv"), str_lit("echo"), str_lit("desc")]));
         assert!(three.is_ok(), "3-arg register must type-check: {:?}", three);
@@ -10215,7 +10309,7 @@ mod tests {
     #[test]
     fn test_tc_pipeline_add_step_arity_r5() {
         // R5: pipeline_add_step is now a wired builtin (was unknown before).
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["pipe", "handler"]);
         let ok = c.infer_expression_type(&call("pipeline_add_step", vec![
             ident("pipe"), str_lit("step"), ident("handler")
         ]));
@@ -10254,7 +10348,7 @@ mod tests {
 
     #[test]
     fn test_tc_await_choice_returns_int() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["options"]);
         let ty = c.infer_expression_type(&call("await_choice", vec![
             str_lit("Pick:"), ident("options")
         ])).unwrap();
@@ -10270,14 +10364,14 @@ mod tests {
 
     #[test]
     fn test_tc_channel_len_returns_int() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["ch"]);
         let ty = c.infer_expression_type(&call("channel_len", vec![ident("ch")])).unwrap();
         assert_eq!(ty, TypeNode::Int);
     }
 
     #[test]
     fn test_tc_channel_is_closed_returns_bool() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["ch"]);
         let ty = c.infer_expression_type(&call("channel_is_closed", vec![ident("ch")])).unwrap();
         assert_eq!(ty, TypeNode::Bool);
     }
@@ -10291,7 +10385,7 @@ mod tests {
 
     #[test]
     fn test_tc_budget_track_returns_bool() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["b"]);
         let ty = c.infer_expression_type(&call("budget_track", vec![
             ident("b"), str_lit("prompt"), str_lit("response")
         ])).unwrap();
@@ -10300,7 +10394,7 @@ mod tests {
 
     #[test]
     fn test_tc_budget_remaining_tokens_returns_int() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["b"]);
         let ty = c.infer_expression_type(&call("budget_remaining_tokens", vec![ident("b")])).unwrap();
         assert_eq!(ty, TypeNode::Int);
     }
@@ -10314,14 +10408,14 @@ mod tests {
 
     #[test]
     fn test_tc_workflow_is_complete_returns_bool() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["w"]);
         let ty = c.infer_expression_type(&call("workflow_is_complete", vec![ident("w")])).unwrap();
         assert_eq!(ty, TypeNode::Bool);
     }
 
     #[test]
     fn test_tc_workflow_ready_steps_returns_array_of_string() {
-        let mut c = TypeChecker::new();
+        let mut c = checker_with(&["w"]);
         let ty = c.infer_expression_type(&call("workflow_ready_steps", vec![ident("w")])).unwrap();
         assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::String)));
     }
