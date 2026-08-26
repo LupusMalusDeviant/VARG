@@ -1,0 +1,13 @@
+// @probe reject: handle the Result with `?` or `or`
+// An unhandled Result passed *into* a builtin is a forgotten `?`/`or`, the same mistake `print`
+// and arithmetic already catch. It used to reach rustc as a mismatch against the builtin's
+// parameter — an error about generated code, naming a type the author never wrote.
+agent Main {
+    public void Run() {
+        unsafe {
+            var fs = FileAccess {};
+            var img = image_load("missing.png");
+            print image_size_bytes(img);
+        }
+    }
+}

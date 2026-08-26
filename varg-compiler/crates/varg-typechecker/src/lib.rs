@@ -1867,8 +1867,24 @@ impl TypeChecker {
                     return Err(e);
                 }
                 for arg in args.iter() {
-                    if let Err(e @ TypeError::MissingCapability { .. }) = self.infer_expression_type(arg) {
-                        return Err(e);
+                    match self.infer_expression_type(arg) {
+                        Err(e @ TypeError::MissingCapability { .. }) => return Err(e),
+                        // An unhandled Result passed *into* a builtin is a forgotten `?`/`or`,
+                        // the same mistake `print` and arithmetic already catch. Without this it
+                        // reached rustc as a mismatch against the builtin's parameter — about
+                        // generated code, naming a type the author never wrote. Result-consuming
+                        // combinators take the Result as their caller, never as an argument, so
+                        // there is nothing legitimate to exclude here.
+                        Ok(TypeNode::Result(_, _)) => {
+                            return Err(TypeError::TypeMismatch {
+                                expected: format!(
+                                    "a plain value for `{}` — handle the Result with `?` or `or`",
+                                    method_name
+                                ),
+                                found: "Result".to_string(),
+                            });
+                        }
+                        _ => {}
                     }
                 }
                 // T3: receiver-typed dispatch. String/collection methods are meaningless on a
@@ -2221,7 +2237,11 @@ impl TypeChecker {
                 // ===== Wave 15: Typed JSON =====
                 } else if method_name == "json_parse" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (json_string)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Result(Box::new(TypeNode::JsonValue), Box::new(TypeNode::String)))
+                    // Not a Result: codegen emits `from_str(..).unwrap_or(Value::Null)` so the
+                    // accessors work without an unwrap hop. The Result typing here never matched
+                    // what was generated, and `json_parse(x) or d` could not compile because of
+                    // it — the drift was invisible until an unhandled Result became an error.
+                    Ok(TypeNode::JsonValue)
                 } else if method_name == "json_get" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
@@ -2565,7 +2585,7 @@ impl TypeChecker {
                 } else if method_name == "image_load" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::FileAccess, "image_load")?;
-                    Ok(TypeNode::Custom("VargImage".to_string()))
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("VargImage".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "image_from_base64" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (b64, format)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Custom("VargImage".to_string()))
@@ -2578,7 +2598,7 @@ impl TypeChecker {
                 } else if method_name == "audio_load" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::FileAccess, "audio_load")?;
-                    Ok(TypeNode::Custom("VargAudio".to_string()))
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("VargAudio".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "audio_to_base64" || method_name == "audio_format" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (audio)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
@@ -8762,7 +8782,10 @@ mod tests {
             args: vec![Expression::String("{\"key\": \"value\"}".to_string())],
         };
         let ty = checker.infer_expression_type(&expr).unwrap();
-        assert_eq!(ty, TypeNode::Result(Box::new(TypeNode::JsonValue), Box::new(TypeNode::String)));
+        // Not a Result. Codegen emits `from_str(..).unwrap_or(Value::Null)`, so no Result ever
+        // exists at runtime; this test asserted a type the generated code never produced, which
+        // is what kept the drift invisible.
+        assert_eq!(ty, TypeNode::JsonValue);
     }
 
     #[test]

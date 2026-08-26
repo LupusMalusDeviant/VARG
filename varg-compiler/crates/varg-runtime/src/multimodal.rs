@@ -11,10 +11,14 @@ pub struct VargImage {
     pub format: String,
 }
 
-pub fn __varg_image_load(path: &str) -> VargImage {
-    let data = std::fs::read(path).unwrap_or_default();
+/// Fallible: a path that cannot be read used to yield an *empty* VargImage with the format guessed
+/// from the extension, so a typo in a filename produced a zero-byte image that looked valid
+/// all the way to the vision model.
+pub fn __varg_image_load(path: &str) -> Result<VargImage, String> {
+    let data = std::fs::read(path)
+        .map_err(|e| format!("cannot read `{}`: {}", path, e))?;
     let format = path.rsplit('.').next().unwrap_or("").to_lowercase();
-    VargImage { path: path.to_string(), data, format }
+    Ok(VargImage { path: path.to_string(), data, format })
 }
 
 pub fn __varg_image_from_base64(b64: &str, format: &str) -> VargImage {
@@ -43,10 +47,14 @@ pub struct VargAudio {
     pub format: String,
 }
 
-pub fn __varg_audio_load(path: &str) -> VargAudio {
-    let data = std::fs::read(path).unwrap_or_default();
+/// Fallible: a path that cannot be read used to yield an *empty* VargAudio with the format guessed
+/// from the extension, so a typo in a filename produced a zero-byte image that looked valid
+/// all the way to the vision model.
+pub fn __varg_audio_load(path: &str) -> Result<VargAudio, String> {
+    let data = std::fs::read(path)
+        .map_err(|e| format!("cannot read `{}`: {}", path, e))?;
     let format = path.rsplit('.').next().unwrap_or("").to_lowercase();
-    VargAudio { path: path.to_string(), data, format }
+    Ok(VargAudio { path: path.to_string(), data, format })
 }
 
 pub fn __varg_audio_to_base64(audio: &VargAudio) -> String {
@@ -131,17 +139,30 @@ mod tests {
         assert_eq!(__varg_image_size_bytes(&img), 5);
     }
 
+    /// A path that cannot be read is an error, not an empty file. These used to assert the
+    /// opposite — that a missing image silently produced a zero-byte one — which is how a typo
+    /// in a filename could reach a vision model looking like a valid image.
     #[test]
-    fn test_image_load_missing_path() {
-        let img = __varg_image_load("/nonexistent/file.png");
-        assert!(img.data.is_empty());
+    fn test_image_load_missing_path_is_an_error() {
+        let err = __varg_image_load("/nonexistent/file.png").unwrap_err();
+        assert!(err.contains("/nonexistent/file.png"), "the message should name the path: {}", err);
     }
 
     #[test]
-    fn test_audio_load_missing_path() {
-        let audio = __varg_audio_load("/nonexistent/audio.mp3");
-        assert!(audio.data.is_empty());
-        assert_eq!(__varg_audio_format(&audio), "mp3");
+    fn test_audio_load_missing_path_is_an_error() {
+        assert!(__varg_audio_load("/nonexistent/audio.mp3").is_err());
+    }
+
+    #[test]
+    fn test_image_load_reads_a_real_file() {
+        let dir = std::env::temp_dir().join("varg_multimodal_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("probe.png");
+        std::fs::write(&path, b"pretend-png").unwrap();
+        let img = __varg_image_load(path.to_str().unwrap()).expect("a readable file must load");
+        assert_eq!(__varg_image_size_bytes(&img), 11);
+        assert_eq!(__varg_image_format(&img), "png");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
