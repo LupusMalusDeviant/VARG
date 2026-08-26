@@ -42,30 +42,55 @@ fn lookup<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
     }
 }
 
-pub fn __varg_json_get<J: AsJson + ?Sized>(j: &J, path: &str) -> String {
-    let v = j.as_json();
-    lookup(&v, path)
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_default()
+/// Render a value the way `json_get` reports it: a string is its own text (no quotes), any
+/// other kind is its JSON text. Rendering matters because the old accessor filtered with
+/// `as_str()`, so a number, a bool or a nested object all came back as `""` — the same answer
+/// as a missing key.
+fn render(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
 }
 
-pub fn __varg_json_get_int<J: AsJson + ?Sized>(j: &J, path: &str) -> i64 {
+/// The value at `path` as text, or `None` if there is none there.
+///
+/// `None` means exactly one thing: nothing to read. That covers an absent key and an explicit
+/// JSON `null` (which *is* the absence of a value), and nothing else — a present number, bool,
+/// array or object renders as its text rather than vanishing.
+pub fn __varg_json_get<J: AsJson + ?Sized>(j: &J, path: &str) -> Option<String> {
     let v = j.as_json();
-    lookup(&v, path).and_then(|x| x.as_i64()).unwrap_or(0)
+    match lookup(&v, path) {
+        None | Some(Value::Null) => None,
+        Some(found) => Some(render(found)),
+    }
 }
 
-pub fn __varg_json_get_bool<J: AsJson + ?Sized>(j: &J, path: &str) -> bool {
+/// The integer at `path`, or `None` if there is no integer there.
+///
+/// Strict on purpose: a string `"42"` is not an integer and answers `None`. Use `json_get` and
+/// `parse_int` when the document really does carry numbers as text.
+pub fn __varg_json_get_int<J: AsJson + ?Sized>(j: &J, path: &str) -> Option<i64> {
     let v = j.as_json();
-    lookup(&v, path).and_then(|x| x.as_bool()).unwrap_or(false)
+    lookup(&v, path).and_then(|x| x.as_i64())
 }
 
-pub fn __varg_json_get_array<J: AsJson + ?Sized>(j: &J, path: &str) -> Vec<String> {
+/// The boolean at `path`, or `None` if there is no boolean there.
+pub fn __varg_json_get_bool<J: AsJson + ?Sized>(j: &J, path: &str) -> Option<bool> {
+    let v = j.as_json();
+    lookup(&v, path).and_then(|x| x.as_bool())
+}
+
+/// The array at `path` as text elements, or `None` if there is no array there.
+///
+/// Elements render like `json_get`, so a `[1, 2]` yields `["1", "2"]`. The old version filtered
+/// with `as_str()` and dropped every non-string element, which turned a numeric array into an
+/// empty one without saying so.
+pub fn __varg_json_get_array<J: AsJson + ?Sized>(j: &J, path: &str) -> Option<Vec<String>> {
     let v = j.as_json();
     lookup(&v, path)
         .and_then(|x| x.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
-        .unwrap_or_default()
+        .map(|a| a.iter().map(render).collect())
 }
 
 pub fn __varg_json_has<J: AsJson + ?Sized>(j: &J, path: &str) -> bool {
@@ -101,21 +126,21 @@ mod tests {
 
     #[test]
     fn get_works_on_parsed_value_and_on_raw_string() {
-        assert_eq!(__varg_json_get(&parsed(), "name"), "varg");
-        assert_eq!(__varg_json_get(&DOC.to_string(), "name"), "varg");
+        assert_eq!(__varg_json_get(&parsed(), "name").as_deref(), Some("varg"));
+        assert_eq!(__varg_json_get(&DOC.to_string(), "name").as_deref(), Some("varg"));
         // Pointer paths reach nested values in both shapes.
-        assert_eq!(__varg_json_get(&parsed(), "/main/temp"), "warm");
-        assert_eq!(__varg_json_get(&DOC.to_string(), "/main/temp"), "warm");
+        assert_eq!(__varg_json_get(&parsed(), "/main/temp").as_deref(), Some("warm"));
+        assert_eq!(__varg_json_get(&DOC.to_string(), "/main/temp").as_deref(), Some("warm"));
     }
 
     #[test]
     fn typed_getters_work_on_both_shapes() {
-        assert_eq!(__varg_json_get_int(&parsed(), "/n"), 42);
-        assert_eq!(__varg_json_get_int(&DOC.to_string(), "/n"), 42);
-        assert!(__varg_json_get_bool(&parsed(), "ok"));
-        assert!(__varg_json_get_bool(&DOC.to_string(), "ok"));
-        assert_eq!(__varg_json_get_array(&parsed(), "tags"), vec!["a", "b"]);
-        assert_eq!(__varg_json_get_array(&DOC.to_string(), "tags"), vec!["a", "b"]);
+        assert_eq!(__varg_json_get_int(&parsed(), "/n"), Some(42));
+        assert_eq!(__varg_json_get_int(&DOC.to_string(), "/n"), Some(42));
+        assert_eq!(__varg_json_get_bool(&parsed(), "ok"), Some(true));
+        assert_eq!(__varg_json_get_bool(&DOC.to_string(), "ok"), Some(true));
+        assert_eq!(__varg_json_get_array(&parsed(), "tags"), Some(vec!["a".into(), "b".into()]));
+        assert_eq!(__varg_json_get_array(&DOC.to_string(), "tags"), Some(vec!["a".into(), "b".into()]));
     }
 
     #[test]
@@ -133,14 +158,46 @@ mod tests {
     }
 
     #[test]
-    fn missing_paths_and_bad_json_degrade_quietly() {
-        assert_eq!(__varg_json_get(&DOC.to_string(), "nope"), "");
-        assert_eq!(__varg_json_get_int(&DOC.to_string(), "nope"), 0);
-        assert!(!__varg_json_get_bool(&DOC.to_string(), "nope"));
-        assert!(__varg_json_get_array(&DOC.to_string(), "nope").is_empty());
-        // Unparsable input becomes Null rather than panicking.
-        let junk = "not json".to_string();
-        assert_eq!(__varg_json_get(&junk, "name"), "");
+    fn absence_is_none_and_is_the_only_none() {
+        // Nothing there: the one situation that answers None.
+        assert_eq!(__varg_json_get(&DOC.to_string(), "nope"), None);
+        assert_eq!(__varg_json_get_int(&DOC.to_string(), "nope"), None);
+        assert_eq!(__varg_json_get_bool(&DOC.to_string(), "nope"), None);
+        assert_eq!(__varg_json_get_array(&DOC.to_string(), "nope"), None);
+
+        // Present but not a string used to answer `""` — the same as absent. Now each renders.
+        assert_eq!(__varg_json_get(&DOC.to_string(), "n").as_deref(), Some("42"));
+        assert_eq!(__varg_json_get(&DOC.to_string(), "ok").as_deref(), Some("true"));
+        assert_eq!(__varg_json_get(&DOC.to_string(), "tags").as_deref(), Some(r#"["a","b"]"#));
+        assert_eq!(
+            __varg_json_get(&DOC.to_string(), "main").as_deref(),
+            Some(r#"{"temp":"warm"}"#),
+            "a nested object is readable instead of vanishing"
+        );
+
+        // A present empty string is a value, and stays distinguishable from absence.
+        let empty = r#"{"s":""}"#.to_string();
+        assert_eq!(__varg_json_get(&empty, "s").as_deref(), Some(""));
+        assert_eq!(__varg_json_get(&empty, "t"), None);
+
+        // An explicit JSON null is the absence of a value, so it reads as None.
+        assert_eq!(__varg_json_get(&r#"{"a":null}"#.to_string(), "a"), None);
+
+        // The typed getters stay strict: a value of the wrong kind is not that kind.
+        assert_eq!(__varg_json_get_int(&DOC.to_string(), "name"), None, "\"varg\" is no int");
+        assert_eq!(__varg_json_get_bool(&DOC.to_string(), "n"), None, "42 is no bool");
+        assert_eq!(__varg_json_get_array(&DOC.to_string(), "name"), None);
+
+        // Non-string array elements render instead of being dropped.
+        assert_eq!(
+            __varg_json_get_array(&r#"{"xs":[1,2]}"#.to_string(), "xs"),
+            Some(vec!["1".to_string(), "2".to_string()]),
+            "a numeric array used to come back empty"
+        );
+
+        // Unparseable input has no values in it either.
+        let junk = "not json at all".to_string();
+        assert_eq!(__varg_json_get(&junk, "name"), None);
         assert!(__varg_json_keys(&junk).is_empty());
     }
 }

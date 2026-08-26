@@ -2,3 +2,22 @@ varg
 varg
 42
 warm
+42
+true
+{"temp":"warm"}
+
+<none>
+<none>
+varg
+null
+name: varg
+miss: null
+2
+1
+-1
+false
+true
+["<not-an-array>"]
+<none>
+missing-is-null
+empty-is-a-value

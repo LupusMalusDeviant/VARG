@@ -1,0 +1,4 @@
+// @probe reject: supply a fallback with `or`
+// Comparing an optional against a real value is the same forgotten fallback; only `== null`
+// and `!= null` are the way to ask whether there is a value at all.
+agent Main { public void Run() { if (json_get_int("{\"n\": 2}", "n") > 1) { print "yes"; } } }

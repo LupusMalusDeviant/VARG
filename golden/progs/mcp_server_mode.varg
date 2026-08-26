@@ -58,8 +58,8 @@ agent Main {
 
             // A struct return is serialised as JSON.
             var doc = mcp_call_tool(conn, "best", {"query": "varg"}) or "CALL-FAILED";
-            print check("struct_return_title", json_get(doc, "/title"), "best: varg");
-            var score = json_get_int(doc, "/score");
+            print check("struct_return_title", (json_get(doc, "/title") or "<missing>"), "best: varg");
+            var score = (json_get_int(doc, "/score") or -1);
             print check("struct_return_score", $"{score}", "99");
 
             // An unknown tool comes back as a JSON-RPC error, which the client surfaces as a

@@ -1,9 +1,55 @@
+/// The JSON accessors, and the five situations they used to answer identically.
+///
+/// `json_get` filtered with `as_str()` and defaulted to `""`, so an absent key, a number, a
+/// bool, a nested object and an unparseable document all came back as the empty string — the
+/// same answer a legitimately empty value gives. Nothing in the program could tell them apart.
+/// `json_get_array` dropped every non-string element, turning `[1, 2]` into an empty array.
+///
+/// They are Nullable now: `null` means "nothing there" and nothing else, every present value
+/// renders as text, and `or` supplies the fallback the caller actually wants.
 agent A {
   public void Run() {
-    var j = json_parse("{\"name\": \"varg\", \"n\": 42, \"main\": {\"temp\": \"warm\"}}");
-    print json_get(j, "/name");
+    var j = json_parse("{\"name\": \"varg\", \"n\": 42, \"ok\": true, \"tags\": [1, 2], \"main\": {\"temp\": \"warm\"}, \"empty\": \"\", \"nil\": null}");
+
+    // Plain reads: bare key and JSON pointer, on a parsed value.
+    print json_get(j, "/name") or "<none>";
+    print json_get(j, "name") or "<none>";
+    print json_get_int(j, "/n") or -1;
+    print json_get(j, "/main/temp") or "<none>";
+
+    // The five that used to collapse onto "". Each answers differently now.
+    print json_get(j, "n") or "<none>";          // number renders
+    print json_get(j, "ok") or "<none>";         // bool renders
+    print json_get(j, "main") or "<none>";       // nested object renders as JSON text
+    print json_get(j, "empty") or "<none>";      // present empty string is a value
+    print json_get(j, "missing") or "<none>";    // absent is the only <none>
+    print json_get(j, "nil") or "<none>";        // an explicit JSON null is absence too
+
+    // Without `or`, an optional renders as its value or as `null` — Varg's own spelling,
+    // not Rust's `Some(..)`, and never a bare "" that hides which case happened.
     print json_get(j, "name");
-    print json_get_int(j, "/n");
-    print json_get(j, "/main/temp");
+    print json_get(j, "missing");
+
+    // Concatenating an optional used to reach rustc as a Display trait error.
+    print "name: " + json_get(j, "name");
+    print "miss: " + json_get(j, "missing");
+
+    // Arrays keep non-string elements instead of silently dropping them.
+    var tags = json_get_array(j, "tags") or [];
+    print tags.len();
+    print tags.first() or "<none>";
+
+    // The typed accessors stay strict: a string is not an int, 42 is not a bool.
+    print json_get_int(j, "name") or -1;
+    print json_get_bool(j, "n") or false;
+    print json_get_bool(j, "ok") or false;
+    print json_get_array(j, "name") or ["<not-an-array>"];
+
+    // An unparseable document has no values in it, and says so.
+    print json_get("not json at all", "name") or "<none>";
+
+    // `== null` is the other way to ask, and agrees with `or`.
+    if (json_get(j, "missing") == null) { print "missing-is-null"; }
+    if (json_get(j, "empty") != null) { print "empty-is-a-value"; }
   }
 }

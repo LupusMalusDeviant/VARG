@@ -324,7 +324,11 @@ impl RustGenerator {
         output.push_str("impl<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug> __VargFmt for (A, B, C) { fn __varg_fmt(&self) -> String { format!(\"{:?}\", self) } }\n");
         // a2: nullable (Option) is a normal printable value. (Result is intentionally NOT
         // printable — it must be handled with ?/or; the typechecker rejects printing it.)
-        output.push_str("impl<T: std::fmt::Debug> __VargFmt for Option<T> { fn __varg_fmt(&self) -> String { format!(\"{:?}\", self) } }\n\n");
+        // An optional renders as its value, or as `null` when there is none. It used to
+        // render via Debug, so a `string?` printed `Some("x")` — Rust vocabulary leaking into
+        // Varg output, for a language whose own spelling is `x == null`. Bounding on
+        // __VargFmt rather than Debug is what lets the inner value render as itself.
+        output.push_str("impl<T: __VargFmt> __VargFmt for Option<T> { fn __varg_fmt(&self) -> String { match self { Some(v) => v.__varg_fmt(), None => \"null\".to_string() } } }\n\n");
 
         for item in &program.items {
             output.push_str(&self.gen_item(item));
@@ -1039,9 +1043,18 @@ impl RustGenerator {
             Expression::Cast { target_type, .. } => Some(target_type.clone()),
             // T-stage3: builtin call results, via the shared signature table — unless the name
             // is a user-defined method (those shadow builtins and have their own return type).
-            Expression::MethodCall { method_name, .. } => {
+            Expression::MethodCall { method_name, caller, .. } => {
                 if self.user_impl_methods.contains(method_name.as_str()) {
                     None
+                } else if matches!(method_name.as_str(), "find" | "first" | "last") {
+                    // Option-shaped, and not in the signature table because their result type
+                    // depends on the collection. Knowing the shape is what lets `or` pick the
+                    // right closure arity, including when the result went through a variable.
+                    let inner = match self.resolve_type(caller) {
+                        Some(TypeNode::Array(i)) | Some(TypeNode::List(i)) => *i,
+                        _ => TypeNode::Custom("Dynamic".to_string()),
+                    };
+                    Some(TypeNode::Nullable(Box::new(inner)))
                 } else {
                     varg_ast::builtins::builtin_return_type(method_name)
                 }
@@ -2368,7 +2381,21 @@ impl RustGenerator {
                 // String concatenation: format! for expression-level concat
                 if let BinaryOperator::Add = operator {
                     if self.is_string_expr(left) || self.is_string_expr(right) {
-                        return format!("format!(\"{{}}{{}}\", {}, {})", self.gen_expression(left), self.gen_expression(right));
+                        // An optional operand has no Display, so `"x: " + json_get(d, "k")` used
+                        // to reach rustc as a trait error about `Option<String>` — a leak of the
+                        // host language for an ordinary Varg line. Route those through __varg_fmt,
+                        // which renders the value or `null`.
+                        let fmt_side = |g: &mut Self, e: &Expression| -> String {
+                            let src = g.gen_expression(e);
+                            if matches!(g.resolve_type(e), Some(TypeNode::Nullable(_))) {
+                                format!("({}).__varg_fmt()", src)
+                            } else {
+                                src
+                            }
+                        };
+                        let l = fmt_side(self, left);
+                        let r = fmt_side(self, right);
+                        return format!("format!(\"{{}}{{}}\", {}, {})", l, r);
                     }
                 }
 
@@ -3834,7 +3861,21 @@ impl RustGenerator {
             },
             // Plan 24: expr or default → unwrap_or_else
             Expression::OrDefault { expr, default } => {
-                format!("({}).unwrap_or_else(|_| {})", self.gen_expression(expr), self.gen_expression(default))
+                // Result and Option both have `unwrap_or_else`, but with different closure arity:
+                // Result hands the error to the closure, Option hands it nothing. Emitting the
+                // Result shape unconditionally meant `xs.find(..) or 0` and any `T?` value failed
+                // with rustc's "closure is expected to take 0 arguments" — ordinary code, an error
+                // about a closure the author never wrote. So `or` only ever worked on Results, and
+                // nullable was effectively unusable.
+                let takes_no_argument =
+                    matches!(self.resolve_type(expr), Some(TypeNode::Nullable(_)));
+                let closure = if takes_no_argument { "||" } else { "|_|" };
+                format!(
+                    "({}).unwrap_or_else({} {})",
+                    self.gen_expression(expr),
+                    closure,
+                    self.gen_expression(default)
+                )
             },
             // Wave 11: If-expression — if cond { a } else { b }
             Expression::IfExpr { condition, then_block, else_block } => {

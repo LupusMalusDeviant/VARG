@@ -39,13 +39,13 @@ agent Main {
         var agents = agents_list();
         // The entry agent plus the spawned one; the dispatcher maintains both.
         print check("agents_count", $"{agents_count()}", "2");
-        print check("agents_entry_name", json_get(agents, "/0/name"), "Main");
-        print check("agents_entry_status", json_get(agents, "/0/status"), "running");
-        print check("agents_worker_name", json_get(agents, "/1/name"), "Indexer");
-        print check("agents_worker_status", json_get(agents, "/1/status"), "idle");
-        var handled = json_get_int(agents, "/1/handled");
+        print check("agents_entry_name", (json_get(agents, "/0/name") or "<missing>"), "Main");
+        print check("agents_entry_status", (json_get(agents, "/0/status") or "<missing>"), "running");
+        print check("agents_worker_name", (json_get(agents, "/1/name") or "<missing>"), "Indexer");
+        print check("agents_worker_status", (json_get(agents, "/1/status") or "<missing>"), "idle");
+        var handled = (json_get_int(agents, "/1/handled") or -1);
         print check("agents_handled", $"{handled}", "2");
-        print check("agents_last_message", json_get(agents, "/1/last_message"), "index");
+        print check("agents_last_message", (json_get(agents, "/1/last_message") or "<missing>"), "index");
         var running = agents_count_by_status("running");
         var idle = agents_count_by_status("idle");
         print check("agents_by_status", $"{running}/{idle}", "1/1");
@@ -58,16 +58,16 @@ agent Main {
         trace_end(tracer, boot);
         var traces = trace_export(tracer);
 
-        print check("trace_name", json_get(traces, "/tracer"), "dashboard");
+        print check("trace_name", (json_get(traces, "/tracer") or "<missing>"), "dashboard");
         print check("trace_span_count", $"{trace_span_count(tracer)}", "2");
-        print check("trace_first_span", json_get(traces, "/spans/0/name"), "boot");
-        print check("trace_child_span", json_get(traces, "/spans/1/name"), "seed");
+        print check("trace_first_span", (json_get(traces, "/spans/0/name") or "<missing>"), "boot");
+        print check("trace_child_span", (json_get(traces, "/spans/1/name") or "<missing>"), "seed");
         // The timeline nests by parent_id and scales bars by duration_us — both must be present.
-        var parent = json_get_int(traces, "/spans/1/parent_id");
+        var parent = (json_get_int(traces, "/spans/1/parent_id") or -1);
         print check("trace_parent_link", $"{parent}", "1");
-        var dur = json_get_int(traces, "/spans/0/duration_us");
+        var dur = (json_get_int(traces, "/spans/0/duration_us") or -1);
         print check("trace_has_duration", yn(dur >= 0), "true");
-        print check("trace_status", json_get(traces, "/spans/0/status"), "OK");
+        print check("trace_status", (json_get(traces, "/spans/0/status") or "<missing>"), "OK");
 
         // ── /api/graph ──────────────────────────────────────────────────────
         var g = graph_open("dashboard_payloads");
@@ -79,10 +79,10 @@ agent Main {
         var edges = json_stringify(graph_neighbors(g, planner));
         var agent_nodes = graph_query(g, "Agent");
         print check("graph_node_count", $"{agent_nodes.len()}", "2");
-        print check("graph_node_name", json_get(nodes, "/0/name"), "planner");
-        print check("graph_node_label", json_get(nodes, "/0/_label"), "Agent");
-        print check("graph_edge_target", json_get(edges, "/0/name"), "indexer");
-        print check("graph_edge_relation", json_get(edges, "/0/_relation"), "delegates_to");
+        print check("graph_node_name", (json_get(nodes, "/0/name") or "<missing>"), "planner");
+        print check("graph_node_label", (json_get(nodes, "/0/_label") or "<missing>"), "Agent");
+        print check("graph_edge_target", (json_get(edges, "/0/name") or "<missing>"), "indexer");
+        print check("graph_edge_relation", (json_get(edges, "/0/_relation") or "<missing>"), "delegates_to");
 
         // ── /api/cost ───────────────────────────────────────────────────────
         var budget = budget_new(50000, 500);
@@ -91,11 +91,11 @@ agent Main {
         var left_cents = budget_remaining_usd_cents(budget);
         var cost = cost_payload(50000 - left_tokens, 50000, 500 - left_cents, 500);
 
-        var lim = json_get_int(cost, "/limit_tokens");
+        var lim = (json_get_int(cost, "/limit_tokens") or -1);
         print check("cost_limit_tokens", $"{lim}", "50000");
-        var used = json_get_int(cost, "/used_tokens");
+        var used = (json_get_int(cost, "/used_tokens") or -1);
         print check("cost_tracks_real_usage", yn(used > 0), "true");
-        var pct_v = json_get_int(cost, "/pct");
+        var pct_v = (json_get_int(cost, "/pct") or -1);
         print check("cost_pct_present", $"{pct_v}", "0");
     }
 }

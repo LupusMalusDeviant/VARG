@@ -32,6 +32,9 @@ agent Main {
         print double(u);
 
         var nums = [1, 5, 12, 3];
+        // An optional prints as its value, or as `null` when there is none. It used to render
+        // through Rust's Debug, so this printed `Some(12)` / `None` — the host language's
+        // vocabulary in the output of a language that spells the same thing `x == null`.
         print nums.find((n) => n > 10);
         print nums.find((n) => n > 100);
         print nums.len();

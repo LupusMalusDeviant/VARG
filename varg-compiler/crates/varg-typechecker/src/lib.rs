@@ -561,11 +561,78 @@ impl TypeChecker {
     }
 
     /// Find the byte offset of a name in the source (for error span approximation)
+    /// Locate `name` in the source as an identifier: not inside a comment or a string, and not
+    /// as part of a longer word.
+    ///
+    /// The AST carries no per-expression spans, so an error's span is recovered by searching the
+    /// source for the identifier the error names. That search was a plain `str::find`, which took
+    /// the first occurrence anywhere — so an error about `check` underlined the word "checked"
+    /// inside a doc comment three dozen lines above the actual call, and any name that happens to
+    /// appear in prose or inside a string literal aimed the caret at text rather than at code.
+    /// Skipping comments and string literals, and requiring identifier boundaries, is what makes
+    /// it land on the call. A name that occurs only in prose now yields nothing, and the caller
+    /// falls back to the enclosing item — vague, but not actively misleading.
     fn find_name_span(&self, name: &str) -> Option<Range<usize>> {
-        if let Some(ref src) = self.source {
-            if let Some(pos) = src.find(name) {
-                return Some(pos..pos + name.len());
+        let src = self.source.as_ref()?;
+        if name.is_empty() {
+            return None;
+        }
+        let b = src.as_bytes();
+        let n = name.as_bytes();
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut i = 0usize;
+        while i < b.len() {
+            // Line comment.
+            if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
             }
+            // Block comment.
+            if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(b.len());
+                continue;
+            }
+            // Multiline string: `"""..."""`. Checked before the plain-string arm, which would
+            // otherwise read the opening delimiter as an empty string and lose track of the rest.
+            if b[i..].starts_with(br#"""""#) {
+                i += 3;
+                while i + 2 < b.len() && !b[i..].starts_with(br#"""""#) {
+                    i += 1;
+                }
+                i = (i + 3).min(b.len());
+                continue;
+            }
+            // String literal, escapes included.
+            if b[i] == b'"' {
+                i += 1;
+                while i < b.len() {
+                    if b[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            if b[i..].starts_with(n) {
+                let end = i + n.len();
+                let before_ok = i == 0 || !is_ident(b[i - 1]);
+                let after_ok = end >= b.len() || !is_ident(b[end]);
+                if before_ok && after_ok {
+                    return Some(i..end);
+                }
+            }
+            i += 1;
         }
         None
     }
@@ -1769,6 +1836,28 @@ impl TypeChecker {
                         });
                     }
                 }
+                // A Nullable operand is an unresolved optional — the same forgotten-fallback
+                // mistake as an unhandled Result, and it leaked the same way: with the JSON
+                // accessors typed Nullable, `json_get_int(args, "n") * 2` reached rustc as
+                // "cannot multiply `Option<i64>` by `{integer}`", a message about the host
+                // language for an ordinary Varg line. Two shapes stay legal: comparing against
+                // `null`, which is how Varg asks whether there is a value at all, and string
+                // concatenation, which renders the optional as its value or as `null`.
+                let comparing_to_null = matches!(operator, BinaryOperator::Eq | BinaryOperator::NotEq)
+                    && (matches!(left.as_ref(), Expression::Null)
+                        || matches!(right.as_ref(), Expression::Null));
+                let string_concat = matches!(operator, BinaryOperator::Add)
+                    && (left_ty == TypeNode::String || right_ty == TypeNode::String);
+                if !comparing_to_null && !string_concat {
+                    for ty in [&left_ty, &right_ty] {
+                        if matches!(ty, TypeNode::Nullable(_)) {
+                            return Err(TypeError::TypeMismatch {
+                                expected: "a plain value — supply a fallback with `or`".to_string(),
+                                found: format!("{:?}", ty),
+                            });
+                        }
+                    }
+                }
                 if matches!(operator, BinaryOperator::Div | BinaryOperator::Mod)
                     && matches!(right.as_ref(), Expression::Int(0))
                 {
@@ -2129,11 +2218,22 @@ impl TypeChecker {
                     }
                     Ok(TypeNode::Void)
                 } else if method_name == "pop" || method_name == "first" || method_name == "last" {
-                    // Plan 54: Infer element type from collection
+                    // Plan 54: Infer element type from collection.
+                    //
+                    // `first`/`last` lower to `.first().cloned()`, which is an Option — the
+                    // element type claimed here never matched what was generated, which is why
+                    // printing `xs.first()` showed `Some("apple")`. `pop` is unwrapped by codegen,
+                    // so it really is the element.
                     let caller_ty = self.infer_expression_type(caller)?;
+                    let optional = method_name == "first" || method_name == "last";
                     match &caller_ty {
-                        TypeNode::Array(inner) | TypeNode::List(inner) => Ok(*inner.clone()),
-                        _ => Ok(TypeNode::Custom("Dynamic".to_string())),
+                        TypeNode::Array(inner) | TypeNode::List(inner) => {
+                            if optional { Ok(TypeNode::Nullable(inner.clone())) } else { Ok(*inner.clone()) }
+                        }
+                        _ => {
+                            let dynamic = TypeNode::Custom("Dynamic".to_string());
+                            if optional { Ok(TypeNode::Nullable(Box::new(dynamic))) } else { Ok(dynamic) }
+                        }
                     }
                 } else if method_name == "reverse" {
                     Ok(TypeNode::Void)
@@ -2244,16 +2344,20 @@ impl TypeChecker {
                     Ok(TypeNode::JsonValue)
                 } else if method_name == "json_get" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::String)
+                    // Nullable: absence is not a value. See `builtins.rs`.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::String)))
                 } else if method_name == "json_get_int" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Int)
+                    // Nullable: absence is not a value. See `builtins.rs`.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::Int)))
                 } else if method_name == "json_get_bool" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Bool)
+                    // Nullable: absence is not a value. See `builtins.rs`.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::Bool)))
                 } else if method_name == "json_get_array" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                    // Nullable: absence is not a value. See `builtins.rs`.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::Array(Box::new(TypeNode::String)))))
                 } else if method_name == "json_stringify" || method_name == "json_stringify_pretty" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (json)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
@@ -7072,30 +7176,28 @@ mod tests {
         assert_eq!(ty, TypeNode::String, "pop() on Array<string> should return string");
     }
 
+    /// `first`/`last` lower to `.first().cloned()`, which is an Option — an empty collection has
+    /// no first element. This test asserted the element type, which is what the generated code
+    /// never produced; printing `xs.first()` showed `Some(...)` all along. `pop` is unwrapped by
+    /// codegen, so it really is the element.
     #[test]
-    fn test_first_returns_element_type() {
+    fn test_first_is_optional_and_pop_is_not() {
         let mut checker = TypeChecker::new();
         checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::Int)));
-        let expr = Expression::MethodCall {
+        let call = |name: &str| Expression::MethodCall {
             caller: Box::new(Expression::Identifier("items".to_string())),
-            method_name: "first".to_string(),
+            method_name: name.to_string(),
             args: vec![],
         };
-        let ty = checker.infer_expression_type(&expr).unwrap();
-        assert_eq!(ty, TypeNode::Int, "first() on Array<int> should return int");
-    }
-
-    #[test]
-    fn test_last_returns_element_type() {
-        let mut checker = TypeChecker::new();
-        checker.env.insert("items".to_string(), TypeNode::Array(Box::new(TypeNode::String)));
-        let expr = Expression::MethodCall {
-            caller: Box::new(Expression::Identifier("items".to_string())),
-            method_name: "last".to_string(),
-            args: vec![],
-        };
-        let ty = checker.infer_expression_type(&expr).unwrap();
-        assert_eq!(ty, TypeNode::String, "last() on Array<string> should return string");
+        assert_eq!(
+            checker.infer_expression_type(&call("first")).unwrap(),
+            TypeNode::Nullable(Box::new(TypeNode::Int))
+        );
+        assert_eq!(
+            checker.infer_expression_type(&call("last")).unwrap(),
+            TypeNode::Nullable(Box::new(TypeNode::Int))
+        );
+        assert_eq!(checker.infer_expression_type(&call("pop")).unwrap(), TypeNode::Int);
     }
 
     #[test]
@@ -8788,6 +8890,52 @@ mod tests {
         assert_eq!(ty, TypeNode::JsonValue);
     }
 
+    /// The accessors are Nullable, not plain values. Asserting the plain type here is what
+    /// let the baked-in defaults stand: `""` came back for an absent key, a number, a bool,
+    /// a nested object and an unparseable document alike, and no test told those five apart.
+    /// The span search recovers where an error happened by looking the name up in the source,
+    /// because the AST has no per-expression spans. It used to be a plain `str::find`, so the
+    /// caret went to the first textual occurrence: a word in a doc comment, a word inside a
+    /// string literal, or the middle of a longer identifier. An error about `check` really did
+    /// underline the "check" inside "checked" in prose, dozens of lines from the call.
+    #[test]
+    fn test_find_name_span_skips_comments_strings_and_partial_words() {
+        let mut checker = TypeChecker::new();
+        let src = concat!(
+            "/// prose that says check here first\n",
+            "// another check in a line comment\n",
+            "/* and check in a block comment */\n",
+            "agent A {\n",
+            "    void f() { var s = \"check inside a string\"; var checked = 1; self.check(); }\n",
+            "}\n",
+        );
+        checker.source = Some(src.to_string());
+
+        let span = checker.find_name_span("check").expect("should find the call");
+        assert_eq!(&src[span.clone()], "check");
+        // Everything before the real call is comment, string, or the longer word `checked`.
+        let call_at = src.rfind("self.check()").unwrap() + "self.".len();
+        assert_eq!(span.start, call_at, "caret must land on the call, not on prose");
+    }
+
+    #[test]
+    fn test_find_name_span_yields_nothing_when_only_prose_mentions_it() {
+        let mut checker = TypeChecker::new();
+        // No code occurrence at all: better to report the enclosing item than to point at a
+        // comment as though it were the offending code.
+        checker.source = Some("/// mentions frobnicate\nagent A { void f() {} }\n".to_string());
+        assert_eq!(checker.find_name_span("frobnicate"), None);
+    }
+
+    #[test]
+    fn test_find_name_span_skips_multiline_strings() {
+        let mut checker = TypeChecker::new();
+        let src = "agent A { void f() { var t = \"\"\"check\"\"\"; self.check(); } }";
+        checker.source = Some(src.to_string());
+        let span = checker.find_name_span("check").expect("should find the call");
+        assert_eq!(span.start, src.rfind("self.check").unwrap() + "self.".len());
+    }
+
     #[test]
     fn test_stdlib_json_get_type() {
         let mut checker = TypeChecker::new();
@@ -8797,7 +8945,7 @@ mod tests {
             args: vec![Expression::Identifier("json".to_string()), Expression::String("/name".to_string())],
         };
         let ty = checker.infer_expression_type(&expr).unwrap();
-        assert_eq!(ty, TypeNode::String);
+        assert_eq!(ty, TypeNode::Nullable(Box::new(TypeNode::String)));
     }
 
     #[test]
@@ -8809,7 +8957,7 @@ mod tests {
             args: vec![Expression::Identifier("json".to_string()), Expression::String("/age".to_string())],
         };
         let ty = checker.infer_expression_type(&expr).unwrap();
-        assert_eq!(ty, TypeNode::Int);
+        assert_eq!(ty, TypeNode::Nullable(Box::new(TypeNode::Int)));
     }
 
     #[test]
@@ -8821,7 +8969,7 @@ mod tests {
             args: vec![Expression::Identifier("json".to_string()), Expression::String("/tags".to_string())],
         };
         let ty = checker.infer_expression_type(&expr).unwrap();
-        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::String)));
+        assert_eq!(ty, TypeNode::Nullable(Box::new(TypeNode::Array(Box::new(TypeNode::String)))));
     }
 
     // ===== Wave 15: HTTP Response with Status =====

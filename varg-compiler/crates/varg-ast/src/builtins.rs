@@ -18,7 +18,7 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         // ── String ────────────────────────────────────────────────────────────────
         "to_upper" | "to_lower" | "trim" | "trim_start" | "trim_end" | "ltrim" | "rtrim"
         | "replace" | "substring" | "repeat" | "pad_left" | "pad_right" | "char_at"
-        | "json_get" | "json_stringify" | "json_stringify_pretty" | "json_set" | "json_merge"
+        | "json_stringify" | "json_stringify_pretty" | "json_set" | "json_merge"
         | "to_string" | "to_hex" | "to_binary" | "to_fixed" | "uuid"
         | "base64_encode" | "base64_decode" | "base64_encode_file"
         | "path_join" | "path_parent" | "path_stem" | "path_extension"
@@ -32,7 +32,7 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         // ── Int ───────────────────────────────────────────────────────────────────
         "len" | "length" | "count" | "count_occurrences" | "sum"
         | "time_millis" | "time_add" | "time_diff" | "channel_len" | "event_count"
-        | "vector_store_count" | "json_get_int" | "estimate_tokens" | "random_int"
+        | "vector_store_count" | "estimate_tokens" | "random_int"
         | "proc_pid" | "orchestrator_task_count" | "orchestrator_completed_count"
         | "pipeline_step_count" | "workflow_step_count" | "mcp_server_tool_count"
         | "memory_episode_count" | "trace_span_count"
@@ -45,7 +45,7 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         // ── Bool ──────────────────────────────────────────────────────────────────
         "contains" | "contains_key" | "starts_with" | "ends_with" | "is_empty"
         | "is_some" | "is_none" | "is_ok" | "is_err" | "path_exists" | "is_file" | "is_dir"
-        | "json_has" | "json_get_bool" | "channel_is_closed" | "proc_is_alive"
+        | "json_has" | "channel_is_closed" | "proc_is_alive"
         | "registry_is_installed" => TypeNode::Bool,
 
         // ── Result<String, Error> (fallible, string result) ───────────────────────
@@ -64,6 +64,17 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         "parse_int" => TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::Error)),
         "parse_float" => TypeNode::Result(Box::new(TypeNode::Float), Box::new(TypeNode::Error)),
 
+        // ── Nullable ("there may be nothing there") ────────────────────────
+        // The JSON accessors answered a plain value with a default baked in, so `""`/`0`/`false`
+        // meant five different things at once: absent key, wrong kind, JSON null, empty value,
+        // unparseable document. Nullable separates "nothing there" from every value.
+        "json_get" => TypeNode::Nullable(Box::new(TypeNode::String)),
+        "json_get_int" => TypeNode::Nullable(Box::new(TypeNode::Int)),
+        "json_get_bool" => TypeNode::Nullable(Box::new(TypeNode::Bool)),
+        "json_get_array" => {
+            TypeNode::Nullable(Box::new(TypeNode::Array(Box::new(TypeNode::String))))
+        }
+
         _ => return None,
     };
     Some(t)
@@ -75,10 +86,12 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
 /// re-hardcoding the set. Names are the bare form (no `__varg_` prefix).
 pub fn known_builtin_names() -> &'static [&'static str] {
     &[
+        // Nullable
+        "json_get", "json_get_int", "json_get_bool", "json_get_array",
         // String
         "to_upper", "to_lower", "trim", "trim_start", "trim_end", "ltrim", "rtrim",
         "replace", "substring", "repeat", "pad_left", "pad_right", "char_at",
-        "json_get", "json_stringify", "json_stringify_pretty", "json_set", "json_merge",
+        "json_stringify", "json_stringify_pretty", "json_set", "json_merge",
         "to_string", "to_hex", "to_binary", "to_fixed", "uuid",
         "base64_encode", "base64_decode", "base64_encode_file",
         "path_join", "path_parent", "path_stem", "path_extension",
@@ -88,7 +101,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         // Int
         "len", "length", "count", "count_occurrences", "parse_int", "sum",
         "time_millis", "time_add", "time_diff", "channel_len", "event_count",
-        "vector_store_count", "json_get_int", "estimate_tokens", "random_int",
+        "vector_store_count", "estimate_tokens", "random_int",
         "proc_pid", "orchestrator_task_count", "orchestrator_completed_count",
         "pipeline_step_count", "workflow_step_count", "mcp_server_tool_count",
         "memory_episode_count", "trace_span_count",
@@ -99,7 +112,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         // Bool
         "contains", "contains_key", "starts_with", "ends_with", "is_empty",
         "is_some", "is_none", "is_ok", "is_err", "path_exists", "is_file", "is_dir",
-        "json_has", "json_get_bool", "channel_is_closed", "proc_is_alive",
+        "json_has", "channel_is_closed", "proc_is_alive",
         "registry_is_installed",
         // Result<String, Error>
         "fs_read", "exec", "env", "llm_infer", "llm_chat",

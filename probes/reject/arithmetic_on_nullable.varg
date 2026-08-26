@@ -1,0 +1,4 @@
+// @probe reject: supply a fallback with `or`
+// The JSON accessors are Nullable, so arithmetic on one is a forgotten fallback. This used to
+// reach rustc as "cannot multiply `Option<i64>` by `{integer}`".
+agent Main { public void Run() { var n = json_get_int("{\"n\": 2}", "n"); print n * 2; } }

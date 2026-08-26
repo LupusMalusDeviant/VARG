@@ -13,12 +13,12 @@ agent Main {
         var raw = "{\"name\": \"ada\", \"age\": 36, \"active\": true, \"tags\": [\"x\", \"y\"]}";
         var obj = json_parse(raw);
 
-        print check("json_get", json_get(obj, "name"), "ada");
-        var age = json_get_int(obj, "age");
+        print check("json_get", (json_get(obj, "name") or "<missing>"), "ada");
+        var age = (json_get_int(obj, "age") or -1);
         print check("json_get_int", $"{age}", "36");
-        var act = json_get_bool(obj, "active");
+        var act = (json_get_bool(obj, "active") or false);
         print check("json_get_bool", yn(act), "true");
-        var tags = json_get_array(obj, "tags");
+        var tags = (json_get_array(obj, "tags") or ["<missing>"]);
         print check("json_get_array", $"{tags.len()}", "2");
 
         var has_name = json_has(obj, "name");
@@ -28,20 +28,20 @@ agent Main {
 
         // json_set on a raw string, then read the new value back.
         var updated = json_set(raw, "city", "vienna");
-        print check("json_set", json_get(updated, "city"), "vienna");
-        print check("json_set_keeps", json_get(updated, "name"), "ada");
+        print check("json_set", (json_get(updated, "city") or "<missing>"), "vienna");
+        print check("json_set_keeps", (json_get(updated, "name") or "<missing>"), "ada");
 
         // json_merge: right side wins on conflict, new keys are added.
         var patch = "{\"age\": 41, \"role\": \"admin\"}";
         var merged = json_merge(raw, patch);
-        var merged_age = json_get_int(merged, "age");
+        var merged_age = (json_get_int(merged, "age") or -1);
         print check("json_merge_override", $"{merged_age}", "41");
-        print check("json_merge_add", json_get(merged, "role"), "admin");
-        print check("json_merge_keeps", json_get(merged, "name"), "ada");
+        print check("json_merge_add", (json_get(merged, "role") or "<missing>"), "admin");
+        print check("json_merge_keeps", (json_get(merged, "name") or "<missing>"), "ada");
 
         // Round-trip: stringify then read back.
         var round = json_stringify(obj);
-        print check("json_stringify", json_get(round, "name"), "ada");
+        print check("json_stringify", (json_get(round, "name") or "<missing>"), "ada");
         var pretty = json_stringify_pretty(obj);
         var pretty_multiline = pretty.contains("\n");
         print check("json_stringify_pretty", yn(pretty_multiline), "true");
