@@ -20,6 +20,11 @@ Varg uses [Semantic Versioning](https://semver.org/).
   back as its text (`42`, `true`, `{"b":1}`) rather than as `""`. `json_get_array` renders
   non-string elements instead of dropping them, so `[1, 2]` yields `["1", "2"]`.
 - **The typed accessors are strict.** `json_get_int` on the string `"42"` answers `null`.
+- **`json_parse` returns `Result<JsonValue, string>`.** It used to lower to
+  `from_str(..).unwrap_or(Value::Null)`, so a malformed document became an empty one and every
+  later read reported its keys as merely absent — the parse failure was unobservable. The error
+  carries serde's message, including line and column. Propagate it with `?`, ask with
+  `.is_err()`, or drop the parse hop: the accessors read a raw JSON string directly.
 - **An optional prints as its value, or as `null`.** It used to render through Rust's `Debug`,
   so a `string?` printed `Some("x")`. This affects `find`, `first` and `last` too.
 

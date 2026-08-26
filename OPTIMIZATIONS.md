@@ -892,6 +892,30 @@ behauptete das stille Leerbild, `test_stdlib_json_parse_type` den Drift) — bei
 sollen ohne Unwrap funktionieren) und nehmen auch rohe Strings — es fallibel zu machen wäre eine
 Design-Entscheidung, keine Bugfix. Notiert, nicht geändert.
 
+### Schritt 3 — `json_parse` fallibel
+
+Gleiche Frage eine Ebene hoeher: `from_str(..).unwrap_or(Value::Null)` machte aus einem kaputten
+Dokument ein leeres. Jede spaetere Lesung meldete die Schluessel dann als schlicht abwesend — der
+Parse-Fehler war **nicht beobachtbar**. Jetzt `Result<JsonValue, string>` mit serdes Meldung
+(Zeile/Spalte). Behandlung: `?` (Auto-Wrapping ueber den Erfolgstyp), `.is_err()`, oder gar nicht
+parsen — die Accessoren nehmen rohe JSON-Strings ohnehin.
+
+Beim Umbau der Aufrufstellen gemessen: von 5 `json_parse`-Aufrufen im Repo waren **4 ueberfluessig**.
+
+Zwei Tests schrieben wieder das alte Verhalten fest — `test_codegen_json_parse` verlangte
+woertlich `unwrap_or`, also den stillen Default; `test_stdlib_json_parse_type` hatte den Drift
+schon zweimal protokolliert (erst Result ohne Codegen-Deckung, dann korrigiert auf den blanken
+Wert, was den Default festnagelte). Beide korrigiert; damit sind es **sieben** Tests in diesem
+Projekt, die den Bug beschrieben statt ihn zu finden.
+
+### Beifang: ein flakiger Test
+
+`counts_by_status_track_transitions` bestand einzeln und fiel im Gesamtlauf — die Agent-Registry
+ist prozessglobal, und ein Zaehler ueber die *ganze* Registry laesst sich nicht vorher/nachher
+lesen, waehrend parallele Tests Statuswechsel einstreuen. Die statusaendernden Tests des Moduls
+teilen sich jetzt eine Mutex.
+
+
 ### Stand danach
 1241 Unit-Tests (default) / 1394 (`--features full`) · Golden **38/38** · Probes **55/55**.
 
@@ -963,7 +987,7 @@ alle Lambdas: genau dort, wo Agenten-Code steht. Bewusst nicht in dieser Stufe a
 Binden untypisierter Parameter ohne Falschmeldungen ist eine eigene, sorgfältige Runde.
 
 ### Stand danach
-1243 Unit-Tests (default) / 1396 (`--features full`) · Golden **38/38** · Probes **57/57** ·
+1243 Unit-Tests (default) / 1396 (`--features full`) · Golden **38/38** · Probes **58/58** ·
 18 Programme (examples + spikes + dashboard) bauen.
 
 ---

@@ -947,7 +947,7 @@ var resp = http_request(url, "POST", headers, body)?;    // JSON with status/bod
 ### JSON
 
 ```csharp
-var obj = json_parse(json_string);                  // JsonValue
+var obj = json_parse(json_string)?;                 // Result<JsonValue, string>
 
 // The accessors are Nullable: `null` means "nothing there" and nothing else.
 var name   = json_get(obj, "name") or "";           // string?    -> string
@@ -985,10 +985,28 @@ Printing an optional without resolving it shows the value, or `null` when there 
 Arithmetic on one, and comparing one against a real value, are rejected at compile time —
 supply a fallback with `or` first.
 
+`json_parse` is fallible for the same reason: a document that will not parse is not an empty
+document. It used to lower to `unwrap_or(Value::Null)`, so malformed input silently became a
+document whose keys were all merely absent. Handle it by propagating, or by asking:
+
+```csharp
+string name_of(string doc) {          // declare the success type; `?` wraps it in a Result
+    var j = json_parse(doc)?;
+    return json_get(j, "name") or "<none>";
+}
+
+if (json_parse(text).is_err()) { print "that was not JSON"; }
+```
+
+Most code needs neither: the accessors read a raw JSON string directly, so `json_get(body,
+"/name")` works without a parse hop. Parse when you want the document checked once, or read
+from it many times.
+
 > **Changed in this release.** These four used to return a plain value with a default baked in,
 > so `""`/`0`/`false` meant an absent key, a value of the wrong kind, a JSON null, a genuinely
 > empty value and an unparseable document all at once — five situations, one answer. Code that
-> relied on the old default needs an explicit `or`.
+> relied on the old default needs an explicit `or`. `json_parse` returns a `Result` instead of
+> quietly yielding an empty document; propagate it with `?`, or drop the parse hop entirely.
 
 ### Shell (requires SystemAccess)
 

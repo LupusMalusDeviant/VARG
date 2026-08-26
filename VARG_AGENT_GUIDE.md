@@ -1541,7 +1541,9 @@ var code   = exec_status("git pull", sys);
 
 ### JSON
 ```csharp
-var parsed  = json_parse(text);
+// `json_parse` is fallible — unparseable input is an error, not an empty document. Most reads
+// need no parse hop at all, because the accessors take a raw JSON string.
+var parsed  = json_parse(text)?;
 
 // The accessors are Nullable — `null` means "nothing there", so decide what absence means.
 var val     = json_get(parsed, "key") or "";
@@ -2362,11 +2364,13 @@ agent ApiServer {
         });
 
         http_route(server, "POST", "/users", (req) => {
-            var data = json_parse(req.body);
-            // A missing field is not an empty one: reject the request instead of
-            // creating a user called "".
-            var name  = json_get(data, "name") or "";
-            var email = json_get(data, "email") or "";
+            // No parse hop: the accessors read the raw body. A missing field is not an
+            // empty one, so reject the request instead of creating a user called "".
+            if (json_parse(req.body).is_err()) {
+                return http_response(400, "{\"error\":\"body is not JSON\"}");
+            }
+            var name  = json_get(req.body, "name") or "";
+            var email = json_get(req.body, "email") or "";
             if (name == "" or email == "") {
                 return http_response(400, "{\"error\":\"name and email required\"}");
             }
