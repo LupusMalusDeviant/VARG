@@ -15,26 +15,19 @@
 /// server starts. The HTML page is the latter: rendered once, captured, served from memory.
 
 /// Cost as JSON. `budget_report` returns a sentence for humans; the panel wants numbers.
-///
-/// Built by concatenation rather than interpolation: `$"..."` has no escape for a literal brace,
-/// so a JSON object cannot be written inside one.
 fn cost_payload(int used_tokens, int limit_tokens, int used_cents, int limit_cents) -> string {
     var pct = 0;
     if limit_tokens > 0 {
         pct = used_tokens * 100 / limit_tokens;
     }
-    return "{\"used_tokens\": " + used_tokens.to_string()
-        + ", \"limit_tokens\": " + limit_tokens.to_string()
-        + ", \"used_cents\": " + used_cents.to_string()
-        + ", \"limit_cents\": " + limit_cents.to_string()
-        + ", \"pct\": " + pct.to_string() + "}";
+    return $"{{\"used_tokens\": {used_tokens}, \"limit_tokens\": {limit_tokens}, \"used_cents\": {used_cents}, \"limit_cents\": {limit_cents}, \"pct\": {pct}}}";
 }
 
 /// Graph nodes and edges in one payload. `graph_query` gives nodes for a label; `graph_neighbors`
 /// gives each node's neighbours together with the relation that connects them, which is what the
 /// panel draws.
 fn graph_payload(string nodes_json, string edges_json) -> string {
-    return "{\"nodes\": " + nodes_json + ", \"edges\": " + edges_json + "}";
+    return $"{{\"nodes\": {nodes_json}, \"edges\": {edges_json}}}";
 }
 
 agent Dashboard {
@@ -44,19 +37,27 @@ agent Dashboard {
         var tracer = trace_start("dashboard");
         var boot = trace_span(tracer, "boot");
 
-        var g = graph_open("dashboard.graph.db");
+        var g = graph_open("dashboard");
         var budget = budget_new(50000, 500);
 
         // A worker so the agent panel has something real to show: it registers itself, reports
         // idle between messages and running while handling one.
         var worker = spawn SampleWorker();
 
+        // The graph persists to disk, so seed it only once — otherwise every restart adds another
+        // copy of the demo nodes and the panel fills up with duplicates.
         var seed = trace_span(tracer, "seed");
-        var planner = graph_add_node(g, "Agent", {"name": "planner"});
-        var indexer = graph_add_node(g, "Agent", {"name": "indexer"});
-        var corpus = graph_add_node(g, "Dataset", {"name": "corpus"});
-        graph_add_edge(g, planner, "delegates_to", indexer, {});
-        graph_add_edge(g, indexer, "reads", corpus, {});
+        var existing = graph_query(g, "Agent");
+        var planner = 0;
+        if existing.is_empty() {
+            planner = graph_add_node(g, "Agent", {"name": "planner"});
+            var indexer = graph_add_node(g, "Agent", {"name": "indexer"});
+            var corpus = graph_add_node(g, "Dataset", {"name": "corpus"});
+            graph_add_edge(g, planner, "delegates_to", indexer, {});
+            graph_add_edge(g, indexer, "reads", corpus, {});
+        } else {
+            planner = parse_int(existing[0]["_id"]) or 1;
+        }
         trace_end(tracer, seed);
 
         worker.send("index", "corpus");

@@ -19,11 +19,7 @@ fn cost_payload(int used_tokens, int limit_tokens, int used_cents, int limit_cen
     if limit_tokens > 0 {
         pct = used_tokens * 100 / limit_tokens;
     }
-    return "{\"used_tokens\": " + used_tokens.to_string()
-        + ", \"limit_tokens\": " + limit_tokens.to_string()
-        + ", \"used_cents\": " + used_cents.to_string()
-        + ", \"limit_cents\": " + limit_cents.to_string()
-        + ", \"pct\": " + pct.to_string() + "}";
+    return $"{{\"used_tokens\": {used_tokens}, \"limit_tokens\": {limit_tokens}, \"used_cents\": {used_cents}, \"limit_cents\": {limit_cents}, \"pct\": {pct}}}";
 }
 
 agent Indexer {
@@ -74,7 +70,7 @@ agent Main {
         print check("trace_status", json_get(traces, "/spans/0/status"), "OK");
 
         // ── /api/graph ──────────────────────────────────────────────────────
-        var g = graph_open("dashboard_payloads.graph.db");
+        var g = graph_open("dashboard_payloads");
         var planner = graph_add_node(g, "Agent", {"name": "planner"});
         var indexer = graph_add_node(g, "Agent", {"name": "indexer"});
         graph_add_edge(g, planner, "delegates_to", indexer, {});
