@@ -24,7 +24,21 @@ for v in progs/*.varg; do
   exe="./${base}.exe"
   if [ ! -x "$exe" ] && [ -x "${exe%.exe}" ]; then exe="${exe%.exe}"; fi  # POSIX: no .exe
   got="$("$exe" 2>/dev/null | norm)"
+  # PIPESTATUS[0], not $?: after a pipe $? belongs to `norm`, so the check would have passed
+  # for every program no matter how it ended.
+  code="${PIPESTATUS[0]}"
   exp_file="expected/${base}.expected"
+  # A program that fails has to say so with its exit code. That was not checked, and a `?`
+  # propagating out of the entry point used to end the program silently with status 0 — the
+  # output simply stopped and everything downstream read it as success. A program with an
+  # `expected/<name>.exit` file must exit with exactly that code.
+  exit_file="expected/${base}.exit"
+  if [ -f "$exit_file" ]; then
+    want_code="$(cat "$exit_file")"
+    if [ "$code" != "$want_code" ]; then
+      echo "EXIT-FAIL   $base (exit $code, want $want_code)"; fail=1; continue
+    fi
+  fi
   if [ "${1:-}" = "--update" ]; then
     printf '%s\n' "$got" > "$exp_file"; echo "UPDATED     $base"; continue
   fi

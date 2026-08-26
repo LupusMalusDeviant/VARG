@@ -46,6 +46,24 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Fixed — a failing program said it had succeeded
+
+**An error propagating out of the entry point ended the program silently, with status 0.** The
+generated `main` called `instance.Run();` and discarded the result, so a `?` that reached the top
+simply stopped the output halfway — and a shell, a CI job or an agent running the binary read that
+as success. The entry point now reports what failed and exits 1.
+
+Found by running the failure paths of the previous change rather than type-checking them, which
+also turned up **`self_improver_new(":memory:")` trying to create a file called
+`:memory:_learnings_episodic.vector.db`**: the in-memory marker was lost in the derived name. It
+had been panicking inside the vector store all along; making that store fallible is what finally
+let the message out.
+
+`golden/run.sh` checks exit codes now, for programs that carry an `expected/<name>.exit` file. It
+reads `PIPESTATUS[0]` rather than `$?`, which after a pipe belongs to the normaliser — with `$?`
+the check would have passed for every program no matter how it ended.
+
+
 ### Changed — the runtime reports failures instead of panicking
 
 An inventory of every place the runtime could take the process down found 56 reachable ones

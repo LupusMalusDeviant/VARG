@@ -45,7 +45,14 @@ pub fn __varg_self_improver_new(
     // than panicking on a path it cannot open.
     Ok(Arc::new(Mutex::new(SelfImprover {
         name: name.to_string(),
-        memory: __varg_memory_open(&format!("{}_learnings", name))?,
+        // `:memory:` has to survive the derived name, or an in-memory improver tries to create
+        // a file literally called `:memory:_learnings_episodic.vector.db`. That used to panic
+        // inside the vector store; making the store fallible is what finally surfaced it.
+        memory: __varg_memory_open(&if name == ":memory:" {
+            ":memory:".to_string()
+        } else {
+            format!("{}_learnings", name)
+        })?,
         iterations: 0,
         successes: 0,
         failures: 0,

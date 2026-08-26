@@ -1,0 +1,69 @@
+/// The failure paths of the newly fallible builtins, run rather than merely type-checked.
+///
+/// Each of these used to panic out of a Rust library: polars on a column name with a typo,
+/// tantivy on a locked index, rusqlite on an unreachable path, and `decrypt` handing its error
+/// back as the plaintext. Written after the conversions and run once, it found two more things:
+/// an error propagating out of the entry point ended the program silently with status 0, and
+/// `self_improver_new(":memory:")` tried to create a file called
+/// `:memory:_learnings_episodic.vector.db` because the in-memory marker was lost in the derived
+/// name — which had been panicking inside the vector store all along.
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+fn yn(bool b) -> string {
+    if b { return "reported"; }
+    return "silent";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            var files = FileAccess {};
+            var dbc = DbAccess {};
+            // ── DataFrame: Datei fehlt, Spalte fehlt, Operator unbekannt ──
+            print check("df_read_missing", yn(df_read_csv("gibtsnicht.csv").is_err()), "reported");
+            fs_write("ep.csv", "name,age\nada,36\nbob,25\n")?;
+            var df = df_read_csv("ep.csv")?;
+            print check("df_read_ok", $"{df_shape(df).0}", "2");
+            print check("df_bad_column", yn(df_select(df, ["nope"]).is_err()), "reported");
+            print check("df_bad_filter", yn(df_filter(df, "age >").is_err()), "reported");
+            print check("df_bad_operator", yn(df_filter(df, "age ~~ 5").is_err()), "reported");
+            print check("df_bad_agg", yn(df_agg(df, ["name"], "avarage").is_err()), "reported");
+            print check("df_good_filter", $"{df_shape(df_filter(df, "age > 30")?).0}", "1");
+            print check("df_write_bad_path", yn(df_write_csv(df, "kein/pfad/x.csv").is_err()), "reported");
+
+            // ── Volltextsuche ─────────────────────────────────────────────
+            var idx = fts_open(":memory:", files)?;
+            fts_add(idx, "d1", "varg is a compiled language")?;
+            fts_commit(idx)?;
+            print check("fts_search_ok", $"{(fts_search(idx, "varg", 5) or []).len()}", "1");
+            fts_close(idx)?;
+
+            // ── Vektor-Store, Memory, Self-Improver, Checkpoint ───────────
+            var store = vector_store_open(":memory:")?;
+            print check("vector_ok", $"{vector_store_count(store)}", "0");
+            var mem = memory_open(":memory:")?;
+            memory_set(mem, "k", "v");
+            print check("memory_ok", memory_get(mem, "k", "none"), "v");
+            var si = self_improver_new(":memory:", 3)?;
+            print check("improver_ok", $"{self_improver_iterations(si)}", "0");
+            var cp = checkpoint_open(":memory:", "agent_v1")?;
+            print check("checkpoint_ok", yn(checkpoint_open(":memory:", "a2").is_ok()), "reported");
+
+            // ── SQLite ────────────────────────────────────────────────────
+            var db = db_open(":memory:")?;
+            print check("db_ok", $"{db_execute(db, "CREATE TABLE t (a INT)", []) or -1}", "0");
+            print check("db_bad_path", yn(db_open("kein/pfad/x.db").is_err()), "reported");
+
+            // ── Krypto: der Fall, der den Fehler als Klartext zurueckgab ──
+            var enc = encrypt("geheim", "passwort")?;
+            print check("crypto_roundtrip", decrypt(enc, "passwort") or "<fehler>", "geheim");
+            print check("crypto_wrong_pw", yn(decrypt(enc, "falsch").is_err()), "reported");
+            print check("crypto_junk", yn(decrypt("!!!kein base64!!!", "x").is_err()), "reported");
+
+            delete_file("ep.csv")?;
+        }
+    }
+}

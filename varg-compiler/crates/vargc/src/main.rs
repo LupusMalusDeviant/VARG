@@ -1706,6 +1706,9 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
         final_rust_source.push_str(&format!(
             "    let __entry_agent_id = varg_runtime::agents::__varg_agent_register(\"{}\");\n",
             agent));
+        final_rust_source.push_str(&format!(
+            "    const __ENTRY_NAME: &str = \"{}\";\n",
+            main_method_name.clone().unwrap_or_else(|| "Run".to_string())));
         final_rust_source.push_str("    varg_runtime::agents::__varg_agent_set_status(__entry_agent_id, \"running\");\n");
         let has_on_start = entry_agent_has("on_start");
         let has_on_stop = entry_agent_has("on_stop");
@@ -1716,7 +1719,15 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
             // An async entry must be awaited — without this the future is dropped and the body
             // never executes (an `async Run()` that starts a server would exit silently).
             let await_kw = if main_method_is_async { ".await" } else { "" };
-            final_rust_source.push_str(&format!("    instance.{}(){};\n", m, await_kw));
+            // And its result must be looked at. `instance.Run();` discarded it, so a `?` that
+            // propagated out of the entry point ended the program **silently, with status 0**:
+            // the output stopped halfway and everything downstream — a shell, a CI job, an agent
+            // orchestrating the binary — read that as success. A failing program has to say so
+            // and exit non-zero.
+            final_rust_source.push_str(&format!(
+                "    let __entry_result = instance.{}(){};\n", m, await_kw));
+            final_rust_source.push_str(
+                "    if let Err(__e) = varg_runtime::__varg_entry_outcome(__entry_result) {\n                 \x20       eprintln!(\"[Varg] {} failed: {}\", __ENTRY_NAME, __e);\n                 \x20       varg_runtime::agents::__varg_agent_failed(__entry_agent_id, \"run\", &__e);\n                 \x20       std::process::exit(1);\n                 \x20   }\n");
         } else {
             final_rust_source.push_str("    println!(\"[VargOS] No parameterless 'Run' or 'Main' method found. Exiting.\");\n");
         }

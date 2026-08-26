@@ -6,6 +6,33 @@
 
 /// Installed once by the generated main(). Converts Rust panics into clean
 /// "Runtime error: ..." messages instead of raw backtraces.
+/// The outcome of an entry method, whichever shape it was generated in.
+///
+/// `Run()` becomes `()` when its body has no `?` in it and `Result<(), String>` when it does, and
+/// the generated `main` cannot know which. Both used to be discarded with `instance.Run();`, so a
+/// `?` that propagated out of the entry point ended the program **silently, with status 0** —
+/// the output stopped halfway and a shell, a CI job or an agent running the binary read that as
+/// success. This lets `main` look at either shape the same way.
+pub trait EntryOutcome {
+    fn into_outcome(self) -> Result<(), String>;
+}
+
+impl EntryOutcome for () {
+    fn into_outcome(self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+impl<T, E: std::fmt::Display> EntryOutcome for Result<T, E> {
+    fn into_outcome(self) -> Result<(), String> {
+        self.map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+pub fn __varg_entry_outcome<T: EntryOutcome>(value: T) -> Result<(), String> {
+    value.into_outcome()
+}
+
 pub fn __varg_install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let msg: String = if let Some(s) = info.payload().downcast_ref::<&str>() {
