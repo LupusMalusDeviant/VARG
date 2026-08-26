@@ -1520,29 +1520,33 @@ var host = env("HOST") or "localhost";
 ```
 
 ### File I/O (requires `FileAccess`)
+
+The token is not an argument. Having a `FileAccess` in scope — as a method parameter, or inside
+`unsafe {}` — is what authorises these calls, so they keep their ordinary signatures.
+
 ```csharp
-var text  = fs_read("file.txt", files);
-fs_write("out.txt", content, files);
-fs_append("log.txt", line, files);
-var lines = fs_read_lines("file.txt", files);    // List<string>
-var entries = fs_read_dir("./data", files);       // List<string>
-create_dir("./output", files);
-delete_file("./tmp.txt", files);
+var text  = fs_read("file.txt")?;
+fs_write("out.txt", content)?;
+fs_append("log.txt", line)?;
+var lines = fs_read_lines("file.txt")?;    // Result<string[], string>
+var entries = fs_read_dir("./data")?;      // Result<string[], string>
+create_dir("./output")?;
+delete_file("./tmp.txt")?;
 ```
 
 ### HTTP Client (requires `NetworkAccess`)
 ```csharp
-var html  = fetch("https://example.com", "GET", net);
-var resp  = fetch("https://api.example.com/data", "POST", net);
-// http_request for headers/status:
-var r     = http_request("GET", url, {"Authorization": "Bearer token"}, "", net);
+var html  = fetch("https://example.com", "GET")?;
+var resp   = fetch("https://api.example.com/data", "POST")?;
+// http_request for headers/status — (url, method, headers, body):
+var r     = http_request(url, "GET", {"Authorization": "Bearer token"}, "")?;
 // r.status, r.headers, r.body
 ```
 
 ### Shell (requires `SystemAccess`)
 ```csharp
-var output = exec("ls -la", sys);
-var code   = exec_status("git pull", sys);
+var output = exec("ls -la")?;
+var code   = exec_status("git pull")?;
 ```
 
 ### JSON
@@ -1572,7 +1576,7 @@ var decrypted = decrypt(encrypted, key);
 ```csharp
 var b64 = base64_encode(text);
 var dec = base64_decode(b64);
-var fileB64 = base64_encode_file("image.png", files);
+var fileB64 = base64_encode_file("image.png")?;
 var raw     = http_download_base64("https://example.com/image.png", net);
 ```
 
@@ -1580,7 +1584,8 @@ var raw     = http_download_base64("https://example.com/image.png", net);
 ```csharp
 var pdf = pdf_create("My Report");
 pdf_add_section(pdf, "Section 1", "Content of section one...");
-pdf_save(pdf, "report.pdf", files);
+pdf_add_text(pdf, "A paragraph outside any section.");
+pdf_save(pdf, "report.pdf");
 var b64 = pdf_to_base64(pdf);
 ```
 
@@ -1591,14 +1596,14 @@ var b64 = pdf_to_base64(pdf);
 ```csharp
 // Basic retry
 var result = retry(3) {
-    fetch(url, "GET", net)?
+    fetch(url, "GET")?
 } fallback {
     "cached_value"
 };
 
 // With backoff (named args to retry)
 var data = retry(5, backoff: 1000) {
-    http_request("GET", url, {}, "", net).body
+    http_request(url, "GET", {}, "").body
 } fallback {
     ""
 };
@@ -1673,6 +1678,12 @@ agent McpApp {
 agent McpServer {
     public void Run() {
         var server = mcp_server_new("my_tools", "1.0.0");
+        // A server's tools can be inspected and swapped while it runs, which is what a
+        // router needs when a child server attaches or goes away.
+        //   mcp_server_tool_count(server)          -> int
+        //   mcp_server_has_tool(server, "greet")   -> bool
+        //   mcp_server_remove_tool(server, "greet")-> bool
+        //   mcp_server_handle_request(server, req) -> string (JSON-RPC in, JSON-RPC out)
         mcp_server_register(server, "greet", "Says hello to name", (args) => {
             return $"Hello {args}";
         });
@@ -1757,6 +1768,14 @@ agent VectorApp {
 
         var count = vector_store_count(store);
         vector_store_delete(store, "doc1");
+
+        // Search by text: the query is embedded for you.
+        var byText = vector_search_text(store, "search query", 5);
+
+        // With the `ann` feature an index makes search approximate and much faster;
+        // without it the store still searches exactly, just linearly.
+        vector_build_index(store);
+        var fast = vector_search_fast(store, query_emb, 5);
     }
 }
 ```
@@ -1801,9 +1820,13 @@ memory_clear_working(mem);
 memory_store(mem, "User asked about Rust", {"topic": "programming"});
 var episodes = memory_recall(mem, "Rust programming", 5);
 
+// A memory or database query result becomes a Context an LLM call can take.
+var ctx = context_from(memory_recall(mem, "Rust", 3));
+
 // Semantic memory (graph-based facts, persisted)
 var fact_id = memory_add_fact(mem, "User", {"name": "Alice", "lang": "English"});
 var facts   = memory_query_facts(mem, "User");
+var episodes_stored = memory_episode_count(mem);   // int
 ```
 
 ---
@@ -1815,10 +1838,12 @@ var tracer = trace_start("my_agent");
 var span   = trace_span(tracer, "process_order");
 trace_set_attr(tracer, "order_id", "1234");
 trace_event(tracer, "payment_received", {"amount": "50.00"});
+trace_error(tracer, span, "payment declined");   // record why a span failed
 trace_end(tracer, span);
+var spans = trace_span_count(tracer);           // int
 
 var json_export = trace_export(tracer);
-fs_write("trace.json", json_export, files);
+fs_write("trace.json", json_export)?;
 ```
 
 ---
@@ -1840,6 +1865,7 @@ var pipe = pipeline_new("data_pipe");
 pipeline_add_step(pipe, "clean",   (input) => input.trim());
 pipeline_add_step(pipe, "upper",   (input) => input.to_upper());
 pipeline_add_step(pipe, "bracket", (input) => $"[{input}]");
+var steps = pipeline_step_count(pipe);             // int
 var result = pipeline_run(pipe, "  hello world  ");
 ```
 
@@ -1858,11 +1884,25 @@ orchestrator_run_all(orch, (input) => {
     return input.to_upper();
 });
 
+var queued = orchestrator_task_count(orch);        // int
+var done   = orchestrator_completed_count(orch);   // int
+
 // Get results — List<map<string, string>>
 var results = orchestrator_results(orch);
 for r in results {
     print $"Task {r["id"]}: {r["result"]}";
 }
+```
+
+Running one handler over many inputs at once, then folding the answers into one:
+
+```csharp
+var answers = fan_out(["a", "b", "c"], (input) => {
+    return input.to_upper();
+});
+var summary = fan_in(answers, (acc, x) => {
+    return acc + x;
+});
 ```
 
 ---
@@ -1877,6 +1917,8 @@ self_improver_record_failure(si, "Parse JSON", "Forgot to handle empty string");
 
 var lessons = self_improver_recall(si, "null pointer", 3);
 var stats   = self_improver_stats(si);
+var rounds  = self_improver_iterations(si);        // int
+var rate    = self_improver_success_rate(si);      // int — percent
 print $"Success rate: {stats["success_rate"]}";
 ```
 
@@ -2179,10 +2221,10 @@ var data = tensor_to_list(t);         // float[]
 Requires `--features dataframe` when building varg-runtime.
 
 ```csharp
-var df = df_read_csv("data.csv", file_cap);
-var pq = df_read_parquet("data.parquet", file_cap);
-df_write_csv(df, "out.csv", file_cap);
-df_write_parquet(df, "out.parquet", file_cap);
+var df = df_read_csv("data.csv");
+var pq = df_read_parquet("data.parquet");
+df_write_csv(df, "out.csv");
+df_write_parquet(df, "out.parquet");
 
 var slim   = df_select(df, ["name", "age"]);
 var adults = df_filter(df, "age > 18");         // DSL: "col op value"

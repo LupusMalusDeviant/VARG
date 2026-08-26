@@ -509,6 +509,19 @@ fn load(string path) -> string {
 }
 ```
 
+Asking about a `Result` or an optional without unwrapping it:
+
+```csharp
+var r = parse_int("42");
+if (r.is_ok()) { print "parsed"; }
+if (r.is_err()) { print "not a number"; }
+var n = r.unwrap();                 // panics on an error — prefer `or` or `?`
+
+var o = json_get("{}", "missing");
+if (o.is_none()) { print "absent"; }
+if (o.is_some()) { print "present"; }
+```
+
 ### Throw
 
 `throw` works inside `try` blocks (catches via `catch err`) **and** in any standalone function (becomes `return Err(...)`):
@@ -551,6 +564,30 @@ var doubled = numbers.map((n) => n * 2);
 var found = numbers.find((n) => n > 3);
 var has_big = numbers.any((n) => n > 100);
 var all_pos = numbers.all((n) => n > 0);
+```
+
+Reducing a collection to one value, and the shape-changing chains:
+
+```csharp
+var xs = [3, 1, 2, 1];
+var total = xs.fold(0, (acc, x) => acc + x);   // 7
+var same = xs.reduce(0, (acc, x) => acc + x);  // 7 — reduce is the same operation
+var uniq = xs.unique();                        // [3, 1, 2]
+var dd = xs.dedup();                           // removes *adjacent* duplicates only
+var dist = xs.distinct();                      // same as unique
+var nested = [[1, 2], [3]];
+var flat = nested.flatten();                   // [1, 2, 3]
+var pairs = xs.enumerate();                    // [(0, 3), (1, 1), ...]
+var joined = ["a", "b"].join(", ");            // "a, b"
+var words = ["a b", "c"].flat_map((s) => s.split(" "));  // ["a", "b", "c"]
+```
+
+`sort` reorders in place and returns nothing, so it is a statement rather than a link in a chain:
+
+```csharp
+var names = ["b", "a"];
+names.sort();
+print names.join(",");        // "a,b"
 ```
 
 ### Maps
@@ -888,12 +925,11 @@ Respond in JSON format.
 
 ```csharp
 var result = data
-    |> parse
-    |> validate
-    |> transform
-    |> send;
+    |> trim
+    |> to_upper
+    |> reverse;
 
-// Equivalent to: send(transform(validate(parse(data))))
+// Equivalent to: reverse(to_upper(trim(data)))
 ```
 
 ---
@@ -937,6 +973,30 @@ var joined = path_join("dir", "file.txt");     // string
 var parent = path_parent("/a/b/c.txt") or ".";   // string? -> string
 var ext = path_extension("file.tar.gz") or "";   // string? -> string
 var stem = path_stem("report.pdf") or "";        // string? -> string
+var abs = path_resolve("../x")?;               // Result<string, string>
+```
+
+Binary files, file metadata, and moving files around:
+
+```csharp
+var bytes = fs_read_bytes("logo.png")?;        // Result<int[], string>
+fs_write_bytes("copy.png", bytes)?;            // Result<void, string>
+fs_append_bytes("log.bin", bytes)?;            // Result<void, string>
+var n = fs_size("logo.png")?;                  // Result<int, string> — bytes
+fs_copy("a.txt", "b.txt")?;                    // Result<void, string>
+fs_rename("b.txt", "c.txt")?;                  // Result<void, string>
+var isf = is_file("c.txt");                    // bool
+var isd = is_dir("./src");                     // bool
+```
+
+The per-user directories the operating system defines. Each returns a path without checking that
+it exists:
+
+```csharp
+var home = home_dir();                         // string
+var cfg = config_dir();                        // string
+var cache = cache_dir();                       // string
+var data = data_dir();                         // string
 ```
 
 ### HTTP (requires NetworkAccess)
@@ -944,6 +1004,90 @@ var stem = path_stem("report.pdf") or "";        // string? -> string
 ```csharp
 var body = fetch(url, "GET")?;                           // string
 var resp = http_request(url, "POST", headers, body)?;    // JSON with status/body/headers
+```
+
+### Web Server (requires NetworkAccess)
+
+A server is a handle you register routes on, then hand to `http_listen`. The listen call runs the
+server, so the method containing it is `async`.
+
+```csharp
+var srv = http_serve();
+
+// A page. Two arguments mean `text/html; charset=utf-8`.
+http_route(srv, "GET", "/", (req) => {
+    return http_response(200, "<h1>hello</h1>");
+});
+
+// A third argument names any other type.
+http_route(srv, "GET", "/style.css", (req) => {
+    return http_response(200, "h1 { color: teal }", "text/css");
+});
+
+// JSON, with the content type set for you.
+http_route(srv, "GET", "/api/status", (req) => {
+    return http_response_json(200, "{\"ok\": true}");
+});
+
+http_listen(srv, "127.0.0.1:8080");
+```
+
+The request carries the method, path, headers, body and query parameters. The body is a raw JSON
+string, which the JSON accessors read directly; the query parameters are a map:
+
+```csharp
+var srv = http_serve();
+http_route(srv, "POST", "/api/users", (req) => {
+    var limit = req.query_params.get("limit", "10");
+    var name = json_get(req.body, "name") or "";
+    if (name == "") {
+        return http_response_json(400, "{\"error\": \"name is required\"}");
+    }
+    return http_response_json(201, $"{{\"created\": \"{name}\", \"limit\": \"{limit}\"}}");
+});
+```
+
+**Server-sent events.** `http_sse_route` sends a fixed list of events and closes; `sse_open` and
+`sse_push` hold a stream open and push to it as things happen.
+
+```csharp
+var srv = http_serve();
+
+// Batch: the handler returns the events to send.
+http_sse_route(srv, "/events", (req) => {
+    return [sse_event("", "first"), sse_event("progress", "50%")];
+});
+
+// Streaming: keep the sender and push whenever there is something to say.
+var sender = sse_open(srv, "/live");
+sse_push(sender, "started");        // bool — false once every client has gone
+sse_shutdown(sender);               // close the stream
+```
+
+**WebSocket.** A route handler takes the message that arrived and returns the reply:
+
+```csharp
+var srv = http_serve();
+ws_route(srv, "/ws", (msg) => {
+    return "echo: " + msg;
+});
+```
+
+> Route handlers become `Fn + Send + Sync` closures, so they cannot reach `self`. Compute what
+> the handler needs before registering it and let the closure capture the result. There is no
+> static file serving: return file contents from a route, with the type as the third argument.
+
+### SSE Client (requires NetworkAccess)
+
+The other side of the same protocol — reading an event stream someone else serves:
+
+```csharp
+var conn = sse_client_connect("https://example.com/events", "{}")?;
+var evt = sse_client_next(conn)?;      // Result<string, string>, blocks for the next event
+sse_client_close(conn)?;
+
+// POST and then read the stream the response opens (how several LLM APIs stream).
+var stream = sse_client_post("https://api.example.com/v1/stream", "{}", "{}")?;
 ```
 
 ### JSON
@@ -983,6 +1127,20 @@ Resolve an optional with `or`, or ask about it directly:
 if (json_get(obj, "name") == null) { print "no name given"; }
 ```
 
+Reading the shape of a document, and writing to it:
+
+```csharp
+var doc = "{\"a\": 1, \"b\": 2}";
+var has = json_has(doc, "a");                 // bool
+var keys = json_keys(doc);                    // string[] — ["a", "b"]
+var vals = json_values(doc);                  // string[] — each value as JSON text
+var pretty = json_stringify_pretty(doc);      // string, indented
+
+// Both are fallible: a document that will not parse is not an empty one.
+var withC = json_set(doc, "c", "3")?;         // Result<string, string>
+var merged = json_merge(doc, "{\"b\": 9}")?;   // Result<string, string>, right side wins
+```
+
 Printing an optional without resolving it shows the value, or `null` when there is none.
 Arithmetic on one, and comparing one against a real value, are rejected at compile time —
 supply a fallback with `or` first.
@@ -1015,6 +1173,48 @@ from it many times.
 ```csharp
 var output = exec("ls -la")?;                // Result<string, string>
 var code = exec_status("make build")?;       // Result<int, string>
+```
+
+### Child Processes (requires SystemAccess)
+
+`exec` runs a command and waits. To keep talking to one while it runs, spawn it:
+
+```csharp
+var proc = proc_spawn("python -i")?;      // Result<handle, string>
+proc_write_stdin(proc, "print(1+1)\n")?;
+var line = proc_read_line(proc)?;         // Result<string, string>
+var alive = proc_is_alive(proc);          // bool
+var pid = proc_pid(proc);                 // int
+proc_close_stdin(proc)?;                  // let it see end of input
+var code = proc_wait(proc)?;              // Result<int, string>
+proc_kill(proc)?;                         // if it will not stop on its own
+```
+
+### Terminal Input
+
+Reading a whole stream, or a single line, from standard input:
+
+```csharp
+var all = stdin_read()?;                  // Result<string, string>, to end of input
+var one = stdin_read_line()?;             // Result<string, string>
+```
+
+An editing line reader with history, for an interactive agent (requires FileAccess to persist
+the history):
+
+```csharp
+var rl = readline_new()?;
+readline_load_history(rl, ".history")?;
+var input = readline_read(rl, "> ")?;     // Result<string, string> — an error is EOF or Ctrl-C
+readline_add_history(rl, input)?;
+readline_save_history(rl, ".history")?;
+```
+
+### Terminal Colours
+
+```csharp
+print ansi_color("red") + "failed" + ansi_reset();
+print ansi_bold() + "important" + ansi_reset();
 ```
 
 ### Date/Time
@@ -1078,6 +1278,53 @@ s.index_of("World");          // 7
 s.split(",");                 // ["Hello", " World!"]
 s.replace("World", "Varg");   // "Hello, Varg!"
 s.char_at(0) or "";           // string? — an index past the end has no character
+s.trim_start();               // leading whitespace only
+s.trim_end();                 // trailing whitespace only
+s.ltrim();                    // same as trim_start
+s.rtrim();                    // same as trim_end
+s.count_occurrences("l");     // 3
+s.pad_left(20, ".");          // width 20, padded on the left
+s.pad_right(20, ".");
+s.repeat(2);                  // "Hello, World!Hello, World!"
+s.chars();                    // ["H", "e", ...]
+s.reverse();                  // "!dlroW ,olleH"
+```
+
+`split_once` answers `null` when the separator is absent, which is what tells that apart from a
+successful split into two empty halves:
+
+```csharp
+var parts = "key=value".split_once("=") or ("", "");   // ("key", "value")
+var none = "novalue".split_once("=") or ("", "");      // ("", "") — no separator
+```
+
+These are methods on the value, so `text.to_upper()` and not `to_upper(text)`. Three have a
+free-function form as well, for use in a pipeline:
+
+```csharp
+var a = str_trim("  x  ");            // string
+var b = str_replace("a-b", "-", "_"); // string
+var c = str_split("a,b", ",");        // string[]
+```
+
+Numbers render through methods too:
+
+```csharp
+var n = 255;
+n.to_string();                // "255"
+n.to_hex();                   // "ff"
+n.to_binary();                // "11111111"
+var f = 3.14159;
+f.to_fixed(2);                // "3.14"
+```
+
+### Random & Identifiers
+
+```csharp
+var n = random_int(1, 6);         // int, both ends inclusive
+var f = random_float();           // float in 0.0..1.0
+var id = uuid();                  // string
+var c = clamp(15, 0, 10);         // 10 — hold a value inside a range
 ```
 
 ### Logging
@@ -1093,6 +1340,14 @@ log_error("something broke"); // stderr: [ERROR] something broke
 
 ```csharp
 var key = env("API_KEY");     // reads environment variable
+```
+
+Setting a variable for child processes, and loading configuration from a chain of files where
+each one overrides the last (requires FileAccess):
+
+```csharp
+set_env("VARG_MODE", "debug");
+var cfg = config_load_cascade(["defaults.json", "local.json"])?;
 ```
 
 ### Testing
@@ -1124,6 +1379,14 @@ var choice = await_choice("Pick one", ["Yes", "No", "Later"]); // int (index)
 One bucket per limiter, not per key — `ratelimiter_new` returns the limiter, and every call
 names it. `acquire` **blocks** until a token frees up (that is throttling, and it returns
 nothing); `try_acquire` is the one that reports whether it got through.
+
+There is a second form that needs no limiter object: the bucket is named by a key, and the limit
+travels with the call.
+
+```csharp
+rate_limit_acquire("openai", 60, 60000);           // blocks until it fits
+var got = rate_limit_try("openai", 60, 60000);     // bool — reports instead of waiting
+```
 
 ```csharp
 var rl = ratelimiter_new(10, 60000);      // 10 calls per 60s window
@@ -1179,8 +1442,9 @@ var b = prop_gen_bool();                 // bool
 var s = prop_gen_string(5);              // string (random, max 5 chars)
 var xs = prop_gen_int_list(10);          // int[] (max 10 elements) — takes no range
 var ss = prop_gen_string_list(3, 5);     // string[] (max 5 strings, max 3 chars each)
-var pass = prop_check(100, () => prop_gen_int(0, 10) >= 0); // bool
-prop_assert(x >= 0, "must be non-negative");
+var pass = prop_check(() => prop_gen_int(0, 10) >= 0, 100); // (fn, runs) -> map
+// prop_assert runs the property `runs` times and panics on the first counterexample.
+prop_assert("non-negative", () => prop_gen_int(0, 10) >= 0, 100);
 ```
 
 ### Multimodal (Image / Audio / Vision)
@@ -1191,6 +1455,9 @@ image with the format guessed from its extension.
 
 ```csharp
 var img = image_load("photo.png")?;            // Result<ImageHandle, string>
+var decoded = image_from_base64(b64, "png");   // ImageHandle — no file involved
+var fmt = audio_format(aud);                   // string — "mp3", "wav", ...
+var size = audio_size_bytes(aud);              // int
 var b64 = image_to_base64(img);                // string
 var fmt = image_format(img);                   // "png" | "jpeg" | ...
 var sz  = image_size_bytes(img);               // int
@@ -1228,6 +1495,17 @@ workflow_add_step(wf, "fetch", []);           // no dependencies
 workflow_add_step(wf, "parse", ["fetch"]);    // depends on fetch
 workflow_add_step(wf, "store", ["parse"]);    // depends on parse
 
+// Give each step a body, then run the whole graph in dependency order. A handler receives the
+// results of the steps it depends on, as JSON, and returns its own result.
+workflow_set_handler(wf, "fetch", (inputs) => {
+    return "raw-data";
+});
+workflow_set_handler(wf, "parse", (inputs) => {
+    return "parsed(" + (json_get(inputs, "/fetch") or "") + ")";
+});
+var out = workflow_run(wf);                   // string — the last step's result
+var steps = workflow_step_count(wf);          // int
+
 var ready = workflow_ready_steps(wf);         // string[] — steps with all deps done
 workflow_set_output(wf, "fetch", data);       // mark step done with output
 workflow_set_failed(wf, "parse", "err msg");  // mark step failed
@@ -1245,6 +1523,8 @@ var reg = registry_open("./varg_packages");   // RegistryHandle — a cache DIRE
                                              // not a file; state lands in <dir>/installed.json
 registry_install(reg, "varg-http", "1.2.0"); // bool
 registry_uninstall(reg, "varg-http");        // bool
+// Download and verify against a SHA-256 you already know (requires NetworkAccess).
+var path = registry_download(reg, "varg-http", "1.2.0", url, sha256)?;
 var installed = registry_is_installed(reg, "varg-http"); // bool
 var ver = registry_version(reg, "varg-http");            // string
 var all = registry_list(reg);                            // string[]
@@ -1283,6 +1563,20 @@ var json_out = llm_structured(prompt, schema, 3);      // (prompt, schema_json, 
 
 // Streaming (SSE chunks)
 var stream = llm_stream(prompt, "gpt-4o");             // (prompt, model) → SseHandle
+
+// Token by token into a handler, as they arrive, instead of waiting for the whole answer.
+llm_stream_to(prompt, "gpt-4o", (token) => {
+    print token;
+})?;
+
+// A cached chat: an identical (context, prompt, model) answers from the cache.
+var reply = llm_chat_cached(ctx, prompt, "gpt-4o");    // string
+
+// Temperature and token ceiling spelled out.
+var tuned = llm_chat_opts(ctx, prompt, "gpt-4o", 0.2, 512);
+
+// Structured output naming the provider and model rather than taking the defaults.
+var shaped = llm_structured_schema("openai", "gpt-4o", schema, prompt);
 var chunk = sse_read(stream);                          // string chunk
 
 // Batch embeddings
@@ -1462,11 +1756,11 @@ var mn   = tensor_min(t);               // float
 ### DataFrame Builtins
 
 ```csharp
-// I/O (requires FileAccess)
-var df = df_read_csv("data.csv", file_cap);
-var pq = df_read_parquet("data.parquet", file_cap);
-df_write_csv(df, "out.csv", file_cap);
-df_write_parquet(df, "out.parquet", file_cap);
+// I/O (requires FileAccess in scope — the token is not an argument)
+var df = df_read_csv("data.csv");
+var pq = df_read_parquet("data.parquet");
+df_write_csv(df, "out.csv");
+df_write_parquet(df, "out.parquet");
 
 // Transformation
 var slim   = df_select(df, ["col1", "col2"]);   // column projection

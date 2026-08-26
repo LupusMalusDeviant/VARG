@@ -46,6 +46,40 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Added — the other 117 builtins are documented
+
+The reference and the guide between them covered 290 of the 407 builtins the compiler knows. The
+117 that appeared in neither included the ones a web-facing agent reaches for first: `ws_route`,
+`sse_open`/`sse_push`, `http_response_json`. A builtin nobody can find is a builtin nobody uses.
+
+New sections: **Web Server** (routes, content types, SSE, WebSocket, and the restriction that a
+handler cannot reach `self`), **SSE Client**, **Child Processes**, **Terminal Input** and
+**Terminal Colours**. Existing sections gained what they were missing — binary file I/O and file
+metadata, the platform directories, the rest of the string methods, `fold`/`reduce`/`unique`/
+`flatten`/`enumerate`/`join`/`flat_map`, `json_keys`/`json_values`/`json_has`, `is_ok`/`is_some`/
+`unwrap`, random numbers and `uuid`, the cached and streaming LLM calls, the vector index, the
+workflow runner, fan-out/fan-in, and the MCP server's runtime tool swapping.
+
+`docs-check/check.py` now also fails on a builtin no document mentions. Retired builtins are
+exempt, read from the compiler's own retirement table so retiring one exempts it automatically.
+
+### Fixed — eleven more documented calls, hidden behind placeholders
+
+Sharpening the doc check turned up eleven signature errors it had been unable to see: a block is
+classified by its first error, so one undeclared placeholder masked everything after it. That is
+how `fs_write("trace.json", json, files)` sat unnoticed — `files` was undeclared, the block read
+as illustrative, and the extra argument was never reached.
+
+Nearly all were one mistake repeated: **a capability token passed as an argument**. `fs_read(path,
+files)`, `exec(cmd, sys)`, `fetch(url, "GET", net)`, `pdf_save(doc, path, files)`,
+`df_read_csv(path, cap)`. Holding the token in scope is what authorises the call; the builtins
+keep their ordinary signatures. Also corrected: `prop_check` and `prop_assert`, and a pipe-operator
+example ending in `send`, which needs a target.
+
+The check now declares placeholders away one at a time and re-runs, escalating only an *arity*
+complaint — how many arguments a call takes does not depend on what the placeholder held.
+
+
 ### Fixed — the web-facing surface
 
 - **`http_response` set no `content-type` at all**, leaving every browser to sniff. HTML survives
