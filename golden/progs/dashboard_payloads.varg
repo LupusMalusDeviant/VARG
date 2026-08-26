@@ -1,0 +1,105 @@
+/// The JSON shapes the dashboard's four panels read.
+///
+/// The dashboard itself cannot be a golden program — it ends in `http_listen`, which blocks. What
+/// can be pinned is the contract between the runtimes and the page: if a payload's shape changes,
+/// the panel that reads it breaks silently in the browser, where nothing would notice. Values
+/// that move on their own (timestamps, span durations) are checked by shape, not by number.
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+/// Same builder the dashboard uses for /api/cost.
+fn cost_payload(int used_tokens, int limit_tokens, int used_cents, int limit_cents) -> string {
+    var pct = 0;
+    if limit_tokens > 0 {
+        pct = used_tokens * 100 / limit_tokens;
+    }
+    return "{\"used_tokens\": " + used_tokens.to_string()
+        + ", \"limit_tokens\": " + limit_tokens.to_string()
+        + ", \"used_cents\": " + used_cents.to_string()
+        + ", \"limit_cents\": " + limit_cents.to_string()
+        + ", \"pct\": " + pct.to_string() + "}";
+}
+
+agent Indexer {
+    public void on_message(string method, string[] args) {
+        if method == "index" { sleep(5); }
+    }
+}
+
+agent Main {
+    public void Run() {
+        // ── /api/agents ─────────────────────────────────────────────────────
+        var w = spawn Indexer();
+        w.send("index", "corpus");
+        w.send("index", "changelog");
+        sleep(200);
+
+        var agents = agents_list();
+        // The entry agent plus the spawned one; the dispatcher maintains both.
+        print check("agents_count", $"{agents_count()}", "2");
+        print check("agents_entry_name", json_get(agents, "/0/name"), "Main");
+        print check("agents_entry_status", json_get(agents, "/0/status"), "running");
+        print check("agents_worker_name", json_get(agents, "/1/name"), "Indexer");
+        print check("agents_worker_status", json_get(agents, "/1/status"), "idle");
+        var handled = json_get_int(agents, "/1/handled");
+        print check("agents_handled", $"{handled}", "2");
+        print check("agents_last_message", json_get(agents, "/1/last_message"), "index");
+        var running = agents_count_by_status("running");
+        var idle = agents_count_by_status("idle");
+        print check("agents_by_status", $"{running}/{idle}", "1/1");
+
+        // ── /api/traces ─────────────────────────────────────────────────────
+        var tracer = trace_start("dashboard");
+        var boot = trace_span(tracer, "boot");
+        var seed = trace_span(tracer, "seed");
+        trace_end(tracer, seed);
+        trace_end(tracer, boot);
+        var traces = trace_export(tracer);
+
+        print check("trace_name", json_get(traces, "/tracer"), "dashboard");
+        print check("trace_span_count", $"{trace_span_count(tracer)}", "2");
+        print check("trace_first_span", json_get(traces, "/spans/0/name"), "boot");
+        print check("trace_child_span", json_get(traces, "/spans/1/name"), "seed");
+        // The timeline nests by parent_id and scales bars by duration_us — both must be present.
+        var parent = json_get_int(traces, "/spans/1/parent_id");
+        print check("trace_parent_link", $"{parent}", "1");
+        var dur = json_get_int(traces, "/spans/0/duration_us");
+        print check("trace_has_duration", yn(dur >= 0), "true");
+        print check("trace_status", json_get(traces, "/spans/0/status"), "OK");
+
+        // ── /api/graph ──────────────────────────────────────────────────────
+        var g = graph_open("dashboard_payloads.graph.db");
+        var planner = graph_add_node(g, "Agent", {"name": "planner"});
+        var indexer = graph_add_node(g, "Agent", {"name": "indexer"});
+        graph_add_edge(g, planner, "delegates_to", indexer, {});
+
+        var nodes = json_stringify(graph_query(g, "Agent"));
+        var edges = json_stringify(graph_neighbors(g, planner));
+        var agent_nodes = graph_query(g, "Agent");
+        print check("graph_node_count", $"{agent_nodes.len()}", "2");
+        print check("graph_node_name", json_get(nodes, "/0/name"), "planner");
+        print check("graph_node_label", json_get(nodes, "/0/_label"), "Agent");
+        print check("graph_edge_target", json_get(edges, "/0/name"), "indexer");
+        print check("graph_edge_relation", json_get(edges, "/0/_relation"), "delegates_to");
+
+        // ── /api/cost ───────────────────────────────────────────────────────
+        var budget = budget_new(50000, 500);
+        budget_track(budget, "index the corpus and the changelog", "indexed 2 sources");
+        var left_tokens = budget_remaining_tokens(budget);
+        var left_cents = budget_remaining_usd_cents(budget);
+        var cost = cost_payload(50000 - left_tokens, 50000, 500 - left_cents, 500);
+
+        var lim = json_get_int(cost, "/limit_tokens");
+        print check("cost_limit_tokens", $"{lim}", "50000");
+        var used = json_get_int(cost, "/used_tokens");
+        print check("cost_tracks_real_usage", yn(used > 0), "true");
+        var pct_v = json_get_int(cost, "/pct");
+        print check("cost_pct_present", $"{pct_v}", "0");
+    }
+}

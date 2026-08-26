@@ -1,0 +1,328 @@
+/// Wave 22b — the agent control plane, written in Varg and served by Varg.
+///
+/// The design memo offered a SvelteKit frontend or "a Varg agent that generates HTML". This is
+/// the second: one native binary, no Node, no build step, and covered by the same golden/probes
+/// net as everything else in the repo.
+///
+/// Four panels, each backed by a runtime the compiler already exposes:
+///   /api/agents  agent registry  — live status maintained by the generated dispatcher
+///   /api/traces  trace_export    — span hierarchy with timing
+///   /api/graph   graph_query     — knowledge graph nodes and edges
+///   /api/cost    budget_*        — token and cost budget
+///
+/// Route handlers are `Fn` closures and cannot reach `self`, so everything they serve is either a
+/// captured runtime handle (those are Arc-based and stay live) or a value computed before the
+/// server starts. The HTML page is the latter: rendered once, captured, served from memory.
+
+/// Cost as JSON. `budget_report` returns a sentence for humans; the panel wants numbers.
+///
+/// Built by concatenation rather than interpolation: `$"..."` has no escape for a literal brace,
+/// so a JSON object cannot be written inside one.
+fn cost_payload(int used_tokens, int limit_tokens, int used_cents, int limit_cents) -> string {
+    var pct = 0;
+    if limit_tokens > 0 {
+        pct = used_tokens * 100 / limit_tokens;
+    }
+    return "{\"used_tokens\": " + used_tokens.to_string()
+        + ", \"limit_tokens\": " + limit_tokens.to_string()
+        + ", \"used_cents\": " + used_cents.to_string()
+        + ", \"limit_cents\": " + limit_cents.to_string()
+        + ", \"pct\": " + pct.to_string() + "}";
+}
+
+/// Graph nodes and edges in one payload. `graph_query` gives nodes for a label; `graph_neighbors`
+/// gives each node's neighbours together with the relation that connects them, which is what the
+/// panel draws.
+fn graph_payload(string nodes_json, string edges_json) -> string {
+    return "{\"nodes\": " + nodes_json + ", \"edges\": " + edges_json + "}";
+}
+
+agent Dashboard {
+    // async because http_listen awaits the server loop.
+    async public void Run() {
+        // ── Live sources ────────────────────────────────────────────────────
+        var tracer = trace_start("dashboard");
+        var boot = trace_span(tracer, "boot");
+
+        var g = graph_open("dashboard.graph.db");
+        var budget = budget_new(50000, 500);
+
+        // A worker so the agent panel has something real to show: it registers itself, reports
+        // idle between messages and running while handling one.
+        var worker = spawn SampleWorker();
+
+        var seed = trace_span(tracer, "seed");
+        var planner = graph_add_node(g, "Agent", {"name": "planner"});
+        var indexer = graph_add_node(g, "Agent", {"name": "indexer"});
+        var corpus = graph_add_node(g, "Dataset", {"name": "corpus"});
+        graph_add_edge(g, planner, "delegates_to", indexer, {});
+        graph_add_edge(g, indexer, "reads", corpus, {});
+        trace_end(tracer, seed);
+
+        worker.send("index", "corpus");
+        worker.send("index", "changelog");
+
+        // Real accounting, not a placeholder: budget_track estimates tokens from the actual text
+        // handed to it, so the cost panel reflects work this program really did. Wire an LLM in
+        // and the same call tracks that instead.
+        budget_track(budget, "index the corpus and the changelog", "indexed 2 sources, 3 nodes linked");
+        budget_track(budget, "summarise what the indexer found", "planner delegates to indexer, indexer reads corpus");
+
+        trace_end(tracer, boot);
+
+        var page = render_page();
+
+        // ── Routes ──────────────────────────────────────────────────────────
+        var srv = http_serve();
+
+        http_route(srv, "GET", "/", (req) => {
+            return http_response(200, page);
+        });
+
+        http_route(srv, "GET", "/api/agents", (req) => {
+            return http_response_json(200, agents_list());
+        });
+
+        http_route(srv, "GET", "/api/traces", (req) => {
+            return http_response_json(200, trace_export(tracer));
+        });
+
+        http_route(srv, "GET", "/api/graph", (req) => {
+            var nodes = graph_query(g, "Agent");
+            var datasets = graph_query(g, "Dataset");
+            var edges = graph_neighbors(g, planner);
+            return http_response_json(200, graph_payload(json_stringify(nodes), json_stringify(edges)));
+        });
+
+        http_route(srv, "GET", "/api/cost", (req) => {
+            var left_tokens = budget_remaining_tokens(budget);
+            var left_cents = budget_remaining_usd_cents(budget);
+            return http_response_json(200, cost_payload(50000 - left_tokens, 50000, 500 - left_cents, 500));
+        });
+
+        var addr = env("VARG_DASHBOARD_ADDR") or "127.0.0.1:8080";
+        print $"[dashboard] http://{addr}";
+        http_listen(srv, addr);
+    }
+}
+
+/// Does a little work so the agent panel is not empty on first load.
+agent SampleWorker {
+    int done;
+
+    public void on_start() {
+        done = 0;
+    }
+
+    public void on_message(string method, string[] args) {
+        if method == "index" {
+            done += 1;
+            sleep(40);
+        }
+    }
+}
+
+/// The page, rendered once at startup and captured by the `/` handler.
+///
+/// Self-contained on purpose: no CDN, no build step, no framework. Everything the panels need
+/// arrives as JSON from the four routes above, so the markup only has to lay it out.
+fn render_page() -> string {
+    return """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Varg Control Plane</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #ffffff; --line: #e3e3e8; --ink: #1b1b1f;
+    --muted: #6b6b76; --accent: #3b6ef6;
+    --ok: #1a7f45; --warn: #a86400; --err: #b3261e; --idle: #5a5a66;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131317; --panel: #1b1b21; --line: #2c2c35; --ink: #e8e8ee;
+      --muted: #9a9aa6; --accent: #7aa2ff;
+      --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --idle: #8b8b99;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 16px 20px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .tick { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  main {
+    display: grid; gap: 16px; padding: 16px 20px;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  }
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px; min-width: 0;
+  }
+  section h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin: 0 0 10px; font-weight: 600;
+  }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 12px; border: 1px solid currentColor;
+  }
+  .s-running { color: var(--ok); }
+  .s-idle    { color: var(--idle); }
+  .s-error   { color: var(--err); }
+  .s-starting, .s-stopped { color: var(--warn); }
+  .muted { color: var(--muted); }
+  .err { color: var(--err); }
+  .scroll { overflow-x: auto; }
+  .bar { height: 8px; border-radius: 4px; background: var(--accent); min-width: 2px; }
+  .track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .span-row { display: grid; grid-template-columns: 1fr 90px; gap: 10px; align-items: center; margin: 6px 0; }
+  .span-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .num { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .row { display: flex; gap: 20px; margin-bottom: 12px; }
+  .empty { color: var(--muted); font-style: italic; }
+  svg { width: 100%; height: 220px; display: block; }
+  svg text { fill: var(--ink); font-size: 11px; }
+  svg line { stroke: var(--line); stroke-width: 1.5; }
+  svg circle { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+  svg .rel { fill: var(--muted); font-size: 9px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Varg Control Plane</h1>
+  <span class="sub">served by a Varg binary</span>
+  <span class="tick" id="tick">connecting</span>
+</header>
+<main>
+  <section><h2>Agents</h2><div id="agents" class="scroll"></div></section>
+  <section><h2>Traces</h2><div id="traces"></div></section>
+  <section><h2>Knowledge graph</h2><div id="graph"></div></section>
+  <section><h2>Cost</h2><div id="cost"></div></section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  async function load(path) {
+    const res = await fetch(path, { cache: 'no-store' });
+    if (!res.ok) throw new Error(path + ' -> ' + res.status);
+    return res.json();
+  }
+
+  function renderAgents(rows) {
+    if (!rows.length) return '<p class="empty">no agents registered</p>';
+    const body = rows.map((a) => {
+      const note = a.last_error
+        ? '<span class="err">' + esc(a.last_error) + '</span>'
+        : '<span class="muted">' + esc(a.last_message || 'idle') + '</span>';
+      return '<tr><td>' + esc(a.name) + '</td>'
+        + '<td><span class="pill s-' + esc(a.status) + '">' + esc(a.status) + '</span></td>'
+        + '<td>' + a.handled + '</td>'
+        + '<td>' + note + '</td></tr>';
+    }).join('');
+    return '<table><thead><tr><th>Agent</th><th>Status</th><th>Msgs</th><th>Last</th></tr></thead>'
+      + '<tbody>' + body + '</tbody></table>';
+  }
+
+  function renderTraces(doc) {
+    const spans = doc.spans || [];
+    if (!spans.length) return '<p class="empty">no spans recorded</p>';
+    const max = Math.max(...spans.map((s) => s.duration_us || 0), 1);
+    const depth = (s) => {
+      let d = 0, cur = s;
+      while (cur && cur.parent_id != null) {
+        cur = spans.find((x) => x.span_id === cur.parent_id);
+        d += 1;
+        if (d > 16) break;
+      }
+      return d;
+    };
+    return spans.map((s) => {
+      const pct = Math.max(2, Math.round(((s.duration_us || 0) / max) * 100));
+      const pad = depth(s) * 14;
+      return '<div class="span-row">'
+        + '<div><div class="span-name" style="padding-left:' + pad + 'px">' + esc(s.name) + '</div>'
+        + '<div class="track"><div class="bar" style="width:' + pct + '%"></div></div></div>'
+        + '<div class="muted">' + ((s.duration_us || 0) / 1000).toFixed(2) + ' ms</div>'
+        + '</div>';
+    }).join('');
+  }
+
+  function renderGraph(doc) {
+    const nodes = doc.nodes || [];
+    const edges = doc.edges || [];
+    if (!nodes.length) return '<p class="empty">graph is empty</p>';
+    const w = 400, h = 200, cx = w / 2, cy = h / 2, r = Math.min(cx, cy) - 34;
+    const at = (i) => {
+      const t = (i / nodes.length) * Math.PI * 2 - Math.PI / 2;
+      return { x: cx + r * Math.cos(t), y: cy + r * Math.sin(t) };
+    };
+    const pos = nodes.map((n, i) => Object.assign({ node: n }, at(i)));
+    const find = (name) => pos.find((p) => p.node.name === name);
+    const lines = edges.map((e) => {
+      const a = pos[0], b = find(e.name);
+      if (!a || !b) return '';
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      return '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '"></line>'
+        + '<text class="rel" x="' + mx + '" y="' + (my - 4) + '" text-anchor="middle">'
+        + esc(e._relation || '') + '</text>';
+    }).join('');
+    const dots = pos.map((p) =>
+      '<circle cx="' + p.x + '" cy="' + p.y + '" r="16"></circle>'
+      + '<text x="' + p.x + '" y="' + (p.y + 30) + '" text-anchor="middle">'
+      + esc(p.node.name || p.node._label) + '</text>').join('');
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" role="img" aria-label="knowledge graph">'
+      + lines + dots + '</svg>';
+  }
+
+  function renderCost(c) {
+    const pct = Math.min(100, Math.max(0, c.pct || 0));
+    return '<div class="row">'
+      + '<div><div class="num">' + (c.used_tokens || 0).toLocaleString() + '</div>'
+      + '<div class="muted">of ' + (c.limit_tokens || 0).toLocaleString() + ' tokens</div></div>'
+      + '<div><div class="num">$' + ((c.used_cents || 0) / 100).toFixed(2) + '</div>'
+      + '<div class="muted">of $' + ((c.limit_cents || 0) / 100).toFixed(2) + '</div></div>'
+      + '</div>'
+      + '<div class="track"><div class="bar" style="width:' + pct + '%"></div></div>';
+  }
+
+  const panels = [
+    ['agents', '/api/agents', renderAgents],
+    ['traces', '/api/traces', renderTraces],
+    ['graph', '/api/graph', renderGraph],
+    ['cost', '/api/cost', renderCost],
+  ];
+
+  async function refresh() {
+    let failed = 0;
+    await Promise.all(panels.map(async ([id, path, render]) => {
+      try {
+        $(id).innerHTML = render(await load(path));
+      } catch (e) {
+        failed += 1;
+        $(id).innerHTML = '<p class="err">' + esc(e.message) + '</p>';
+      }
+    }));
+    const now = new Date().toLocaleTimeString();
+    $('tick').textContent = failed ? failed + ' panel(s) failing - ' + now : 'updated ' + now;
+  }
+
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>""";
+}

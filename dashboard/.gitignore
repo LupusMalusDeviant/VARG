@@ -1,0 +1,5 @@
+*.exe
+*.rs
+.vargc_cache/
+*.graph.db
+*.db
