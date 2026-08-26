@@ -2794,10 +2794,12 @@ impl TypeChecker {
                     Ok(TypeNode::Bool)
                 } else if method_name == "channel_try_recv" || method_name == "channel_recv" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::String)
+                    // Nullable: an empty channel is not an empty message.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::String)))
                 } else if method_name == "channel_recv_timeout" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, timeout_ms)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::String)
+                    // Nullable: an empty channel is not an empty message.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::String)))
                 } else if method_name == "channel_len" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Int)

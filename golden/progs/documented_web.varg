@@ -1,0 +1,100 @@
+/// The web surface that can be checked without opening a socket: building responses, framing
+/// SSE events, registering every kind of route, and answering a JSON-RPC request.
+///
+/// `http_listen` is deliberately absent — it blocks, and a golden program that waits for a port
+/// would hang CI rather than test anything. What is here is everything up to that call, which is
+/// where the defects were: `http_response` set no content type at all, and `http_sse_route` took
+/// the inner server rather than the handle, so it could not be called from Varg at all.
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            // ── SSE framing is pure, so it can be checked exactly ────────
+            print check("sse_event_plain", sse_event("", "hello"), "data: hello\n\n");
+            print check("sse_event_named", sse_event("tick", "1"), "event: tick\ndata: 1\n\n");
+
+            // ── Every route kind registers on one server ─────────────────
+            var srv = http_serve();
+
+            http_route(srv, "GET", "/", (req) => {
+                return http_response(200, "<h1>varg</h1>");
+            });
+            http_route(srv, "GET", "/style.css", (req) => {
+                return http_response(200, "h1 { color: teal }", "text/css");
+            });
+            http_route(srv, "GET", "/api", (req) => {
+                var limit = req.query_params.get("limit", "10");
+                return http_response_json(200, $"{{\"limit\": \"{limit}\"}}");
+            });
+            http_route(srv, "POST", "/api/echo", (req) => {
+                var name = json_get(req.body, "name") or "";
+                if (name == "") {
+                    return http_response_json(400, "{\"error\": \"name is required\"}");
+                }
+                return http_response_json(200, $"{{\"hello\": \"{name}\"}}");
+            });
+            // This one took `&mut VargHttpServer` while http_serve() hands back a handle, so a
+            // program using it type-checked and then failed in rustc.
+            http_sse_route(srv, "/events", (req) => {
+                return [sse_event("", "one"), sse_event("", "two")];
+            });
+            ws_route(srv, "/ws", (msg) => {
+                return "echo: " + msg;
+            });
+            print check("routes_registered", "reached", "reached");
+
+            // A streaming sender can be opened and closed without anyone listening.
+            var sender = sse_open(srv, "/live");
+            var pushed = sse_push(sender, "started");
+            print check("sse_push_no_clients", yn(pushed), "false");
+            sse_shutdown(sender);
+            print check("sse_shutdown", "reached", "reached");
+
+            // ── MCP: a JSON-RPC request answered in process ──────────────
+            var mcp = mcp_server_new("golden-mcp", "1.0");
+            mcp_server_register(mcp, "greet", "Greets someone", (args) => {
+                return "hello " + (json_get(args, "who") or "world");
+            });
+            print check("mcp_tool_count", $"{mcp_server_tool_count(mcp)}", "1");
+            var listed = mcp_server_handle_request(mcp,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
+            print check("mcp_lists_the_tool", yn(listed.contains("greet")), "true");
+            var called = mcp_server_handle_request(mcp,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"greet\",\"arguments\":{\"who\":\"ada\"}}}");
+            print check("mcp_calls_the_tool", yn(called.contains("hello ada")), "true");
+            print check("mcp_has_tool", yn(mcp_server_has_tool(mcp, "greet")), "true");
+            mcp_server_remove_tool(mcp, "greet");
+            print check("mcp_remove_tool", yn(mcp_server_has_tool(mcp, "greet")), "false");
+
+            // ── A child process, including killing one ───────────────────
+            // proc_spawn_args takes the program and its arguments directly, with no shell in
+            // between, so the shell itself has to be named — and that differs per platform.
+            var windows = (env("OS") or "").contains("Windows");
+            var shell = "sh";
+            var flag = "-c";
+            if (windows) { shell = "cmd"; flag = "/C"; }
+
+            var proc = proc_spawn_args(shell, [flag, "echo hallo"])?;
+            print check("proc_spawn_args", yn(proc_pid(proc) > 0), "true");
+            var line = proc_read_line(proc) or "";
+            print check("proc_read_line", line.trim(), "hallo");
+            proc_wait(proc)?;
+
+            var sleeper = "sleep 30";
+            if (windows) { sleeper = "ping -n 30 127.0.0.1"; }
+            var doomed = proc_spawn_args(shell, [flag, sleeper])?;
+            print check("proc_is_alive_before_kill", yn(proc_is_alive(doomed)), "true");
+            proc_kill(doomed)?;
+            print check("proc_kill", "reached", "reached");
+        }
+    }
+}

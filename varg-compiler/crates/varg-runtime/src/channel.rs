@@ -46,24 +46,39 @@ pub fn __varg_channel_send(h: &ChannelHandle, value: &str) -> bool {
     h.lock().unwrap_or_else(|e| e.into_inner()).send(value.to_string())
 }
 
-pub fn __varg_channel_try_recv(h: &ChannelHandle) -> String {
-    h.lock().unwrap_or_else(|e| e.into_inner()).try_recv().unwrap_or_default()
+/// Take a message if one is waiting.
+///
+/// `None` means the channel was empty. It used to answer `""`, which is also what a legitimately
+/// empty message looks like — so the one thing this call exists to report was the one thing it
+/// could not.
+pub fn __varg_channel_try_recv(h: &ChannelHandle) -> Option<String> {
+    h.lock().unwrap_or_else(|e| e.into_inner()).try_recv()
 }
 
-pub fn __varg_channel_recv_timeout(h: &ChannelHandle, timeout_ms: i64) -> String {
+/// Wait up to `timeout_ms` for a message.
+///
+/// `None` means the wait ran out or the channel closed empty — both used to be `""`, and so did
+/// an empty message that really arrived.
+pub fn __varg_channel_recv_timeout(h: &ChannelHandle, timeout_ms: i64) -> Option<String> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
     loop {
         {
             let mut ch = h.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(v) = ch.try_recv() { return v; }
-            if ch.closed { return String::new(); }
+            if let Some(v) = ch.try_recv() {
+                return Some(v);
+            }
+            if ch.closed {
+                return None;
+            }
         }
-        if Instant::now() >= deadline { return String::new(); }
+        if Instant::now() >= deadline {
+            return None;
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
 }
 
-pub fn __varg_channel_recv(h: &ChannelHandle) -> String {
+pub fn __varg_channel_recv(h: &ChannelHandle) -> Option<String> {
     __varg_channel_recv_timeout(h, 30_000)
 }
 
@@ -87,7 +102,7 @@ mod tests {
     fn test_channel_send_try_recv() {
         let ch = __varg_channel_new(10);
         assert!(__varg_channel_send(&ch, "hello"));
-        assert_eq!(__varg_channel_try_recv(&ch), "hello");
+        assert_eq!(__varg_channel_try_recv(&ch), Some("hello".to_string()));
     }
 
     #[test]
@@ -115,9 +130,9 @@ mod tests {
         for msg in ["first", "second", "third"] {
             __varg_channel_send(&ch, msg);
         }
-        assert_eq!(__varg_channel_try_recv(&ch), "first");
-        assert_eq!(__varg_channel_try_recv(&ch), "second");
-        assert_eq!(__varg_channel_try_recv(&ch), "third");
+        assert_eq!(__varg_channel_try_recv(&ch), Some("first".to_string()));
+        assert_eq!(__varg_channel_try_recv(&ch), Some("second".to_string()));
+        assert_eq!(__varg_channel_try_recv(&ch), Some("third".to_string()));
     }
 
     #[test]
@@ -153,13 +168,21 @@ mod tests {
         let start = Instant::now();
         let result = __varg_channel_recv_timeout(&ch, 50);
         assert!(start.elapsed() >= Duration::from_millis(49));
-        assert!(result.is_empty());
+        assert!(result.is_none(), "an empty channel answers None, not an empty message");
     }
 
     #[test]
-    fn test_channel_try_recv_empty_returns_empty_string() {
-        let ch = __varg_channel_new(10);
-        assert_eq!(__varg_channel_try_recv(&ch), "");
+    fn test_channel_try_recv_empty_is_none_not_an_empty_message() {
+        // This asserted `""` for an empty channel — the same answer a legitimately empty
+        // message gives, so the one distinction the call exists to make was the one it could not.
+        let ch = __varg_channel_new(4);
+        assert_eq!(__varg_channel_try_recv(&ch), None, "an empty channel has nothing to give");
+        assert!(__varg_channel_send(&ch, ""));
+        assert_eq!(
+            __varg_channel_try_recv(&ch),
+            Some(String::new()),
+            "an empty message is still a message"
+        );
     }
 
     // ── Adversarial / edge-case tests ────────────────────────────────────────
@@ -169,7 +192,7 @@ mod tests {
         // capacity 0 must become 1 (not a zero-size dead channel)
         let ch = __varg_channel_new(0);
         assert!(__varg_channel_send(&ch, "x"), "capacity-0 channel must accept at least 1 message");
-        assert_eq!(__varg_channel_try_recv(&ch), "x");
+        assert_eq!(__varg_channel_try_recv(&ch), Some("x".to_string()));
     }
 
     #[test]
@@ -197,7 +220,7 @@ mod tests {
         let start = Instant::now();
         let result = __varg_channel_recv_timeout(&ch, 5_000);
         let elapsed = start.elapsed();
-        assert!(result.is_empty());
+        assert!(result.is_none(), "an empty channel answers None, not an empty message");
         assert!(elapsed < Duration::from_millis(100), "closed empty channel must not block, elapsed={elapsed:?}");
     }
 
@@ -214,7 +237,7 @@ mod tests {
         let ch = __varg_channel_new(5);
         __varg_channel_send(&ch, "pre");
         __varg_channel_close(&ch);
-        assert_eq!(__varg_channel_recv_timeout(&ch, 100), "pre", "queued msg must survive close");
+        assert_eq!(__varg_channel_recv_timeout(&ch, 100), Some("pre".to_string()), "queued msg must survive close");
     }
 
     #[test]
@@ -246,7 +269,7 @@ mod tests {
         let big = "x".repeat(1_000_000);
         assert!(__varg_channel_send(&ch, &big));
         let got = __varg_channel_try_recv(&ch);
-        assert_eq!(got.len(), 1_000_000);
+        assert_eq!(got.unwrap_or_default().len(), 1_000_000);
     }
 
     #[test]
@@ -261,7 +284,7 @@ mod tests {
         });
         producer.join().unwrap();
         let mut count = 0;
-        while !__varg_channel_try_recv(&ch).is_empty() || __varg_channel_len(&ch) > 0 {
+        while !__varg_channel_try_recv(&ch).is_none() || __varg_channel_len(&ch) > 0 {
             count += 1;
             if count > 100 { break; }
         }

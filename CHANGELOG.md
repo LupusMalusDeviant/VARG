@@ -46,6 +46,39 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Added — every runnable builtin is now run
+
+Four more golden programs bring the executed surface from 257 to **366 of 399**. The 33 that
+remain need a network, an interactive terminal, or block until killed; each is listed by name in
+`docs-check` with the reason, so the boundary is explicit and a new builtin cannot join it by
+accident. That is the check's third gate: documented, consistent with the compiler, **and run**.
+
+Running them found five more defects, every one of which type-checked:
+
+- **`sse_shutdown` could not be called, and would not have worked.** Codegen passed a reference
+  while the runtime took the handle by value, so no program using it compiled — the same shape as
+  `http_sse_route` taking the inner server. And what it did was drop one `Arc` clone while the
+  caller and the server kept theirs, so it closed nothing. It sets a flag the pushes check now.
+- **`channel_try_recv` and `channel_recv_timeout` answered `""` for an empty channel** — exactly
+  what a legitimately empty message looks like, in the primitive whose whole job is telling those
+  apart. A test named `test_channel_try_recv_empty_returns_empty_string` had pinned it.
+- **A value could be put in only one list.** `var a = [s, "1"]; var b = [s, "2"];` failed with
+  "use of moved value", about a move nobody wrote.
+- **`df_with_column` took `&[f32]`** while Varg's `float` is f64, so it could not be called at all.
+- **`time_parse` rejected a date without a time**, which is the form REFERENCE shows.
+
+Corrected along with them: `fan_in`'s reducer takes the whole list rather than a running
+accumulator, `rag_index` takes its metadata as a JSON string, and `context_from` takes the query
+result as text — all three were documented wrongly in the previous round.
+
+### Changed — CI
+
+The generated programs build into `~/.cache/varg/target`, shared between programs but cached
+between runs by nothing, so every run recompiled axum, polars, duckdb and tantivy from scratch:
+21 minutes against 85 seconds for the same suite locally, and growing with each golden program.
+That directory is cached now. `actions/checkout` moves to v5, which stops the Node 20 warning.
+
+
 ### Added — modules can live in subdirectories
 
 `import a.b;` parses as "the item `b` from module `a`", so a dotted name never reached the module

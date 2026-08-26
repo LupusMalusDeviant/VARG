@@ -78,7 +78,10 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         "json_get" => TypeNode::Nullable(Box::new(TypeNode::String)),
         // A position past the end, a root with no parent, a name with no extension: each is a
         // legitimate "nothing there", and each used to answer with the empty string.
-        "char_at" | "path_parent" | "path_stem" | "path_extension" => {
+        "char_at" | "path_parent" | "path_stem" | "path_extension"
+        // An empty channel is not an empty message, which is the one distinction these calls
+        // exist to make.
+        | "channel_try_recv" | "channel_recv_timeout" | "channel_recv" => {
             TypeNode::Nullable(Box::new(TypeNode::String))
         }
         // Without the separator there is no split. `("", "")` was both the failure answer and
@@ -141,6 +144,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "time_format", "json_set", "json_merge", "exe_path",
         // Nullable
         "char_at", "path_parent", "path_stem", "path_extension", "split_once",
+        "channel_try_recv", "channel_recv_timeout", "channel_recv",
     ]
 }
 

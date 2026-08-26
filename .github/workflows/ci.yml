@@ -26,7 +26,7 @@ jobs:
     name: Test (default features)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -44,7 +44,7 @@ jobs:
     name: Test (--features full)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -65,7 +65,7 @@ jobs:
     name: Compile (one feature at a time)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -98,12 +98,23 @@ jobs:
     name: Golden output + rejection probes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: varg-compiler
           key: e2e
+      # vargc builds every generated program into ~/.cache/varg/target, shared across programs
+      # but not across runs. Nothing cached it, so each run recompiled axum, polars, duckdb and
+      # tantivy from scratch for the golden suite -- 21 minutes against 85 seconds locally, and
+      # growing with every golden program added.
+      - name: Cache generated-program builds
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/varg/target
+          key: varg-progs-${{ runner.os }}-${{ hashFiles('varg-compiler/crates/varg-runtime/Cargo.toml', 'varg-compiler/Cargo.lock') }}
+          restore-keys: |
+            varg-progs-${{ runner.os }}-
       - name: Build vargc (release)
         run: cargo build -p vargc --release --locked
       - name: Documentation compiles and covers the builtins

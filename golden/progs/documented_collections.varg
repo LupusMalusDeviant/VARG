@@ -65,6 +65,13 @@ agent Main {
         print check("map_err", yn(relabelled.is_err()), "true");
         print check("map_err_keeps_ok", $"{parse_int("5").map_err((e) => e) or -1}", "5");
 
+        // A named value put into a list is copied into it. Without that, the list took
+        // ownership and the same variable could appear in exactly one list.
+        var shared = "x";
+        var first = [shared, "1"];
+        var second = [shared, "2"];
+        print check("value_in_two_lists", $"{first.len()}{second.len()}", "22");
+
         // ── Regex ────────────────────────────────────────────────────────
         print check("regex_match", yn(regex_match("^h.*o$", "hello") or false), "true");
         print check("regex_no_match", yn(regex_match("^z", "hello") or false), "false");

@@ -162,12 +162,18 @@ pub fn __varg_df_head(df: &DataFrameHandle, n: i64) -> DataFrameHandle {
     Arc::new(Mutex::new(result))
 }
 
-pub fn __varg_df_with_column(
+/// Add a column, taking the values in whatever numeric shape Varg hands over.
+///
+/// It took `&[f32]` while Varg's `float` is f64, so a float array literal did not match and the
+/// builtin could not be called from the language at all — the same shape as the tensor
+/// boundary before it shared `ToF32Vec`.
+pub fn __varg_df_with_column<D: crate::vector::ToF32Vec + ?Sized>(
     df: &DataFrameHandle,
     name: &str,
-    data: &[f32],
+    data: &D,
 ) -> Result<DataFrameHandle, String> {
-    let series = Series::new(name.into(), data);
+    let values = data.to_f32_vec();
+    let series = Series::new(name.into(), values.as_slice());
     let mut inner = df.lock().unwrap_or_else(|e| e.into_inner()).clone();
     inner
         .with_column(series)

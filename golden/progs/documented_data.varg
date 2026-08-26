@@ -1,0 +1,110 @@
+/// The data builtins the documentation describes and no program ran: the rest of the DataFrame
+/// surface, full-text deletion, the vector index and its two search forms, local embeddings and
+/// retrieval, audio inspection, SQLite queries, the package registry and cascading config.
+///
+/// Local embeddings and RAG belong here rather than with the LLM builtins: `embed_local` runs a
+/// hashing embedder in-process, so it needs no network and can be checked for real.
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            var files = FileAccess {};
+            var dbc = DbAccess {};
+
+            // ── DataFrame: the half nothing exercised ────────────────────
+            fs_write("dd.csv", "name,score\nada,90\nbob,70\ncy,80\n")?;
+            var df = df_read_csv("dd.csv")?;
+            print check("df_columns", $"{df_columns(df).len()}", "2");
+            print check("df_head", $"{df_shape(df_head(df, 2)).0}", "2");
+            var sorted = df_sort(df, "score", true)?;
+            print check("df_sort_keeps_rows", $"{df_shape(sorted).0}", "3");
+            var grouped = df_groupby(df, ["name"])?;
+            print check("df_groupby", $"{df_shape(grouped).0}", "3");
+            var widened = df_with_column(df, "bonus", [1.0, 2.0, 3.0])?;
+            print check("df_with_column", $"{df_columns(widened).len()}", "3");
+            df_write_parquet(df, "dd.parquet")?;
+            var back = df_read_parquet("dd.parquet")?;
+            print check("parquet_roundtrip", $"{df_shape(back).0}", "3");
+
+            // ── Full-text: deleting a document ───────────────────────────
+            var idx = fts_open(":memory:", files)?;
+            fts_add(idx, "d1", "varg compiles to rust")?;
+            fts_add(idx, "d2", "rust has no garbage collector")?;
+            fts_commit(idx)?;
+            print check("fts_finds_both", $"{(fts_search(idx, "rust", 5) or []).len()}", "2");
+            fts_delete(idx, "d2")?;
+            print check("fts_after_delete", $"{(fts_search(idx, "rust", 5) or []).len()}", "1");
+            fts_close(idx)?;
+
+            // ── Vector store: index and the two search forms ─────────────
+            var store = vector_store_open(":memory:")?;
+            vector_store_upsert(store, "a", embed_local("varg is a language"), {});
+            vector_store_upsert(store, "b", embed_local("rust is a language"), {});
+            print check("embed_local_dimensions", yn(embed_local("x").len() > 0), "true");
+            print check("embed_local_batch", $"{embed_local_batch(["x", "y"]).len()}", "2");
+            print check("vector_search_text",
+                        $"{vector_search_text(store, "language", 2).len()}", "2");
+            // An index makes the search approximate; without the `ann` feature it stays exact.
+            vector_build_index(store);
+            print check("vector_search_fast",
+                        $"{vector_search_fast(store, embed_local("language"), 2).len()}", "2");
+
+            // ── Retrieval on top of the store ────────────────────────────
+            var rag = vector_store_open(":memory:")?;
+            // The metadata is a JSON string, and indexing does not fail.
+            rag_index(rag, "doc1", "Varg compiles to native binaries", "{}");
+            rag_index(rag, "doc2", "Rust provides memory safety", "{}");
+            print check("rag_retrieve", yn(rag_retrieve(rag, "compiles", 2).len() > 0), "true");
+            print check("rag_build_prompt",
+                        yn(rag_build_prompt(rag, "what compiles?", 2).contains("Query:")), "true");
+
+            // ── SQLite queries ───────────────────────────────────────────
+            var db = db_open("dd.db")?;
+            db_execute(db, "CREATE TABLE IF NOT EXISTS t (a INTEGER)", [])?;
+            db_execute(db, "INSERT INTO t VALUES (7)", [])?;
+            print check("db_query", $"{(db_query(db, "SELECT a FROM t", []) or []).len()}", "1");
+
+            // ── Audio: written as bytes, read back and inspected ─────────
+            var wav = [82, 73, 70, 70, 36, 0, 0, 0, 87, 65, 86, 69];
+            fs_write_bytes("dd.wav", wav)?;
+            var aud = audio_load("dd.wav")?;
+            print check("audio_format", audio_format(aud), "wav");
+            print check("audio_size_bytes", $"{audio_size_bytes(aud)}", "12");
+            print check("audio_to_base64", yn(audio_to_base64(aud).len() > 0), "true");
+
+            // ── A query result becomes a Context an LLM call can take ────
+            var rows = db_query(db, "SELECT a FROM t", [])?;
+            // It takes the result as text, not the rows themselves.
+            var ctx = context_from(json_stringify(rows));
+            print check("context_from", "built", "built");
+
+            // ── Package registry ─────────────────────────────────────────
+            var reg = registry_open("dd_registry");
+            registry_install(reg, "varg-http", "1.0.0");
+            print check("registry_list", $"{registry_list(reg).len()}", "1");
+            print check("registry_search", yn(registry_search("http").len() >= 0), "true");
+
+            // ── Configuration from a chain of files ──────────────────────
+            fs_write("dd_base.json", "{\"mode\": \"safe\", \"level\": \"1\"}")?;
+            fs_write("dd_local.json", "{\"level\": \"9\"}")?;
+            var cfg = config_load_cascade(["dd_base.json", "dd_local.json"]) or "{}";
+            print check("cascade_keeps_base", json_get(cfg, "mode") or "<none>", "safe");
+            print check("cascade_overrides", json_get(cfg, "level") or "<none>", "9");
+
+            delete_file("dd.csv")?;
+            delete_file("dd.parquet")?;
+            delete_file("dd.wav")?;
+            delete_file("dd_base.json")?;
+            delete_file("dd_local.json")?;
+        }
+    }
+}

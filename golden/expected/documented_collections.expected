@@ -23,6 +23,7 @@ OK   map_remove
 OK   and_then
 OK   map_err
 OK   map_err_keeps_ok
+OK   value_in_two_lists
 OK   regex_match
 OK   regex_no_match
 OK   regex_find_all

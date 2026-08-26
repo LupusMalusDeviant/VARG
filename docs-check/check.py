@@ -247,7 +247,78 @@ def coverage():
         print("\nDocument them, or retire them so the compiler says what to use instead.")
         return 1
 
-    print("\n--- docs: OK (every builtin is documented, and none contradicts the compiler) ---")
+    return executed(names, retired)
+
+
+# Builtins no golden program can run: they need a network, an interactive terminal, or they block
+# forever. Each carries the reason, so the boundary is explicit and a *new* builtin cannot join it
+# by accident.
+UNRUNNABLE = {
+    "llm_chat": "needs an LLM provider",
+    "llm_infer": "needs an LLM provider",
+    "llm_chat_cached": "needs an LLM provider",
+    "llm_chat_opts": "needs an LLM provider",
+    "llm_embed_batch": "needs an LLM provider",
+    "llm_stream": "needs an LLM provider",
+    "llm_stream_to": "needs an LLM provider",
+    "llm_structured": "needs an LLM provider",
+    "llm_structured_schema": "needs an LLM provider",
+    "llm_vision": "needs an LLM provider",
+    "rag_hybrid_search": "combines a text index with an LLM embedding",
+    "fetch": "needs a network",
+    "http_request": "needs a network",
+    "http_download_base64": "needs a network",
+    "registry_download": "needs a network",
+    "ws_connect": "needs a running server",
+    "ws_send": "needs a running server",
+    "ws_receive": "needs a running server",
+    "ws_close": "needs a running server",
+    "sse_client_connect": "needs a running server",
+    "sse_client_next": "needs a running server",
+    "sse_client_post": "needs a running server",
+    "sse_client_close": "needs a running server",
+    "sse_read": "needs a running server",
+    "readline_new": "needs an interactive terminal",
+    "readline_read": "needs an interactive terminal",
+    "readline_add_history": "needs an interactive terminal",
+    "readline_load_history": "needs an interactive terminal",
+    "readline_save_history": "needs an interactive terminal",
+    "stdin_read": "would block on a closed stdin",
+    "stdin_read_line": "would block on a closed stdin",
+    "http_listen": "blocks serving until killed",
+    "mcp_server_run": "blocks serving until killed",
+}
+
+
+def executed(names, retired):
+    """Fail on a builtin that could be run in a golden program and is not.
+
+    Type-checking the documentation is not enough. `try/catch` caught nothing on the main thread,
+    `unique` returned duplicates, `(n * 2).to_string()` lost its parentheses, `sse_shutdown` could
+    not be called at all -- every one type-checked, and every one was found by running. So the
+    rule here is that whatever can be run, is.
+    """
+    progs = os.path.join(ROOT, "golden", "progs")
+    golden = ""
+    for f in sorted(os.listdir(progs)):
+        if f.endswith(".varg"):
+            golden += io.open(os.path.join(progs, f), encoding="utf-8", newline="").read()
+
+    names = names - retired
+    never = sorted(n for n in names
+                   if not re.search(r"(?<![A-Za-z_])%s\s*\(" % re.escape(n), golden))
+    unexplained = [n for n in never if n not in UNRUNNABLE]
+
+    print("run in a golden program: %d of %d   (%d exempt: network, terminal, blocking)"
+          % (len(names) - len(never), len(names), len(never)))
+    if unexplained:
+        print("\n--- builtins no golden program runs ---")
+        for n in unexplained:
+            print("   %s" % n)
+        print("\nRun it in a golden program, or add it to UNRUNNABLE with the reason it cannot be.")
+        return 1
+
+    print("\n--- docs: OK (documented, consistent with the compiler, and run) ---")
     return 0
 
 

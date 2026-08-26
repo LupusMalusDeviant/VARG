@@ -227,6 +227,10 @@ use std::convert::Infallible;
 pub struct SseSenderHandle {
     /// Broadcast sender: clone it to produce additional producers if needed.
     pub tx: Arc<broadcast::Sender<String>>,
+    /// Set by `sse_shutdown`. Dropping the handle could not close anything — the caller keeps a
+    /// clone and so does the server — so the shutdown needs somewhere to be recorded that the
+    /// pushes can see.
+    pub closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Pending SSE route stored in the server until `__varg_http_listen` wires it.
@@ -320,7 +324,10 @@ pub fn __varg_sse_open(server: &mut VargHttpServerHandle, path: &str) -> SseSend
         path: path.to_string(),
         tx: Arc::clone(&tx),
     });
-    SseSenderHandle { tx }
+    SseSenderHandle {
+        tx,
+        closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    }
 }
 
 /// Push a data string to all connected SSE clients on this channel.
@@ -329,6 +336,9 @@ pub fn __varg_sse_open(server: &mut VargHttpServerHandle, path: &str) -> SseSend
 /// Named `__varg_sse_push` to avoid collision with the SSE-client writer
 /// `__varg_sse_send` in the websocket module.
 pub fn __varg_sse_push(sender: &SseSenderHandle, data: &str) -> bool {
+    if sender.closed.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
     sender.tx.send(data.to_string()).is_ok()
 }
 
@@ -336,8 +346,11 @@ pub fn __varg_sse_push(sender: &SseSenderHandle, data: &str) -> bool {
 ///
 /// Named `__varg_sse_shutdown` to avoid collision with the SSE-client writer
 /// `__varg_sse_close` in the websocket module.
-pub fn __varg_sse_shutdown(sender: SseSenderHandle) {
-    drop(sender);
+pub fn __varg_sse_shutdown(sender: &SseSenderHandle) {
+    // Took the handle by value while codegen passed a reference, so no program using it ever
+    // compiled — the same shape as `http_sse_route` taking the inner server. And `drop(sender)`
+    // dropped one Arc clone while the caller and the server kept theirs, so it closed nothing.
+    sender.closed.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// axum state wrapper so the broadcast sender can be passed into an async handler.

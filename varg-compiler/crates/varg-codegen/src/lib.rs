@@ -3785,7 +3785,19 @@ impl RustGenerator {
                 }
             },
             Expression::ArrayLiteral(elements) => {
-                let elems: Vec<String> = elements.iter().map(|e| self.gen_expression(e)).collect();
+                // A named value put into a list is copied into it, not handed over. Without the
+                // clone the list took ownership, so the same variable could appear in exactly one
+                // list: `var a = [s, "1"]; var b = [s, "2"];` failed with rustc's "use of moved
+                // value: `s`", about a move the author never wrote.
+                let elems: Vec<String> = elements
+                    .iter()
+                    .map(|e| match e {
+                        Expression::Identifier(_) => {
+                            format!("{}.clone()", self.gen_expression(e))
+                        }
+                        _ => self.gen_expression(e),
+                    })
+                    .collect();
                 format!("vec![{}]", elems.join(", "))
             },
             Expression::MapLiteral(entries) => {

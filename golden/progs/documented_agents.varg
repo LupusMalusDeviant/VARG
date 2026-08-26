@@ -1,0 +1,114 @@
+/// The agent-infrastructure builtins the documentation describes and no program ran:
+/// channels, tracing, workflow state, orchestration, fan-out/fan-in, budgets, rate limiting,
+/// the self-improver, and the human-in-the-loop prompts.
+///
+/// The HITL calls are here on purpose: golden runs with stdin closed, which is exactly the
+/// situation they have to degrade in rather than hang.
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            // ── Channels: the non-blocking reads ─────────────────────────
+            var ch = channel_new(4);
+            channel_send(ch, "first");
+            print check("channel_try_recv", channel_try_recv(ch) or "<leer>", "first");
+            print check("channel_try_recv_empty", channel_try_recv(ch) or "<leer>", "<leer>");
+            channel_send(ch, "");
+            // A message that is empty is still a message, and no longer reads as "nothing there".
+            print check("channel_empty_message", channel_try_recv(ch) or "<leer>", "");
+            channel_send(ch, "second");
+            print check("channel_recv_timeout", channel_recv_timeout(ch, 100) or "<timeout>", "second");
+            print check("channel_recv_timeout_empty",
+                        channel_recv_timeout(ch, 20) or "<timeout>", "<timeout>");
+
+            // ── Tracing: attributes, events, and a failed span ───────────
+            var tracer = trace_start("golden");
+            var span = trace_span(tracer, "work");
+            trace_set_attr(tracer, "order_id", "ORD-1");
+            trace_event(tracer, "checkpoint", {"stage": "middle"});
+            trace_end(tracer, span);
+            var bad = trace_span(tracer, "doomed");
+            trace_error(tracer, bad, "it did not work");
+            print check("trace_span_count", $"{trace_span_count(tracer)}", "2");
+            print check("trace_export_has_error",
+                        yn(trace_export(tracer).contains("it did not work")), "true");
+
+            // ── Workflow: readiness and failure ──────────────────────────
+            var wf = workflow_new("pipe");
+            workflow_add_step(wf, "fetch", []);
+            workflow_add_step(wf, "parse", ["fetch"]);
+            print check("workflow_ready_steps", $"{workflow_ready_steps(wf).len()}", "1");
+            workflow_set_failed(wf, "fetch", "upstream refused");
+            // status_report counts states rather than naming steps.
+            print check("workflow_status_counts_failure",
+                        yn(workflow_status(wf).contains("1 failed")), "true");
+            // `is_complete` means "nothing is pending any more", not "everything succeeded":
+            // after a failure the dependent step is skipped, so no work remains.
+            print check("workflow_complete_means_nothing_pending",
+                        yn(workflow_is_complete(wf)), "true");
+
+            // ── Orchestration and the fan-out/fan-in pair ────────────────
+            var orch = orchestrator_new("workers");
+            orchestrator_add_task(orch, "t1", "alpha");
+            orchestrator_add_task(orch, "t2", "beta");
+            orchestrator_run_all(orch, (input) => {
+                return input.to_upper();
+            });
+            print check("orchestrator_task_count", $"{orchestrator_task_count(orch)}", "2");
+            print check("orchestrator_completed", $"{orchestrator_completed_count(orch)}", "2");
+            print check("orchestrator_results", $"{orchestrator_results(orch).len()}", "2");
+
+            var spread = fan_out(["a", "b", "c"], (input) => {
+                return input.to_upper();
+            });
+            print check("fan_out", $"{spread.len()}", "3");
+            // The reducer receives the whole list at once, not a running accumulator.
+            print check("fan_in", fan_in(spread, (all) => {
+                return all.join("");
+            }), "ABC");
+
+            // ── Budget and rate limiting ─────────────────────────────────
+            var b = budget_new(1000, 500);
+            // budget_track takes the texts and estimates the tokens from them.
+            budget_track(b, "a prompt", "a response");
+            print check("budget_check", yn(budget_check(b)), "true");
+            print check("budget_report_mentions_tokens",
+                        yn(budget_report(b).contains("Tokens")), "true");
+            print check("rate_limit_try_first", yn(rate_limit_try("golden", 2, 60000)), "true");
+            print check("rate_limit_try_second", yn(rate_limit_try("golden", 2, 60000)), "true");
+            print check("rate_limit_try_over", yn(rate_limit_try("golden", 2, 60000)), "false");
+            // acquire blocks until a token frees up; with a fresh key one is free immediately.
+            rate_limit_acquire("golden_acquire", 5, 60000);
+            print check("rate_limit_acquire", "returned", "returned");
+            var rl = ratelimiter_new(5, 60000);
+            ratelimiter_acquire(rl);
+            print check("ratelimiter_acquire", "returned", "returned");
+
+            // ── Self-improver ────────────────────────────────────────────
+            var si = self_improver_new(":memory:", 3)?;
+            self_improver_record_success(si, "task", "did it");
+            self_improver_record_failure(si, "task", "did not");
+            print check("self_improver_iterations", $"{self_improver_iterations(si)}", "2");
+            print check("self_improver_success_rate", $"{self_improver_success_rate(si)}", "50");
+
+            // ── Human-in-the-loop, with stdin closed ─────────────────────
+            // These must degrade rather than hang: no approval, no choice, empty input.
+            print check("await_approval_closed_stdin", yn(await_approval("deploy?")), "false");
+            print check("await_choice_closed_stdin",
+                        $"{await_choice("pick", ["a", "b"])}", "-1");
+            print check("await_input_closed_stdin", await_input("name?"), "");
+
+            // ── Program arguments ────────────────────────────────────────
+            print check("args_is_a_list", yn(args().len() >= 0), "true");
+        }
+    }
+}

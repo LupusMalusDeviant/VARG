@@ -1822,7 +1822,7 @@ memory_store(mem, "User asked about Rust", {"topic": "programming"});
 var episodes = memory_recall(mem, "Rust programming", 5);
 
 // A memory or database query result becomes a Context an LLM call can take.
-var ctx = context_from(memory_recall(mem, "Rust", 3));
+var ctx = context_from(json_stringify(memory_recall(mem, "Rust", 3)));
 
 // Semantic memory (graph-based facts, persisted)
 var fact_id = memory_add_fact(mem, "User", {"name": "Alice", "lang": "English"});
@@ -1901,8 +1901,9 @@ Running one handler over many inputs at once, then folding the answers into one:
 var answers = fan_out(["a", "b", "c"], (input) => {
     return input.to_upper();
 });
-var summary = fan_in(answers, (acc, x) => {
-    return acc + x;
+// The reducer receives the whole list at once, not a running accumulator.
+var summary = fan_in(answers, (all) => {
+    return all.join(", ");
 });
 ```
 
@@ -2296,8 +2297,9 @@ var hits = rag_hybrid_search(fts_idx, vector_store, embed_local(query), query, 5
 var store = vector_store_open("docs")?;
 
 // Index
-rag_index(store, "doc1", "Varg is a compiled language for AI agents", {})?;
-rag_index(store, "doc2", "Rust provides memory safety without GC", {})?;
+// The metadata is a JSON string, and indexing does not fail.
+rag_index(store, "doc1", "Varg is a compiled language for AI agents", "{}");
+rag_index(store, "doc2", "Rust provides memory safety without GC", "{}");
 
 // Retrieve
 var chunks = rag_retrieve(store, embed_local("AI agent language"), 3);

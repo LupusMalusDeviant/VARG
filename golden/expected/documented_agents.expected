@@ -1,0 +1,31 @@
+OK   channel_try_recv
+OK   channel_try_recv_empty
+OK   channel_empty_message
+OK   channel_recv_timeout
+OK   channel_recv_timeout_empty
+OK   trace_span_count
+OK   trace_export_has_error
+OK   workflow_ready_steps
+OK   workflow_status_counts_failure
+OK   workflow_complete_means_nothing_pending
+OK   orchestrator_task_count
+OK   orchestrator_completed
+OK   orchestrator_results
+OK   fan_out
+OK   fan_in
+OK   budget_check
+OK   budget_report_mentions_tokens
+OK   rate_limit_try_first
+OK   rate_limit_try_second
+OK   rate_limit_try_over
+OK   rate_limit_acquire
+OK   ratelimiter_acquire
+OK   self_improver_iterations
+OK   self_improver_success_rate
+deploy? [y/N]: OK   await_approval_closed_stdin
+pick
+  1 - a
+  2 - b
+Choice (1-2): OK   await_choice_closed_stdin
+name?OK   await_input_closed_stdin
+OK   args_is_a_list

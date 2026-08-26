@@ -17,7 +17,8 @@ agent Main {
         channel_send(ch, "one");
         channel_send(ch, "two");
         print check("channel_len", $"{channel_len(ch)}", "2");
-        print check("channel_recv", channel_recv(ch), "one");
+        // Nullable: an empty channel is not an empty message.
+        print check("channel_recv", channel_recv(ch) or "<leer>", "one");
         print check("channel_len_after", $"{channel_len(ch)}", "1");
         var closed_before = channel_is_closed(ch);
         print check("channel_is_closed_false", yn(closed_before), "false");
