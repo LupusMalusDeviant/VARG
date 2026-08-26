@@ -1121,6 +1121,72 @@ zwei Pipeline-Schritte) — keine davon kompilierte je. Korrigiert.
 ---
 
 
+## Builtins, die eine Antwort erfunden haben (Stufe 27)
+
+Die Liste aus Stufe 24. Beim Nachmessen war sie länger — und zwei Einträge waren keine stillen
+Defaults, sondern schlimmer.
+
+### Der klarste Fall
+
+`split_once("ab", "=")` lieferte `("", "")`. Genau dasselbe liefert `split_once("=", "=")` —
+das erfolgreiche Trennen in zwei leere Hälften. **Erfolg und Misserfolg waren dieselben zwei
+Werte.** Jetzt Nullable.
+
+### Kein Default, ein Absturz
+
+`time_format(0, "%Q")` **nahm das Programm mit runter**: chrono paniert aus seiner
+`Display`-Implementierung heraus bei einem unbekannten Spezifikator („a Display implementation
+returned an error unexpectedly"). Das Muster wird jetzt vorher geprüft.
+
+### Kein Default, ein Datenverlust
+
+`json_set("not json", "a", "1")` gab `{"a":1}` zurück. Das unparsbare Dokument wurde durch ein
+leeres ersetzt, und der Schreibvorgang meldete Erfolg — der Aufrufer glaubt, er hat sein Dokument
+geändert; zurück kam ein anderes, in dem alles Übrige fehlt. `json_merge` verwarf die kaputte
+Seite still, was aussah wie ein Merge, der nichts zu tun hatte. Beide melden jetzt, **welche**
+Seite nicht parst (dafür kam `try_as_json` dazu: `as_json` macht aus kaputtem Text `Value::Null`,
+was für die *lesenden* Accessoren richtig ist, für die *schreibenden* aber „ist kein Objekt"
+statt „parst nicht" ergeben hätte).
+
+### Die Aufteilung
+
+| Nullable — „da ist nichts" | Fallibel — „etwas ging schief" |
+|---|---|
+| `char_at` (Index hinter dem Ende) | `time_format` (ungültiges Muster) |
+| `split_once` (kein Trenner) | `json_set` / `json_merge` (Dokument parst nicht) |
+| `path_parent` / `path_extension` / `path_stem` | `exe_path` |
+| | `readline_read` (EOF/Ctrl-C — das `Result` gab es längst, der Codegen warf es weg) |
+
+`json_stringify`/`_pretty` behalten ihren Default und sagen jetzt im Code **warum**: ein
+`serde_json::Value` kann nicht scheitern (weder Nicht-String-Schlüssel noch NaN/Inf sind darin
+darstellbar). Ein dokumentiert unerreichbarer Default ist etwas anderes als ein übersehener.
+
+### Fünf undokumentierte Dubletten entfernt
+
+`file_read`, `file_write`, `to_json`, `from_json`, `time_now`: **null** Doku-Zeilen, **null**
+Aufrufe in irgendeinem Programm — und jede eine schlechtere Ausgabe der dokumentierten Variante.
+`file_read` gab die **Fehlermeldung als Dateiinhalt** zurück, `file_write` rief `.unwrap()`.
+OCAP griff immerhin bei beiden (geprüft). Sie werden jetzt namentlich abgelehnt, mit der
+Ersatz-Funktion in der Meldung — nicht kommentarlos gelöscht. Präzedenz: die Lügen-SSE-API in
+Stufe 9.
+
+Dabei mussten die OCAP-Tests umziehen: `file_read`/`file_write` waren dort ausgerechnet die
+Musterbeispiele für Capability-Prüfung. Jetzt auf `fs_read`/`fs_write`, die dieselbe
+`FileAccess`-Prüfung durchlaufen — und deren Fallibilität die Fixture gleich mit sichtbar machte.
+
+### Beifang: der zweite flakige Test
+
+Wie schon `counts_by_status_track_transitions` bestand `test_provider_detect_claude_alias` isoliert
+und fiel im Gesamtlauf: vier Tests setzen dieselbe **Umgebungsvariable** `VARG_LLM_PROVIDER` und
+löschen sie wieder, parallel. Elf umgebungsberührende Tests des Moduls teilen sich jetzt eine Mutex.
+
+### Stand danach
+1243 Unit-Tests (default) / 1396 (`--features full`) · Golden **38/38** · Probes **71/71** ·
+18 Programme bauen.
+
+---
+
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests

@@ -932,9 +932,11 @@ create_dir("./output")?;                      // Result<void, string>
 delete_file("temp.txt")?;                     // Result<void, string>
 var exists = path_exists("config.toml");       // bool
 var joined = path_join("dir", "file.txt");     // string
-var parent = path_parent("/a/b/c.txt");        // string
-var ext = path_extension("file.tar.gz");       // string
-var stem = path_stem("report.pdf");            // string
+// Nullable: a root has no parent and a bare name has no extension, so these answer `null`
+// rather than `""` — which used to be their answer for a failure as well.
+var parent = path_parent("/a/b/c.txt") or ".";   // string? -> string
+var ext = path_extension("file.tar.gz") or "";   // string? -> string
+var stem = path_stem("report.pdf") or "";        // string? -> string
 ```
 
 ### HTTP (requires NetworkAccess)
@@ -1019,7 +1021,9 @@ var code = exec_status("make build")?;       // Result<int, string>
 
 ```csharp
 var now = time_millis();                              // int (epoch ms)
-var formatted = time_format(now, "%Y-%m-%d %H:%M");  // string
+// Fallible: an unknown specifier used to panic out of chrono's formatter and take the
+// program down, so the pattern is validated first.
+var formatted = time_format(now, "%Y-%m-%d %H:%M")?;  // Result<string, string>
 var parsed = time_parse("2024-01-15", "%Y-%m-%d")?;  // Result<int, string>
 var later = time_add(now, 60000);                     // int (+ 1 minute)
 var delta = time_diff(later, now);                    // int (ms difference)
@@ -1073,7 +1077,7 @@ s.substring(0, 5);            // "Hello"
 s.index_of("World");          // 7
 s.split(",");                 // ["Hello", " World!"]
 s.replace("World", "Varg");   // "Hello, Varg!"
-s.char_at(0);                 // "H"
+s.char_at(0) or "";           // string? — an index past the end has no character
 ```
 
 ### Logging
@@ -1341,7 +1345,7 @@ Any MCP client can drive it, including Varg's own:
 ```csharp
 unsafe {
     var sys = SystemAccess {};
-    var conn = mcp_connect(exe_path(), ["--mcp-serve"])?;
+    var conn = mcp_connect(exe_path()?, ["--mcp-serve"])?;
     var tools = mcp_list_tools(conn)?;
     var sum = mcp_call_tool(conn, "add", {"a": 17, "b": 25}) or "failed";
     mcp_disconnect(conn);

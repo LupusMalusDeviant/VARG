@@ -46,6 +46,45 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Changed — builtins that invented an answer now report one
+
+Eleven builtins handled failure by returning a plausible value. Each is either Nullable, where
+the honest answer is "there is nothing there", or fallible, where something actually went wrong.
+
+Nullable — `char_at`, `split_once`, `path_parent`, `path_extension`, `path_stem`:
+
+- **`split_once` was the clearest case.** Without the separator it returned `("", "")` — which is
+  exactly what splitting `"="` on `"="` legitimately gives. Success and failure were the same two
+  values.
+- `char_at` past the end of the string, and a path with no parent or extension, all answered `""`.
+  `path_parent` additionally kept Rust's `Some("")` for a bare name; an empty parent is no parent.
+
+Fallible — `time_format`, `json_set`, `json_merge`, `exe_path`, `readline_read`:
+
+- **`time_format` did not degrade, it crashed.** chrono panics from its `Display` implementation
+  on an unknown specifier, so `time_format(0, "%Q")` took the program down with "a Display
+  implementation returned an error unexpectedly". The pattern is validated before use.
+- **`json_set` silently discarded the document.** An unparseable one was replaced by an empty
+  object and the write then reported success: `json_set("not json", "a", "1")` returned `{"a":1}`.
+  The caller believes they modified their document; what came back has everything else gone.
+- **`json_merge` dropped whichever side would not parse**, which looked exactly like a merge that
+  legitimately changed nothing. It now says which side.
+- `readline_read` already returned a `Result` naming EOF and Ctrl-C; codegen threw it away, so
+  end of input was indistinguishable from the user pressing return.
+
+`json_stringify` and `json_stringify_pretty` keep their default, and now say why in the code: a
+`serde_json::Value` cannot fail to serialise — it holds neither a non-string map key nor a
+non-finite float.
+
+### Removed — five undocumented duplicates
+
+`file_read`, `file_write`, `to_json`, `from_json` and `time_now` appeared in no documentation and
+in no program in this repository, and each duplicated a documented builtin while handling failure
+worse: `file_read` returned the error message as the file's contents, `file_write` called
+`.unwrap()`. Calling one is an error naming the replacement (`fs_read`, `fs_write`,
+`json_stringify`, `json_parse`, `timestamp`) and what it used to do.
+
+
 ### Fixed — the string and collection builtins say how they are called
 
 - **`to_upper("abc")` compiled to `self.to_uppercase()`.** These builtins are methods on the
