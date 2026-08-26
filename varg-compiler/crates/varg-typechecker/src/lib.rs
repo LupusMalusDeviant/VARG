@@ -3696,6 +3696,27 @@ impl TypeChecker {
             },
             // Wave 12: Struct literal — Point { x: 5, y: 10 }
             Expression::StructLiteral { type_name, fields } => {
+                // Constructing a capability token is gated on `unsafe`. That was enforced only
+                // when the binding carried an explicit type (`FileAccess cap = FileAccess {};`),
+                // so the inferred form `var cap = FileAccess {};` slipped through the rule. The
+                // security property itself held either way — a privileged call still demands a
+                // token that is genuinely in scope — but the documented rule and what the
+                // compiler enforced had drifted apart.
+                if !self.in_unsafe_block {
+                    let cap = match type_name.as_str() {
+                        "NetworkAccess" => Some(CapabilityType::NetworkAccess),
+                        "FileAccess" => Some(CapabilityType::FileAccess),
+                        "DbAccess" => Some(CapabilityType::DbAccess),
+                        "LlmAccess" => Some(CapabilityType::LlmAccess),
+                        "SystemAccess" => Some(CapabilityType::SystemAccess),
+                        _ => None,
+                    };
+                    if cap.is_some() {
+                        return Err(TypeError::CapabilityConstructionOutsideUnsafe {
+                            capability: type_name.clone(),
+                        });
+                    }
+                }
                 // Clone the declaration to avoid a borrow conflict with infer_expression_type.
                 // An *extra* field was already rejected here; a missing one and a wrongly typed
                 // one were not, so both only surfaced as rustc errors about generated code.
@@ -11147,6 +11168,29 @@ mod tests {
         );
         assert_accepted(
             "contract IS { int area(); }\nagent S implements IS { public int area() { return 4; } }\nfn area_of(IS s) -> int { return s.area(); }\nagent M { public void Run() { print area_of(S()); } }",
+        );
+    }
+
+
+    /// Constructing a capability token is gated on `unsafe`. That was enforced only when the
+    /// binding carried an explicit type, so the inferred form slipped through the documented rule.
+    /// The security property held either way — a privileged call still demands a token genuinely
+    /// in scope — but the rule and its enforcement had drifted apart.
+    #[test]
+    fn a_capability_token_may_only_be_constructed_under_unsafe() {
+        assert_rejected(
+            "agent M { public void Run() { var cap = FileAccess {}; print 1; } }",
+            "cannot be constructed outside",
+        );
+        assert_rejected(
+            "agent M { public void Run() { FileAccess cap = FileAccess {}; print 1; } }",
+            "cannot be constructed outside",
+        );
+        assert_accepted("agent M { public void Run() { unsafe { var cap = FileAccess {}; print 1; } } }");
+        // And the gate on the privileged call itself is unchanged.
+        assert_rejected(
+            "agent M { public void Run() { var s = fs_read(\"x.txt\") or \"d\"; print s; } }",
+            "requires `FileAccess` capability",
         );
     }
 
