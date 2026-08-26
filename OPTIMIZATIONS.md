@@ -763,15 +763,21 @@ Golden-Programm deckt damit den vollen Rundlauf ab, ohne zweite Binary und ohne 
 Int-Argumenten, Quotes im String-Argument, Struct-Rückgabe, unbekanntem Tool und der Prüfung, dass
 die Verbindung den Fehler übersteht.
 
-### Eine Erweiterung wieder zurückgenommen
-`ToToolArgs` sollte auch Maps mit Zahl-/Bool-Werten annehmen, damit `{"a": 17}` als
-Tool-Argument geht. Das machte aber `{}` — „dieses Tool nimmt keine Argumente", der häufigste
-Aufruf überhaupt — **mehrdeutig**, weil Rust den Wertetyp nicht mehr inferieren konnte. Der
-schmale Komfortgewinn wog die Regression nicht auf; zurückgenommen, mit der Begründung im Code.
+### Tool-Argumente: erst falsch gelöst, dann richtig
+Erster Versuch: `ToToolArgs` zusätzliche Impls für Maps mit Zahl-/Bool-Werten geben. Das machte
+`{}` — „dieses Tool nimmt keine Argumente" — **mehrdeutig**, weil Rust den Wertetyp nicht mehr
+inferieren konnte, und löste den gemischten Fall (`{"query": "x", "top_k": 3}`) ohnehin nicht.
+Zurückgenommen.
 
-**Verbleibende Grenze, ehrlich benannt:** Varg-Map-Literale sind homogen, MCP-Argumente sind es
-meist nicht. Gemischte Argumente werden als JSON-String übergeben — dokumentiert, kein Workaround
-im Verborgenen. Ein heterogener Map-Typ wäre eine Sprachentscheidung, keine MCP-Frage.
+Der Denkfehler war, das Problem in der **Runtime** lösen zu wollen. Ein Tool-Argument ist ein
+JSON-Objekt, keine Varg-Map — also gehört die Umsetzung in den **Codegen**: ein Map-Literal in
+Argumentposition wird zu einem `serde_json::Map` aufgebaut, Eintrag für Eintrag, jeder Wert über
+`json!` einzeln. Damit behält jeder Wert seinen eigenen Typ, `{}` ist ein `Value` statt einer
+HashMap unbestimmten Typs, und die Runtime braucht genau **eine** Impl (`for serde_json::Value`).
+
+Gemischte Literale gehen jetzt so, wie man sie schreibt. Beide Altformen (roher JSON-String,
+Variable mit String-Map) bleiben gültig — im Golden-Programm mitgeprüft, weil genau sie stumm
+brechen würden.
 
 ### Stand danach
 1241 Unit-Tests (default), 0 Failures · Golden **36/36** · Probes 52/52.

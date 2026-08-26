@@ -1230,14 +1230,14 @@ unsafe {
     var sys = SystemAccess {};
     var conn = mcp_connect(exe_path(), ["--mcp-serve"])?;
     var tools = mcp_list_tools(conn)?;
-    var sum = mcp_call_tool(conn, "add", "{\"a\": 17, \"b\": 25}") or "failed";
+    var sum = mcp_call_tool(conn, "add", {"a": 17, "b": 25}) or "failed";
     mcp_disconnect(conn);
 }
 ```
 
-Tool arguments are written as a JSON string when they are of mixed types: a Varg map literal is
-homogeneous, so `{"query": "x", "top_k": 3}` cannot be one map. A map literal works when every
-value has the same type, and `{}` means "no arguments".
+Tool arguments are a JSON object, so a map literal may mix types — `{"query": "x", "top_k": 3,
+"exact": true}` is written exactly as it reads. `{}` means "no arguments". A raw JSON string and
+a variable holding a string map are both still accepted.
 
 `exe_path()` returns the running binary, which is what lets a program start itself in server
 mode — the pattern `golden/progs/mcp_server_mode.varg` uses to test both halves at once.
