@@ -2256,12 +2256,18 @@ impl RustGenerator {
             // Plan 35: String interpolation → format!() with __VargFmt for universal Display
             Expression::InterpolatedString(parts) => {
                 let mut fmt_str = String::new();
+                // The same text without the format! brace-doubling. An interpolated string with
+                // no expressions in it is emitted as a plain literal, and a plain literal never
+                // gets that doubling undone — so `$"{{a}}"` printed `{{a}}`. Keeping the raw text
+                // alongside is what that branch needs.
+                let mut raw_str = String::new();
                 let mut args = Vec::new();
                 for part in parts {
                     match part {
                         InterpolationPart::Literal(text) => {
                             // Escape braces for format!
                             fmt_str.push_str(&text.replace('{', "{{").replace('}', "}}"));
+                            raw_str.push_str(text);
                         },
                         InterpolationPart::Expression(expr) => {
                             fmt_str.push_str("{}");
@@ -2272,7 +2278,7 @@ impl RustGenerator {
                     }
                 }
                 if args.is_empty() {
-                    format!("{:?}.to_string()", fmt_str)
+                    format!("{:?}.to_string()", raw_str)
                 } else {
                     format!("format!({:?}, {})", fmt_str, args.join(", "))
                 }
