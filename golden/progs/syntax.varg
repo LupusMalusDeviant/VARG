@@ -52,6 +52,21 @@ agent Main {
         print check("interp_repeat", $"{name}-{name}", "varg-varg");
         print check("brace_literal", "{ literal }", "{ literal }");
 
+        // ── literal braces in interpolation ──────────────────────────────
+        // `{{` and `}}` are the C# doubling; the backslash form works too. Without either,
+        // emitting a JSON object from an interpolated string looked impossible.
+        var used = 36;
+        print check("brace_double", $"{{literal}} and {used}", "{literal} and 36");
+        print check("brace_backslash", $"\{literal\}", "{literal}");
+        var who = "worker";
+        print check(
+            "interp_json",
+            $"{{\"used\": {used}, \"name\": \"{who}\"}}",
+            "{\"used\": 36, \"name\": \"worker\"}");
+        // A string argument inside an interpolation needs no escaping.
+        var dashed = "a-b";
+        print check("interp_string_arg", $"{dashed.replace("-", "+")}", "a+b");
+
         var multi = """one
 two""";
         print check("multiline", $"{multi.lines().len()}", "2");

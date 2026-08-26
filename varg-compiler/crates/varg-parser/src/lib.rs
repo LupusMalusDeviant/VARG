@@ -222,6 +222,15 @@ impl Parser {
 
         while let Some(ch) = chars.next() {
             if ch == '{' {
+                // `{{` is a literal brace, the same doubling C# uses. Varg already accepted the
+                // backslash form, but nothing documented it and it is not what someone writing
+                // C#-like code reaches for — so emitting a JSON object from an interpolated
+                // string looked impossible when it merely looked unfamiliar.
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    current_literal.push('{');
+                    continue;
+                }
                 // Flush accumulated literal
                 if !current_literal.is_empty() {
                     parts.push(InterpolationPart::Literal(current_literal.clone()));
@@ -230,10 +239,35 @@ impl Parser {
                 // Collect expression text until matching '}'
                 let mut expr_text = String::new();
                 let mut depth = 1;
+                let mut closed = false;
                 while let Some(inner_ch) = chars.next() {
                     if inner_ch == '{' { depth += 1; }
-                    if inner_ch == '}' { depth -= 1; if depth == 0 { break; } }
+                    if inner_ch == '}' { depth -= 1; if depth == 0 { closed = true; break; } }
                     expr_text.push(inner_ch);
+                }
+                if !closed {
+                    // Running off the end of the string is a missing brace, not a bad expression.
+                    return Err(ParseError::UnexpectedToken {
+                        expected: format!(
+                            "a closing brace for the interpolation of `{}` (write {{{{ for a literal brace)",
+                            expr_text
+                        ),
+                        found: None,
+                        span: self.current_span(),
+                    });
+                }
+                // A string inside an interpolation is already inside the braces, so its quotes need no
+                // escaping — and escaping them leaves backslashes in the expression, which then does
+                // not parse. Say that instead of echoing the mangled text back.
+                if expr_text.contains("\\\"") {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: format!(
+                            "quotes inside an interpolation are not escaped — write {{{}}}",
+                            expr_text.replace("\\\"", "\"")
+                        ),
+                        found: None,
+                        span: self.current_span(),
+                    });
                 }
                 // Parse the expression text through a mini-parser
                 let mut mini_parser = Parser::new(&expr_text);
@@ -257,6 +291,10 @@ impl Parser {
                         _ => { current_literal.push('\\'); current_literal.push(next); }
                     }
                 }
+            } else if ch == '}' && chars.peek() == Some(&'}') {
+                // The closing half of the doubled form.
+                chars.next();
+                current_literal.push('}');
             } else {
                 current_literal.push(ch);
             }

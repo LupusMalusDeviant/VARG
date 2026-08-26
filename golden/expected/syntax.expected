@@ -17,6 +17,10 @@ OK   interp_call
 OK   interp_nested_literal
 OK   interp_repeat
 OK   brace_literal
+OK   brace_double
+OK   brace_backslash
+OK   interp_json
+OK   interp_string_arg
 OK   multiline
 OK   precedence_mul
 OK   precedence_paren

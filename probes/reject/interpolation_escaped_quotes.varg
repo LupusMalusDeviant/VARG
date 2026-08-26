@@ -1,0 +1,10 @@
+// @probe reject: quotes inside an interpolation are not escaped
+// A string inside `{...}` is already inside the braces, so escaping its quotes only puts
+// backslashes into the expression, which then does not parse. The old message echoed the mangled
+// text back and left you to work out why.
+agent Main {
+    public void Run() {
+        var s = "a-b";
+        print $"{s.replace(\"-\", \"+\")}";
+    }
+}
