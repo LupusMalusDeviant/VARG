@@ -1,0 +1,3 @@
+// @probe reject: takes 2 argument(s)
+agent Helper { public int combine(int a, int b) { return a + b; } }
+agent Main { public void Run() { var h = Helper(); print h.combine(1); } }

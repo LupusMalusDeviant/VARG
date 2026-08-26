@@ -1,0 +1,2 @@
+// @probe reject: unknown field `b`
+agent Main { int a; public void Run() { self.b = 5; print self.a; } }

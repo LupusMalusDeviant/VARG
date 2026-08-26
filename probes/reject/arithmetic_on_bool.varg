@@ -1,0 +1,2 @@
+// @probe reject: numeric operands
+agent Main { public void Run() { var t = true; print t + 1; } }

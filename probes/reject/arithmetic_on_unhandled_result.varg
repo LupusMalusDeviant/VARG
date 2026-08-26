@@ -1,0 +1,2 @@
+// @probe reject: handle the Result
+agent Main { public void Run() { print parse_int("17") + 1; } }

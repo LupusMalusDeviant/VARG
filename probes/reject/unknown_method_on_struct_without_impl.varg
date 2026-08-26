@@ -1,0 +1,3 @@
+// @probe reject: unknown method `nope`
+struct P { int x; }
+agent Main { public void Run() { var p = P { x: 1 }; print p.nope(); } }

@@ -1,0 +1,3 @@
+// @probe reject: field `x` of `P` expects
+struct P { int x; }
+agent Main { public void Run() { var p = P { x: "nope" }; print p.x; } }

@@ -1,0 +1,3 @@
+*.exe
+*.rs
+.vargc_cache/

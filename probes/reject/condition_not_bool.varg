@@ -1,0 +1,2 @@
+// @probe reject: expected `Bool`
+agent Main { public void Run() { var n = 5; if n { print "yes"; } } }

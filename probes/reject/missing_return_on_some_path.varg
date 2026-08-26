@@ -1,0 +1,3 @@
+// @probe reject: not all code paths
+fn f(int n) -> int { if n > 0 { return 1; } }
+agent Main { public void Run() { print f(1); } }

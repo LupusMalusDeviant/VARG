@@ -1,0 +1,3 @@
+// @probe reject: unknown method `nope`
+agent Helper { public int val() { return 1; } }
+agent Main { public void Run() { var h = Helper(); print h.nope(); } }

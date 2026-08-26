@@ -1,0 +1,5 @@
+// @probe reject: until you `await` it
+agent Main {
+    async public int slow() { return 42; }
+    async public void Run() { var r = self.slow(); print r; }
+}

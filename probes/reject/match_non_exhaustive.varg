@@ -1,0 +1,7 @@
+// @probe reject: non-exhaustive match
+enum Colour { Red, Green, Blue }
+fn name(Colour c) -> string {
+    match c { Red => { return "r"; } Green => { return "g"; } }
+    return "?";
+}
+agent Main { public void Run() { print name(Colour.Red); } }

@@ -1,0 +1,2 @@
+// @probe reject: needs a type here
+agent Main { public void Run() { var f = (x) => x * 2; print f(2); } }

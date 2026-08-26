@@ -1,0 +1,3 @@
+// @probe reject: constructor argument
+agent Helper { int v; public Helper(int a) { self.v = a; } public int get() { return self.v; } }
+agent Main { public void Run() { var h = Helper(); print h.get(); } }

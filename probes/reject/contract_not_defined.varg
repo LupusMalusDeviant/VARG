@@ -1,0 +1,3 @@
+// @probe reject: is not defined
+agent Sq implements INotDefined { public int area() { return 4; } }
+agent Main { public void Run() { var s = Sq(); print s.area(); } }

@@ -1,0 +1,5 @@
+// @probe reject: is not async
+agent Main {
+    public int sync_fn() { return 1; }
+    async public void Run() { var r = await self.sync_fn(); print r; }
+}

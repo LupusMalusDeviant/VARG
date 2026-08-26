@@ -1,0 +1,4 @@
+// @probe reject: is missing method `name`
+contract IShape { int area(); string name(); }
+agent Sq implements IShape { public int area() { return 4; } }
+agent Main { public void Run() { var s = Sq(); print s.area(); } }

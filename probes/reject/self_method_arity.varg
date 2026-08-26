@@ -1,0 +1,5 @@
+// @probe reject: takes 2 argument(s)
+agent Main {
+    private int combine(int a, int b) { return a + b; }
+    public void Run() { print self.combine(1); }
+}

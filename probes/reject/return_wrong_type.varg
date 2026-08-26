@@ -1,0 +1,3 @@
+// @probe reject: type mismatch
+fn f() -> int { return "text"; }
+agent Main { public void Run() { print f(); } }

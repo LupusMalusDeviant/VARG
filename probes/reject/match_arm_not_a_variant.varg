@@ -1,0 +1,13 @@
+// @probe reject: is not a variant of `Colour`
+// The worst defect the probes ever found: this compiled to an irrefutable binding, so the
+// misspelled arm matched everything below it and answered every other case. Wrong result, exit 0.
+enum Colour { Red, Green, Blue }
+fn name(Colour c) -> string {
+    match c {
+        Red => { return "red"; }
+        Gren => { return "swallowed"; }
+        _ => { return "other"; }
+    }
+    return "?";
+}
+agent Main { public void Run() { print name(Colour.Green); } }

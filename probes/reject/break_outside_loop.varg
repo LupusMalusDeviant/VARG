@@ -1,0 +1,2 @@
+// @probe reject: outside any loop
+agent Main { public void Run() { break; } }

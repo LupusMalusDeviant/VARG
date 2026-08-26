@@ -1,0 +1,4 @@
+// @probe reject: does not match
+contract IShape { int area(); }
+agent Sq implements IShape { public string area() { return "x"; } }
+agent Main { public void Run() { var s = Sq(); print s.area(); } }

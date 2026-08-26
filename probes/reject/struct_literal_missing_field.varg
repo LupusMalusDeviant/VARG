@@ -1,0 +1,3 @@
+// @probe reject: missing field(s) y
+struct P { int x; int y; }
+agent Main { public void Run() { var p = P { x: 1 }; print p.x; } }

@@ -1,0 +1,4 @@
+// @probe reject: sse_open
+// The old sse_stream/sse_send discarded the event and reported Ok. Removed; the typechecker
+// points at the real API instead of letting the name resolve to nothing.
+agent Main { public void Run() { var s = sse_stream("http://x"); print "made"; } }

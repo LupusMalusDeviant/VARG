@@ -1,0 +1,14 @@
+// @probe reject: is not a variant of `C`
+// The same defect via `var c = …`, which is the more common shape and stayed broken after the
+// first fix: `C.Red` was inferred as a field read, so nothing keyed on the enum type ran.
+enum C { Red, Green, Blue }
+agent Main {
+    public void Run() {
+        var c = C.Red;
+        match c {
+            Red => { print 1; }
+            Gren => { print 2; }
+            _ => { print 3; }
+        }
+    }
+}

@@ -1,0 +1,2 @@
+// @probe reject: undeclared variable `inner`
+agent Main { public void Run() { if true { var inner = 5; } print inner; } }

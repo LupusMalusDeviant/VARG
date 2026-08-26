@@ -1,0 +1,2 @@
+// @probe reject: undeclared variable `x`
+agent Main { public void Run() { print x; var x = 5; } }

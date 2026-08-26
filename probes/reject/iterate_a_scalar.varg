@@ -1,0 +1,2 @@
+// @probe reject: to iterate over
+agent Main { public void Run() { var n = 5; for x in n { print x; } } }

@@ -1,0 +1,2 @@
+// @probe reject: unknown method `totally_unknown_function`
+agent Main { public void Run() { print totally_unknown_function(1); } }

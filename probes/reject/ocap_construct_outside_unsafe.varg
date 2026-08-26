@@ -1,0 +1,2 @@
+// @probe reject: FileAccess
+agent Main { public void Run() { var cap = FileAccess {}; print "made"; } }

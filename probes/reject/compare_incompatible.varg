@@ -1,0 +1,2 @@
+// @probe reject: comparable
+agent Main { public void Run() { var a = 5; var b = "x"; if a > b { print "yes"; } } }

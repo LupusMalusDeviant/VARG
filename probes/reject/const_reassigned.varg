@@ -1,0 +1,2 @@
+// @probe reject: it is declared const
+agent Main { public void Run() { const int X = 5; X = 6; print X; } }

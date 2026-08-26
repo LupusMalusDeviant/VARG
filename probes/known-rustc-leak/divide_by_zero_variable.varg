@@ -1,0 +1,2 @@
+// @probe rustc-leak: rustc's own unconditional_panic lint catches this and names it correctly; catching it here would need constant propagation through variables
+agent Main { public void Run() { var z = 0; print 10 / z; } }

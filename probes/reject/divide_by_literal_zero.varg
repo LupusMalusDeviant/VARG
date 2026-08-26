@@ -1,0 +1,2 @@
+// @probe reject: literal zero
+agent Main { public void Run() { print 10 / 0; } }

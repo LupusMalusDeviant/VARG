@@ -1,0 +1,2 @@
+// @probe reject: requires `FileAccess` capability
+agent Main { public void Run() { var back = fs_read("nope.txt") or "FAIL"; print back; } }

@@ -80,3 +80,37 @@ jobs:
             cargo test -p varg-runtime --features "$f" --lib --no-run --locked
             echo "::endgroup::"
           done
+
+  # End-to-end gate. The two suites below are the ones that catch what unit tests structurally
+  # cannot, and neither ran in CI before:
+  #
+  #   golden/  builds and RUNS each program and diffs its stdout. Unit tests assert that Rust is
+  #            generated, rarely what the program then computes — which is how `abs(-5.0)`
+  #            returning -5 and a silently dropped agent message both survived a green suite.
+  #
+  #   probes/  the backward direction: every program there must be REJECTED, and rejected by
+  #            Varg's own front end rather than by rustc against generated code. Running it over
+  #            the whole accumulated set is what caught two regressions introduced by earlier
+  #            rounds of typechecker work, plus an abs() that truncated floats.
+  #
+  # Both need a built vargc, so they share one job.
+  end-to-end:
+    name: Golden output + rejection probes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: varg-compiler
+          key: e2e
+      - name: Build vargc (release)
+        run: cargo build -p vargc --release --locked
+      - name: Rejection probes
+        # Cheap (parse + typecheck only), so it runs first: a front end that stopped catching
+        # something is worth knowing before spending minutes on full builds.
+        working-directory: .
+        run: VARGC="$PWD/varg-compiler/target/release/vargc" bash probes/run.sh
+      - name: Golden output
+        working-directory: .
+        run: VARGC="$PWD/varg-compiler/target/release/vargc" bash golden/run.sh

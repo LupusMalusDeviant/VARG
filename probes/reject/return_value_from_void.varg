@@ -1,0 +1,2 @@
+// @probe reject: declared void but returns a value
+agent Main { public void Run() { return 5; } }

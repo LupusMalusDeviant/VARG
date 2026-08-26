@@ -1,0 +1,2 @@
+// @probe reject: cannot cast
+agent Main { public void Run() { var s = "abc"; var n = s as int; print n; } }

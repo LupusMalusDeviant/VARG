@@ -1,0 +1,3 @@
+// @probe reject: unknown field `z`
+struct P { int x; }
+agent Main { public void Run() { var p = P { x: 1, z: 9 }; print p.x; } }

@@ -1,0 +1,2 @@
+// @probe reject: in place and returns nothing
+agent Main { public void Run() { var n = [3, 1, 2]; var s = n.sort(); print s; } }

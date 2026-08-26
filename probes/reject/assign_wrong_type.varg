@@ -1,0 +1,2 @@
+// @probe reject: type mismatch
+agent Main { public void Run() { int x = 1; x = "text"; print x; } }

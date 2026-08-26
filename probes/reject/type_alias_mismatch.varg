@@ -1,0 +1,3 @@
+// @probe reject: type mismatch
+type UserId = int;
+agent Main { public void Run() { UserId u = "not an id"; print u; } }
