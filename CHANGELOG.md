@@ -46,6 +46,28 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Fixed — the string and collection builtins say how they are called
+
+- **`to_upper("abc")` compiled to `self.to_uppercase()`.** These builtins are methods on the
+  value; the free-function spelling most languages would accept type-checked clean and then
+  reached rustc as "no method named `to_uppercase` for `&mut A`" — a complaint about generated
+  code, about a receiver nobody wrote. Measured across the family: eleven spellings leaked a
+  rustc error and six produced an arity message about the method form, which named neither the
+  real mistake nor a way out. All of them now say `` `to_upper` is a method on the value, not a
+  free function — write `value.to_upper()` ``.
+
+- **Extra arguments were silently dropped.** `"a".to_upper("x")` type-checked *and ran*: those
+  branches returned a type without ever looking at their arguments, and codegen discards them.
+  It is an error now, for all fifteen no-argument receiver builtins.
+
+- **`len`/`length` are the exception, and are treated as one.** They are the only pair of this
+  family that also reads as a free function, so each spelling has its own count: `len(xs)` takes
+  the value, `xs.len()` takes nothing. `xs.len("x")` used to pass.
+
+The pipe operator is unaffected — `name |> to_upper()` feeds the left value in as the receiver,
+so it is the method form and keeps working.
+
+
 ### Fixed — lambda bodies are type-checked
 
 - **Nothing inside a lambda was ever checked.** Undeclared variables, `5 > "x"`, `true + 1`,

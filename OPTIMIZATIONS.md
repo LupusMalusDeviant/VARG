@@ -1064,6 +1064,63 @@ gespawnt, wie das Programm es die ganze Zeit beschrieb.
 ---
 
 
+## Die Arity-Lücke bei Empfänger-Builtins (Stufe 26)
+
+Der offene Punkt aus Stufe 25: `to_upper()` ging auf jeder Ebene durch. Beim Nachmessen war es
+nicht eine Lücke, sondern zwei — und die größere war nicht die Arity.
+
+### Die freie Schreibweise existiert gar nicht
+
+String- und Collection-Builtins sind **Methoden auf dem Wert**. `to_upper("abc")` — die Form, die
+in den meisten Sprachen richtig wäre — kompilierte zu `self.to_uppercase()`, weil freie Builtins
+mit synthetischem `self`-Empfänger geparst werden. rustc meldete dann *„no method named
+`to_uppercase` for `&mut A`"*: eine Beschwerde über generierten Code, über einen Empfänger, den
+niemand geschrieben hat.
+
+Über die Familie gemessen: **11 Schreibweisen leakten rustc**, 6 lieferten eine Arity-Meldung über
+die *Methoden*form (`replace("a","b","c")` → „erwartet 2 Argumente, gefunden 3"), die weder den
+eigentlichen Fehler benennt noch einen Ausweg. Genau eine trägt wirklich: `len`/`length`.
+
+### Überzählige Argumente wurden still verworfen
+
+`"a".to_upper("x")` kam durch den Typechecker **und lief**. Diese Zweige geben einen Typ zurück,
+ohne `args` je anzusehen, und der Codegen wirft das Argument weg. Betraf 15 Builtins.
+
+### Die Regel
+
+Am vorhandenen `RECEIVER_METHODS`-Block, zwei Prüfungen und eine Ausnahme:
+
+- Empfänger ist das synthetische `self` → *„`to_upper` ist eine Methode auf dem Wert, keine freie
+  Funktion — schreib `value.to_upper()`"*. Die Meldung zeigt die richtige Aufrufform, mit oder
+  ohne Argumentpunkte, je nach Builtin.
+- Echter Empfänger und ein Builtin ohne Argumente → *„nimmt keine Argumente, aber 1 wurde
+  übergeben"*.
+- `len`/`length` sind ausgenommen und bekommen pro Schreibweise ihre eigene Zahl: `len(xs)` nimmt
+  den Wert, `xs.len()` nimmt nichts.
+
+Der **Pipe-Operator bleibt unberührt** — `name |> to_upper()` schiebt den linken Wert als Empfänger
+ein, ist also die Methodenform. Das war der Fall, der beim Umbau hätte kaputtgehen können; er ist
+jetzt in `golden/progs/builtins_string.varg` festgenagelt, zusammen mit `len` in beiden Formen.
+
+### Die Regel aus Stufe 25 musste mitwachsen
+
+Die ersten drei Fälle (`chars(...)`, `keys(...)`, `split(...)`) leakten weiter — sie standen in
+Ketten wie `chars("abc").len()`, wo der Fehler im **Caller** sitzt und von
+`error_is_not_an_inference_gap` verworfen wurde. Die beiden neuen Varianten sind dort ergänzt: eine
+Methode als freie Funktion aufzurufen ist definitiver Fehlgebrauch, keine Inferenzlücke.
+
+### Und wieder wich die Doku ab
+
+`VARG_AGENT_GUIDE.md` zeigte die freie Form an **vier** Stellen (`trim(item)`, `to_upper(cleaned)`,
+zwei Pipeline-Schritte) — keine davon kompilierte je. Korrigiert.
+
+### Stand danach
+1243 Unit-Tests (default) / 1396 (`--features full`) · Golden **38/38** · Probes **66/66** ·
+18 Programme bauen.
+
+---
+
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests
