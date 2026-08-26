@@ -456,10 +456,18 @@ impl Parser {
                 if self.peek() == Some(&Token::Identifier("crate".to_string())) {
                     self.advance(); // consume "crate"
                     let crate_name = self.parse_identifier()?;
-                    self.consume(Token::Assign)?;
-                    let version = match self.advance() {
-                        Some(Token::StringLiteral(v)) => v.trim_matches('"').to_string(),
-                        _ => return Err(ParseError::UnexpectedToken { expected: "version string".to_string(), found: None, span: 0..0 }),
+                    // The version is optional. REFERENCE documents the bare form
+                    // `import crate serde_json;` as the simple case, and it did not parse at all — the
+                    // version was mandatory. Without one, take the newest compatible release, which is
+                    // what a bare import means.
+                    let version = if self.peek() == Some(&Token::Assign) {
+                        self.advance();
+                        match self.advance() {
+                            Some(Token::StringLiteral(v)) => v.trim_matches('"').to_string(),
+                            _ => return Err(ParseError::UnexpectedToken { expected: "version string".to_string(), found: None, span: 0..0 }),
+                        }
+                    } else {
+                        "*".to_string()
                     };
                     // Optional: features ["full", "json"]
                     let mut features = Vec::new();

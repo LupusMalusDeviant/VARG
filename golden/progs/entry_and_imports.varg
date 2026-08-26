@@ -1,0 +1,43 @@
+/// Two things a program does before it does anything interesting: get constructed, and pull in a
+/// crate. Both had documented forms that did not work.
+///
+/// The entry agent is built by the generated main(). A parameterless constructor is fine and now
+/// runs; one taking parameters cannot be satisfied and is rejected with a message that points at
+/// the way that does work (see probes/reject-at-build/). Dependency injection itself works — just
+/// one level down, which is what this program shows.
+import crate regex;
+import crate serde_json;
+
+contract ILog { string render(string m); }
+
+agent PrefixLog implements ILog {
+    public string render(string m) { return $"[log] {m}"; }
+}
+
+agent Service {
+    ILog logger;
+    public Service(ILog l) { self.logger = l; }
+    public string announce(string what) { return self.logger.render(what); }
+}
+
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+
+agent Main {
+    int started;
+
+    /// A parameterless constructor on the entry agent runs before Run().
+    public Main() {
+        self.started = 42;
+    }
+
+    public void Run() {
+        print check("entry_constructor_ran", $"{self.started}", "42");
+
+        // Dependency injection, one level down from the entry agent.
+        var svc = Service(PrefixLog());
+        print check("di_one_level_down", svc.announce("ready"), "[log] ready");
+    }
+}
