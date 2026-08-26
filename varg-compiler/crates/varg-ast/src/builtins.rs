@@ -23,7 +23,7 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         | "base64_encode" | "base64_decode" | "base64_encode_file"
         | "path_join" | "path_parent" | "path_stem" | "path_extension"
         | "time_format" | "timestamp" | "memory_get" | "workflow_status"
-        | "ansi_color" | "ansi_bold" | "ansi_reset"
+        | "ansi_color" | "ansi_bold" | "ansi_reset" | "agents_list"
         // fetch / http_download_base64 look fallible but their runtime fns return a bare String
         // (errors surface in the body), so their static type is String, not Result. Keeping them
         // here is what the runtime signatures actually guarantee — see net.rs / encoding.rs.
@@ -35,7 +35,8 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         | "vector_store_count" | "json_get_int" | "estimate_tokens" | "random_int"
         | "proc_pid" | "orchestrator_task_count" | "orchestrator_completed_count"
         | "pipeline_step_count" | "workflow_step_count" | "mcp_server_tool_count"
-        | "memory_episode_count" | "trace_span_count" => TypeNode::Int,
+        | "memory_episode_count" | "trace_span_count"
+        | "agents_count" | "agents_count_by_status" => TypeNode::Int,
 
         // ── Float ─────────────────────────────────────────────────────────────────
         "sqrt" | "floor" | "ceil" | "round" | "pow" | "random_float"
@@ -80,7 +81,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "base64_encode", "base64_decode", "base64_encode_file",
         "path_join", "path_parent", "path_stem", "path_extension",
         "time_format", "timestamp", "memory_get", "workflow_status",
-        "ansi_color", "ansi_bold", "ansi_reset",
+        "ansi_color", "ansi_bold", "ansi_reset", "agents_list",
         "fetch", "http_download_base64",
         // Int
         "len", "length", "count", "count_occurrences", "parse_int", "sum",
@@ -89,6 +90,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "proc_pid", "orchestrator_task_count", "orchestrator_completed_count",
         "pipeline_step_count", "workflow_step_count", "mcp_server_tool_count",
         "memory_episode_count", "trace_span_count",
+        "agents_count", "agents_count_by_status",
         // Float
         "sqrt", "floor", "ceil", "round", "pow", "parse_float", "random_float",
         "tensor_sum", "tensor_mean", "tensor_min", "tensor_max", "tensor_dot",

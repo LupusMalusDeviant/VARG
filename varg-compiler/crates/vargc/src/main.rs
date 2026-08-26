@@ -1585,6 +1585,12 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
                 } else { false }
             })
         };
+        // The entry agent belongs in the registry too, otherwise the dashboard lists every
+        // spawned worker but not the one that started them.
+        final_rust_source.push_str(&format!(
+            "    let __entry_agent_id = varg_runtime::agents::__varg_agent_register(\"{}\");\n",
+            agent));
+        final_rust_source.push_str("    varg_runtime::agents::__varg_agent_set_status(__entry_agent_id, \"running\");\n");
         let has_on_start = entry_agent_has("on_start");
         let has_on_stop = entry_agent_has("on_stop");
         if has_on_start {
@@ -1601,6 +1607,7 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
         if has_on_stop {
             final_rust_source.push_str("    instance.on_stop();\n");
         }
+        final_rust_source.push_str("    varg_runtime::agents::__varg_agent_set_status(__entry_agent_id, \"stopped\");\n");
     }
     
     // Scan for API Endpoints (Phase 14)

@@ -3448,6 +3448,12 @@ impl RustGenerator {
                     format!("varg_runtime::trace::__varg_trace_event(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "trace_set_attr" {
                     format!("varg_runtime::trace::__varg_trace_set_attr(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "agents_list" {
+                    "varg_runtime::agents::__varg_agents_list()".to_string()
+                } else if method_name == "agents_count" {
+                    "varg_runtime::agents::__varg_agents_count()".to_string()
+                } else if method_name == "agents_count_by_status" {
+                    format!("varg_runtime::agents::__varg_agents_count_by_status(&{})", arg_strs[0])
                 } else if method_name == "trace_span_count" {
                     format!("varg_runtime::trace::__varg_trace_span_count(&{})", arg_strs[0])
                 } else if method_name == "trace_export" {
@@ -3775,9 +3781,9 @@ impl RustGenerator {
 
                 if self.use_async {
                     // Plan 27: tokio async spawn
-                    format!("{{\n    let (__tx, mut __rx) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<String>, Option<tokio::sync::oneshot::Sender<String>>)>();\n    tokio::spawn(async move {{\n        let mut __agent = {};\n{}        while let Some((method, args, reply_tx)) = __rx.recv().await {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n{}    }});\n    __tx\n}}", agent_init, start_call, dispatch, stop_call)
+                    format!("{{\n    let (__tx, mut __rx) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<String>, Option<tokio::sync::oneshot::Sender<String>>)>();\n    let __agent_id = varg_runtime::agents::__varg_agent_register(\"{}\");\n    tokio::spawn(async move {{\n        let mut __agent = {};\n{}        varg_runtime::agents::__varg_agent_set_status(__agent_id, \"idle\");\n        while let Some((method, args, reply_tx)) = __rx.recv().await {{\n            varg_runtime::agents::__varg_agent_set_status(__agent_id, \"running\");\n            let result = match method.as_str() {{\n{}\n            }};\n            varg_runtime::agents::__varg_agent_handled(__agent_id, &method);\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n{}        varg_runtime::agents::__varg_agent_set_status(__agent_id, \"stopped\");\n    }});\n    __tx\n}}", agent_name, agent_init, start_call, dispatch, stop_call)
                 } else {
-                    format!("{{\n    let (__tx, __rx) = std::sync::mpsc::channel::<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>();\n    std::thread::spawn(move || {{\n        let mut __agent = {};\n{}        for (method, args, reply_tx) in __rx {{\n            let result = match method.as_str() {{\n{}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n{}    }});\n    __tx\n}}", agent_init, start_call, dispatch, stop_call)
+                    format!("{{\n    let (__tx, __rx) = std::sync::mpsc::channel::<(String, Vec<String>, Option<std::sync::mpsc::Sender<String>>)>();\n    let __agent_id = varg_runtime::agents::__varg_agent_register(\"{}\");\n    std::thread::spawn(move || {{\n        let mut __agent = {};\n{}        varg_runtime::agents::__varg_agent_set_status(__agent_id, \"idle\");\n        for (method, args, reply_tx) in __rx {{\n            varg_runtime::agents::__varg_agent_set_status(__agent_id, \"running\");\n            let __outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n                match method.as_str() {{\n{}\n                }}\n            }}));\n            let result = match __outcome {{\n                Ok(r) => {{ varg_runtime::agents::__varg_agent_handled(__agent_id, &method); r }}\n                Err(__e) => {{\n                    let __why = if let Some(m) = __e.downcast_ref::<String>() {{ m.clone() }} else if let Some(m) = __e.downcast_ref::<&str>() {{ m.to_string() }} else {{ \"handler panicked\".to_string() }};\n                    varg_runtime::agents::__varg_agent_failed(__agent_id, &method, &__why);\n                    \"error\".to_string()\n                }}\n            }};\n            if let Some(reply) = reply_tx {{ let _ = reply.send(result); }}\n        }}\n{}        varg_runtime::agents::__varg_agent_set_status(__agent_id, \"stopped\");\n    }});\n    __tx\n}}", agent_name, agent_init, start_call, dispatch, stop_call)
                 }
             },
             // Plan 24: expr? → try-propagate

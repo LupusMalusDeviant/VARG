@@ -448,6 +448,7 @@ impl TypeChecker {
             "json_parse", "json_get", "json_get_int", "json_get_bool", "json_get_array",
             "json_stringify", "json_stringify_pretty", "json_keys", "json_values", "json_has", "json_merge", "json_set",
             "assert", "assert_eq", "assert_ne", "assert_true", "assert_false", "assert_contains", "assert_throws",
+            "agents_list", "agents_count", "agents_count_by_status",
             "set_of",
             "graph_open", "graph_add_node", "graph_add_edge", "graph_query", "graph_traverse", "graph_neighbors",
             "embed", "vector_store_open", "vector_store_upsert", "vector_store_search", "vector_store_delete", "vector_store_count",
@@ -622,6 +623,23 @@ impl TypeChecker {
 
     /// Wave 12: Multi-error — collects all errors instead of stopping at first
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<SpannedTypeError>> {
+        // Pre-register every standalone function before checking anything. Signatures were
+        // recorded as items were walked, so a `fn` declared *after* an agent was invisible to it
+        // — order-dependent visibility that no other top-level declaration has, and that codegen
+        // never had (it already does a pre-pass). Bodies are still checked in order below.
+        for item in &program.items {
+            if let Item::Function(f) = item {
+                self.known_functions.insert(
+                    f.name.clone(),
+                    MethodSignature {
+                        return_ty: f.return_ty.clone(),
+                        args: f.params.clone(),
+                        type_params: f.type_params.clone(),
+                        is_async: false,
+                    },
+                );
+            }
+        }
         let mut errors = Vec::new();
         for item in &program.items {
             // Set current item span for error context
@@ -3007,6 +3025,10 @@ impl TypeChecker {
                 } else if method_name == "trace_set_attr" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (tracer, key, value)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
+                } else if method_name == "agents_list" {
+                    Ok(TypeNode::String)
+                } else if method_name == "agents_count" || method_name == "agents_count_by_status" {
+                    Ok(TypeNode::Int)
                 } else if method_name == "trace_span_count" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (tracer)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Int)
