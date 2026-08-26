@@ -203,9 +203,16 @@ agent SecureAgent {
 |------------|----------|
 | `FileAccess` | Dateisystem-Lesen/Schreiben/Anhaengen |
 | `NetworkAccess` | HTTP-Anfragen, Fetch |
-| `DbAccess` | SurrealDB-Abfragen |
+| `DbAccess` | Datenbank-Abfragen (SQLite) |
 | `LlmAccess` | LLM-Provider-Aufrufe |
 | `SystemAccess` | Shell-Kommando-Ausfuehrung |
+**Reichweite der Zusicherung.** OCAP ist ein Compile-Zeit-Gate, keine Laufzeit-Sandbox. Es
+entscheidet, *welche* Programmteile nach draussen wirken duerfen, und zwingt das ins Typsystem --
+ein Programm laesst sich also durch Lesen seiner Signaturen pruefen. Es prueft nicht, *was* diese
+Aufrufe hinausschicken: ein Token autorisiert den Aufruf, nie die Argumente. Speziell `exec`
+reicht seinen String an eine Shell weiter; nicht vertrauenswuerdige Eingaben gehoeren stattdessen
+in `proc_spawn_args`. Siehe REFERENCE.md, "What OCAP does and does not do".
+
 
 ---
 

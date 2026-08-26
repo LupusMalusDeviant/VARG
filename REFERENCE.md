@@ -676,6 +676,49 @@ agent SecureBot {
 
 Attempting to call `fs_read` without a `FileAccess` token in scope causes a compile-time error.
 
+### What OCAP does and does not do
+
+OCAP is a **compile-time gate, not a runtime sandbox.** Knowing exactly where the line runs
+matters more than the headline, so:
+
+**What it guarantees.** A privileged operation will not compile unless a matching token is in
+scope — passed as a parameter, or minted inside an `unsafe {}` block. Tokens cannot be
+constructed anywhere else. So every path that touches the file system, the network, a database,
+an LLM or the shell is visible in a signature, and you can audit a program by reading its types.
+
+**What it does not guarantee.** A token authorises the *call*, never the *arguments*. Nothing
+inspects what you pass:
+
+```csharp
+unsafe {
+    var sys = SystemAccess {};
+    exec(user_input);        // the whole string goes to `cmd /C` or `sh -c`
+}
+```
+
+`exec` hands its argument to a shell, so shell metacharacters in it are interpreted —
+`exec("echo a && echo b")` runs both commands. With untrusted input that is a command
+injection, and the capability system will not say a word about it. The same applies to a path
+given to `fs_read` (no confinement to a directory) and to a URL given to `fetch` (no host
+allow-list).
+
+**Use `proc_spawn_args` when the input is not yours.** It starts the program directly with
+separate arguments and never involves a shell, so metacharacters stay data:
+
+```csharp
+unsafe {
+    var sys = SystemAccess {};
+    var p = proc_spawn_args("git", ["log", "--oneline", user_input])?;   // no shell
+}
+
+// rather than
+exec("git log --oneline " + user_input);                                 // shell, injectable
+```
+
+In short: OCAP tells you **which** program parts may reach the outside world, and forces that
+into the type system. Validating **what** they send there is still your job.
+
+
 ---
 
 ## Async & Concurrency

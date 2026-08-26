@@ -782,6 +782,16 @@ als „Compile-Time-Capabilities, keine Laufzeit-Sandbox" kennzeichnen. Für ein
 USP „capability-based security" ist, zentral.
 **Aufwand:** hoch (Sandbox) / niedrig (Doku) · **Hebel:** hoch (Glaubwürdigkeit des USP).
 
+- ✅ **Doku-Hälfte erledigt (2026-08-26).** REFERENCE.md hat jetzt „What OCAP does and does not
+  do": was zugesichert wird (jeder Außenweltpfad steht in einer Signatur, Tokens nur unter
+  `unsafe`), was nicht (ein Token autorisiert den *Aufruf*, nie die *Argumente*), und der Verweis
+  auf `proc_spawn_args` als shell-freie Alternative zu `exec`. Beide READMEs tragen denselben
+  Vorbehalt. Empirisch belegt statt behauptet: `exec("echo a && echo b")` führt beide Kommandos
+  aus, `proc_spawn_args` startet das Programm direkt ohne Shell. Nebenbei korrigiert: README_DE
+  nannte für `DbAccess` noch SurrealDB — die Runtime hat gar keine solche Abhängigkeit, es ist
+  SQLite.
+- ⬜ **Sandbox-Hälfte weiterhin offen** — eigenes Projekt, bewusst nicht nebenbei angefangen.
+
 ---
 
 ## Priorität 2 — Robustheit-Backlog (Runtime-Härtung)

@@ -241,6 +241,14 @@ agent SecureAgent {
 | `LlmAccess` | LLM provider calls |
 | `SystemAccess` | Shell execution, MCP protocol |
 
+**Scope of the guarantee.** OCAP is a compile-time gate, not a runtime sandbox. It decides *which*
+parts of a program may reach the outside world and forces that into the type system, so a program
+can be audited by reading its signatures. It does not inspect *what* those calls send: a token
+authorises the call, never the arguments. `exec` in particular hands its string to a shell, so
+untrusted input belongs in `proc_spawn_args` instead. See REFERENCE.md, "What OCAP does and does
+not do".
+
+
 ---
 
 ## Getting Started
