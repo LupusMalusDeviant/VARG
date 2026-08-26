@@ -23,7 +23,7 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         | "base64_encode" | "base64_decode" | "base64_encode_file"
         | "path_join" | "path_parent" | "path_stem" | "path_extension"
         | "time_format" | "timestamp" | "memory_get" | "workflow_status"
-        | "ansi_color" | "ansi_bold" | "ansi_reset" | "agents_list"
+        | "ansi_color" | "ansi_bold" | "ansi_reset" | "agents_list" | "exe_path"
         // fetch / http_download_base64 look fallible but their runtime fns return a bare String
         // (errors surface in the body), so their static type is String, not Result. Keeping them
         // here is what the runtime signatures actually guarantee — see net.rs / encoding.rs.
@@ -81,7 +81,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "base64_encode", "base64_decode", "base64_encode_file",
         "path_join", "path_parent", "path_stem", "path_extension",
         "time_format", "timestamp", "memory_get", "workflow_status",
-        "ansi_color", "ansi_bold", "ansi_reset", "agents_list",
+        "ansi_color", "ansi_bold", "ansi_reset", "agents_list", "exe_path",
         "fetch", "http_download_base64",
         // Int
         "len", "length", "count", "count_occurrences", "parse_int", "sum",

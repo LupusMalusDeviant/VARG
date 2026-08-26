@@ -3199,6 +3199,11 @@ impl RustGenerator {
                 // ===== Wave 28: System Primitives =====
                 } else if method_name == "args" {
                     "std::env::args().skip(1).collect::<Vec<String>>()".to_string()
+                } else if method_name == "exe_path" {
+                    // `args()` deliberately skips argv[0], so a program had no way to find its own
+                    // binary. Needed to re-invoke itself — an MCP server exposing its own tools is
+                    // exactly that shape.
+                    "std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()".to_string()
                 } else if method_name == "stdin_read_line" {
                     "{ let mut __varg_line = String::new(); std::io::stdin().read_line(&mut __varg_line).map(|_| __varg_line.trim_end_matches(|c| c == '\\n' || c == '\\r').to_string()).map_err(|e| e.to_string()) }".to_string()
                 } else if method_name == "stdin_read" {

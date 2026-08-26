@@ -1454,7 +1454,11 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
         cli_dispatch.push_str("        let cmd = &_varg_args[1];\n");
         
         // 1) First pass: Collect MCP tools for discovery
-        let mut tools_json_block = String::from("        if cmd == \"--mcp-discover\" {\n            let mut tools = Vec::new();\n");
+        // The tool list is built before the command chain: `--mcp-discover` prints it and
+        // `--mcp-serve` answers `tools/list` with it, so it cannot live inside either branch.
+        let mut tools_build_block = String::from("        let mut tools: Vec<serde_json::Value> = Vec::new();\n");
+        let mut tools_json_block = String::new();
+        let mut mcp_call_block = String::new();
         let mut command_dispatch_block = String::new();
         let mut has_cli_or_mcp = false;
         
@@ -1512,8 +1516,8 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
                         let output_part = output_schema.unwrap_or_default();
 
                         // Push to MCP tools JSON array with full schema
-                        tools_json_block.push_str(&format!(
-                            "            tools.push(serde_json::json!({{\"name\":\"{}\",\"description\":\"{}\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{{}}},\"required\":[{}]}}{} }}));\n",
+                        tools_build_block.push_str(&format!(
+                            "        tools.push(serde_json::json!({{\"name\":\"{}\",\"description\":\"{}\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{{}}},\"required\":[{}]}}{} }}));\n",
                             cmd_name, cmd_desc,
                             input_props.join(","),
                             input_required.join(","),
@@ -1557,16 +1561,108 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
                             }
                         }
                         command_dispatch_block.push_str("            std::process::exit(0);\n");
+
+                        // The same method, reachable over MCP. Arguments come from the JSON-RPC request by
+                        // name rather than by position, and are parsed into the declared parameter type.
+                        mcp_call_block.push_str(&format!(
+                            "                    else if __tool == \"{}\" {{\n", cmd_name));
+                        let mut mcp_arg_vars = Vec::new();
+                        for (i, arg) in method_decl.args.iter().enumerate() {
+                            let raw = format!(
+                                "                        let __raw_{} = varg_runtime::mcp_server::__varg_mcp_rpc_argument(&__req, \"{}\");\n",
+                                i, arg.name);
+                            mcp_call_block.push_str(&raw);
+                            let conv = match arg.ty {
+                                varg_ast::ast::TypeNode::Int =>
+                                    format!("                        let marg_{} = __raw_{}.parse::<i64>().unwrap_or(0);\n", i, i),
+                                varg_ast::ast::TypeNode::Float =>
+                                    format!("                        let marg_{} = __raw_{}.parse::<f64>().unwrap_or(0.0);\n", i, i),
+                                varg_ast::ast::TypeNode::Bool =>
+                                    format!("                        let marg_{} = __raw_{}.parse::<bool>().unwrap_or(false);\n", i, i),
+                                varg_ast::ast::TypeNode::Ulong =>
+                                    format!("                        let marg_{} = __raw_{}.parse::<u64>().unwrap_or(0);\n", i, i),
+                                _ => format!("                        let marg_{} = __raw_{};\n", i, i),
+                            };
+                            mcp_call_block.push_str(&conv);
+                            mcp_arg_vars.push(format!("marg_{}", i));
+                        }
+                        let is_struct_ret = if let Some(varg_ast::ast::TypeNode::Custom(ref n)) = method_decl.return_ty {
+                            find_struct_def(&ast, n).is_some()
+                        } else { false };
+                        let returns_value = method_decl.return_ty.is_some()
+                            && method_decl.return_ty != Some(varg_ast::ast::TypeNode::Void);
+                        if returns_value {
+                            mcp_call_block.push_str(&format!(
+                                "                        let __res = instance.{}({});\n",
+                                method_decl.name, mcp_arg_vars.join(", ")));
+                            if is_struct_ret {
+                                mcp_call_block.push_str("                        let __text = serde_json::to_string(&__res).unwrap_or_default();\n");
+                            } else {
+                                mcp_call_block.push_str("                        let __text = format!(\"{}\", __res);\n");
+                            }
+                        } else {
+                            mcp_call_block.push_str(&format!(
+                                "                        instance.{}({});\n",
+                                method_decl.name, mcp_arg_vars.join(", ")));
+                            mcp_call_block.push_str("                        let __text = String::from(\"ok\");\n");
+                        }
+                        mcp_call_block.push_str("                        varg_runtime::mcp_server::__varg_mcp_rpc_result(&__id, &__text)\n                    }\n");
                     }
                 }
             }
         }
         
-        tools_json_block.push_str("            let json_out = serde_json::json!({ \"tools\": tools });\n            println!(\"{}\", json_out);\n            std::process::exit(0);\n");
+        // `--mcp-discover` prints the schema; `--mcp-serve` speaks JSON-RPC over stdio so a real
+        // MCP client can call the same tools. The envelopes come from the runtime; only the
+        // dispatch is generated, because it calls a method on the entry agent.
+        tools_json_block.push_str(r#"        if cmd == "--mcp-discover" {
+            let json_out = serde_json::json!({ "tools": tools });
+            println!("{}", json_out);
+            std::process::exit(0);
+        } else if cmd == "--mcp-serve" {
+            use std::io::{BufRead, Write};
+            let __tools_json = serde_json::json!(tools).to_string();
+            let __stdin = std::io::stdin();
+            let mut __stdout = std::io::stdout();
+            for __line in __stdin.lock().lines() {
+                let __req = match __line { Ok(l) => l, Err(_) => break };
+                if __req.trim().is_empty() { continue; }
+                let __id = varg_runtime::mcp_server::__varg_mcp_rpc_id(&__req);
+                let __method = varg_runtime::mcp_server::__varg_mcp_rpc_method(&__req);
+                let __resp = if __method == "initialize" {
+                    varg_runtime::mcp_server::__varg_mcp_rpc_initialize(&__id, MCP_SERVER_NAME, MCP_SERVER_VERSION)
+                } else if __method == "notifications/initialized" {
+                    // A notification has no id and expects no reply.
+                    String::new()
+                } else if __method == "tools/list" {
+                    varg_runtime::mcp_server::__varg_mcp_rpc_tools_list(&__id, &__tools_json)
+                } else if __method == "tools/call" {
+                    let __tool = varg_runtime::mcp_server::__varg_mcp_rpc_tool_name(&__req);
+                    if false { String::new() }
+"#);
+        tools_json_block.push_str(&mcp_call_block);
+        tools_json_block.push_str(r#"                    else {
+                        varg_runtime::mcp_server::__varg_mcp_rpc_error(&__id, -32601, &format!("Tool not found: {}", __tool))
+                    }
+                } else {
+                    varg_runtime::mcp_server::__varg_mcp_rpc_error(&__id, -32601, &format!("Method not found: {}", __method))
+                };
+                if !__resp.is_empty() {
+                    let _ = writeln!(__stdout, "{}", __resp);
+                    let _ = __stdout.flush();
+                }
+            }
+            std::process::exit(0);
+"#);
         command_dispatch_block.push_str("        } else {\n            eprintln!(\"Unknown command '{}'\", cmd);\n            std::process::exit(1);\n        }\n    }\n");
 
         if has_cli_or_mcp {
+            // The server identifies itself to the client by the program name.
+            let tools_json_block = tools_json_block
+                .replace("MCP_SERVER_NAME", &format!("{:?}", varg_name))
+                .replace("MCP_SERVER_VERSION", "\"0.1.0\"");
             final_rust_source.push_str(&cli_dispatch);
+            final_rust_source.push_str(&tools_build_block);
             final_rust_source.push_str(&tools_json_block);
             final_rust_source.push_str(&command_dispatch_block);
         }

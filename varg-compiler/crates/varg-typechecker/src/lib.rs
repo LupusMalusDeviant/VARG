@@ -448,7 +448,7 @@ impl TypeChecker {
             "json_parse", "json_get", "json_get_int", "json_get_bool", "json_get_array",
             "json_stringify", "json_stringify_pretty", "json_keys", "json_values", "json_has", "json_merge", "json_set",
             "assert", "assert_eq", "assert_ne", "assert_true", "assert_false", "assert_contains", "assert_throws",
-            "agents_list", "agents_count", "agents_count_by_status",
+            "agents_list", "agents_count", "agents_count_by_status", "exe_path",
             "set_of",
             "graph_open", "graph_add_node", "graph_add_edge", "graph_query", "graph_traverse", "graph_neighbors",
             "embed", "vector_store_open", "vector_store_upsert", "vector_store_search", "vector_store_delete", "vector_store_count",
@@ -3025,7 +3025,7 @@ impl TypeChecker {
                 } else if method_name == "trace_set_attr" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (tracer, key, value)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
-                } else if method_name == "agents_list" {
+                } else if method_name == "agents_list" || method_name == "exe_path" {
                     Ok(TypeNode::String)
                 } else if method_name == "agents_count" || method_name == "agents_count_by_status" {
                     Ok(TypeNode::Int)
