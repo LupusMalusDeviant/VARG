@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-26 · Version 1.0.0 · 1228 Compiler-Tests (default) / 1380 (`--features full`) · Golden 34/34 · Probes 51/51 · Builtin-Abdeckung 97,9 %
+> Stand: 2026-08-26 · Version 1.0.0 · 1234 Compiler-Tests (default) / 1386 (`--features full`) · Golden 35/35 · Probes 51/51 · Builtin-Abdeckung 97,9 %
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -627,6 +627,59 @@ deckungsgleich.
 ### Stand danach
 1228 Unit-Tests (default) / 1380 (`--features full`), 0 Failures · Golden **34/34** · Probes
 **51/51** · CI-Jobs: 3 → **4**.
+
+---
+
+## Wave 22b — Agent Control Plane, in Varg geschrieben (Stufe 19)
+
+Der Entwurf (`next_06_web_dashboard.md`) bot SvelteKit **oder** „Dashboard als Varg-Agent, der HTML
+generiert". Entschieden: das Zweite. Ein natives Binary, kein Node, kein Build-Schritt — und vom
+selben golden/probes-Netz gedeckt wie alles andere. Der Preis ist ehrlich: der Graph zeichnet
+handgeschriebenes SVG statt D3/Cytoscape.
+
+`dashboard/dashboard.varg` · vier Panels · 8,2 KB Seite · Auto-Refresh 2 s.
+
+### Das einzige wirklich fehlende Stück: eine Agent-Registry
+„Live-Status" wäre gelogen gewesen, wenn ihn das Programm selbst melden müsste. Also führt ihn der
+**generierte Dispatcher**: jedes `spawn` registriert seinen Agenten, und der Zustand wandert
+`starting → idle → running → idle → … → stopped` mit. Prozessglobal statt handle-basiert, weil ein
+gespawnter Agent sich aus seinem eigenen Thread eintragen muss.
+
+Neue Builtins: `agents_list()`, `agents_count()`, `agents_count_by_status(s)`.
+
+### Nebenbefund mit Gewicht: ein Panic riss den ganzen Prozess mit
+Der globale Panic-Hook rief `process::exit(1)` — aus **jedem** Thread. Eine kaputte Nachricht an
+einen Agenten beendete damit das gesamte Programm, und das `catch_unwind` im Dispatcher kam nie zum
+Zug. Der Hook beendet jetzt nur noch, wenn der **Haupt**-Thread gefallen ist; ein Agent wird
+stattdessen als `error` mit der Panic-Meldung vermerkt und bedient die nächste Nachricht weiter.
+Verifiziert: Agent überlebt, Fehler protokolliert, Exit 0.
+
+### Drei Ergonomie-Lücken, beim Bauen aufgelaufen
+| Lücke | Status |
+|---|---|
+| Interpolation kennt **kein Escaping für literale Klammern** — ein JSON-Objekt lässt sich in `$"…"` nicht schreiben | offen, umgangen (Konkatenation); C#-Vorbild wäre `{{`/`}}` |
+| Interpolation verträgt kein String-Literal als Argument (`$"{f(\"x\")}"`) | offen, umgangen (Wert vorher binden) |
+| Eine `fn` **nach** einem Agenten war für diesen unsichtbar | **behoben** — der Typechecker registriert Standalone-Funktionen jetzt in einem Vorlauf, wie der Codegen längst |
+
+### Was die Architektur formt
+Route-Handler sind `Fn`-Closures und erreichen `self` nicht. Alles, was sie ausliefern, ist deshalb
+entweder ein gecapturetes Laufzeit-Handle (die sind `Arc`-basiert, bleiben also live — daher zeigen
+die Panels aktuelle Daten) oder ein vor dem Serverstart berechneter Wert. Die HTML-Seite ist
+Letzteres: einmal gerendert, gecaptured, aus dem Speicher bedient.
+
+### Abgesichert
+Das Dashboard selbst kann kein Golden-Programm sein — es endet in `http_listen` und blockiert.
+Gepinnt wird stattdessen der Vertrag, von dem die Panels abhängen:
+`golden/progs/dashboard_payloads.varg` prüft die Form aller vier Payloads (23 Prüfungen). Ein
+formverändertes Payload bräche sonst ein Panel stumm im Browser, wo kein Test hinsieht. Dazu 6
+Unittests für die Registry.
+
+Im Browser verifiziert: alle vier Panels mit Live-Daten, Auto-Refresh, SVG-Graph mit Kanten-Labels,
+Span-Timeline mit Verschachtelung, Dark und Light Mode, mobil ohne horizontales Scrollen, keine
+Konsolenfehler.
+
+### Stand danach
+1234 Unit-Tests (default) / 1386 (`--features full`), 0 Failures · Golden **35/35** · Probes 51/51.
 
 ---
 

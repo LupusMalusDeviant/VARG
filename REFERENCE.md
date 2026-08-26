@@ -1038,6 +1038,24 @@ var ab64 = audio_to_base64(aud);               // string
 var desc = llm_vision("What is in this image?", b64, "png", llm_cap); // string
 ```
 
+### Agent Registry
+
+Every `spawn` registers its agent, and the generated dispatcher maintains the status underneath
+your program — you do not report it. An agent is `starting` while `on_start` runs, `idle` while
+it waits on its mailbox, `running` while it handles a message, `error` if a handler panicked
+(the agent keeps serving the next message), and `stopped` once the mailbox closes. The entry
+agent is registered too.
+
+```csharp
+var json = agents_list();                       // string — JSON array of every agent
+var n = agents_count();                         // int
+var busy = agents_count_by_status("running");   // int — starting|idle|running|error|stopped
+```
+
+Each record carries `id`, `name`, `status`, `started_at`, `updated_at`, `handled`,
+`last_message` and `last_error`. This is what the dashboard in `dashboard/` reads for its agent
+panel.
+
 ### Workflow DAG
 
 ```csharp
