@@ -3411,8 +3411,17 @@ impl RustGenerator {
                     // http_listen(cap, server, addr) → async
                     format!("varg_runtime::server::__varg_http_listen({}, &{}).await", arg_strs[0], arg_strs[1])
                 } else if method_name == "http_response" {
-                    // http_response(status_code, body) → VargHttpResponse
-                    format!("varg_runtime::server::__varg_http_response({}, &{})", arg_strs[0], arg_strs[1])
+                    // http_response(status, body) is HTML; a third argument names another type.
+                    // With no type at all the browser had to sniff, which HTML survives and a
+                    // stylesheet or a script does not.
+                    if arg_strs.len() >= 3 {
+                        format!(
+                            "varg_runtime::server::__varg_http_response_typed({}, &{}, &{})",
+                            arg_strs[0], arg_strs[1], arg_strs[2]
+                        )
+                    } else {
+                        format!("varg_runtime::server::__varg_http_response({}, &{})", arg_strs[0], arg_strs[1])
+                    }
                 } else if method_name == "http_response_json" {
                     // http_response_json(status_code, json_body) → VargHttpResponse with JSON content-type
                     format!("varg_runtime::server::__varg_http_response_json({}, &{})", arg_strs[0], arg_strs[1])

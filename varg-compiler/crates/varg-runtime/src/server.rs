@@ -86,8 +86,22 @@ impl VargHttpServer {
 }
 
 // Construct a response from Varg code: http_response(200, "body")
+/// A response with no explicit type is HTML.
+///
+/// It used to carry no `content-type` at all, leaving every browser to sniff. HTML happens to
+/// survive that; a stylesheet or a script served the same way does not. HTML is not a guess
+/// here — every `http_response` call in this repository serves a page, and JSON has always had
+/// its own `http_response_json`. Pass a third argument for anything else.
 pub fn __varg_http_response(status: i64, body: &str) -> VargHttpResponse {
-    VargHttpResponse::new(status as u16, body)
+    __varg_http_response_typed(status, body, "text/html; charset=utf-8")
+}
+
+/// A response with the content type spelled out.
+pub fn __varg_http_response_typed(status: i64, body: &str, content_type: &str) -> VargHttpResponse {
+    let mut resp = VargHttpResponse::new(status as u16, body);
+    resp.headers
+        .insert("content-type".to_string(), content_type.to_string());
+    resp
 }
 
 pub fn __varg_http_response_json(status: i64, body: &str) -> VargHttpResponse {
@@ -175,7 +189,7 @@ pub fn __varg_sse_event(event_type: &str, data: &str) -> String {
 /// The server writes proper SSE headers and streams the events.
 /// NOTE: This is the legacy batch-mode stub kept for backward compatibility.
 /// For real streaming use `__varg_sse_open` / `__varg_sse_send` instead.
-pub fn __varg_http_sse_route<F>(server: &mut VargHttpServer, path: &str, handler: F)
+pub fn __varg_http_sse_route<F>(server: &mut VargHttpServerHandle, path: &str, handler: F)
 where
     F: Fn(VargHttpRequest) -> Vec<String> + Send + Sync + 'static + Clone,
 {
@@ -189,7 +203,11 @@ where
         resp.headers.insert("Connection".to_string(), "keep-alive".to_string());
         resp
     };
-    server.routes.push(VargRoute {
+    // The handle, not the inner server: everything else Varg can call takes the handle, and this
+    // one did not — so `http_sse_route` could be written, type-checked, and then failed in rustc
+    // with "expected `&mut VargHttpServer`, found `&mut VargHttpServerHandle`". It was
+    // unreachable from the language for as long as it existed.
+    server.inner.routes.push(VargRoute {
         method: "GET".to_string(),
         path: path.to_string(),
         handler: std::sync::Arc::new(wrapped),

@@ -106,6 +106,12 @@ jobs:
           key: e2e
       - name: Build vargc (release)
         run: cargo build -p vargc --release --locked
+      - name: Documentation compiles
+        # Four rounds found the same defect: a signature in REFERENCE.md or VARG_AGENT_GUIDE.md
+        # that the compiler rejects. Nothing caught it because nothing fed the docs to the
+        # compiler. Cheap (check only), so it runs before the builds.
+        working-directory: .
+        run: VARGC="$PWD/varg-compiler/target/release/vargc" python3 docs-check/check.py
       - name: Rejection probes
         # Cheap (parse + typecheck only), so it runs first: a front end that stopped catching
         # something is worth knowing before spending minutes on full builds.

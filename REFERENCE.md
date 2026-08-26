@@ -1174,10 +1174,10 @@ var closed = channel_is_closed(ch);      // bool
 
 ```csharp
 var i = prop_gen_int(-100, 100);         // int (random in range)
-var f = prop_gen_float(0.0, 1.0);        // float
+var f = prop_gen_float();                // float in 0.0..1.0 — takes no range
 var b = prop_gen_bool();                 // bool
 var s = prop_gen_string(5);              // string (random, max 5 chars)
-var xs = prop_gen_int_list(0, 100, 10);  // int[] (max 10 elements)
+var xs = prop_gen_int_list(10);          // int[] (max 10 elements) — takes no range
 var ss = prop_gen_string_list(3, 5);     // string[] (max 5 strings, max 3 chars each)
 var pass = prop_check(100, () => prop_gen_int(0, 10) >= 0); // bool
 prop_assert(x >= 0, "must be non-negative");
@@ -1441,7 +1441,7 @@ var ls = tensor_to_list(t);              // float[]
 
 // Transform
 var r  = tensor_reshape(t, [12]);        // new shape
-var sl = tensor_slice(t, 0, 2);          // rows 0..2
+var sl = tensor_slice(t, 0, 0, 2);          // rows 0..2
 
 // Arithmetic
 var c  = tensor_add(a, b);               // element-wise add

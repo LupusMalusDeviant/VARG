@@ -1,0 +1,4 @@
+// @probe reject: http_response
+// `http_response` had no arity check at all: `http_response()` and `http_response(1,2,3,4)` both
+// type-checked. It takes a status and a body, plus an optional content type.
+agent Main { public void Run() { unsafe { var s = http_serve(); http_route(s, "GET", "/", (req) => { return http_response(200); }); } } }

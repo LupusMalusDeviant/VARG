@@ -3096,6 +3096,14 @@ impl TypeChecker {
                 } else if method_name == "http_listen" {
                     Ok(TypeNode::Void)
                 } else if method_name == "http_response" {
+                    // Was unchecked: `http_response()` and `http_response(1,2,3,4)` both passed.
+                    if args.len() < 2 || args.len() > 3 {
+                        return Err(TypeError::WrongArgumentCount {
+                            callee: "http_response".to_string(),
+                            expected: "2 or 3 (status, body, [content_type])".to_string(),
+                            found: args.len(),
+                        });
+                    }
                     Ok(TypeNode::Custom("VargHttpResponse".to_string()))
                 } else if method_name == "http_response_json" {
                     Ok(TypeNode::Custom("VargHttpResponse".to_string()))

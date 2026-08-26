@@ -288,7 +288,7 @@ var triple = (true, 42, "ok");
 ### Generic Call
 ```csharp
 // funcName<Type>(args)
-var report = llm_structured<WeatherReport>("", "", prompt, llm);
+var report = llm_structured<WeatherReport>(prompt, schema, 2);
 ```
 
 ### Named Arguments
@@ -880,9 +880,13 @@ impl<T> Pair<T> {
 
 ### Untyped Parameters (most common)
 ```csharp
-// Single param — no type annotation needed
-var double = (x) => x * 2;
-var greet  = (name) => $"Hello {name}";
+// Passed straight to the call that consumes it, the parameter type is inferred:
+var doubled = nums.map((x) => x * 2);
+var greets  = names.map((name) => $"Hello {name}");
+
+// Stored in a variable there is nothing to infer from, so write the type:
+var double = (int x) => x * 2;
+var greet  = (string name) => $"Hello {name}";
 
 // Multiple params
 var add = (a, b) => a + b;
@@ -1319,9 +1323,10 @@ unsafe {
     var llm    = LlmAccess {};
     var sys    = SystemAccess {};
 
-    // Use them here
-    var text   = fs_read("file.txt", files);
-    var html   = fetch("https://example.com", "GET", net);
+    // Use them here. The token is not an argument: having it in scope is what authorises
+    // the call, so the builtins keep their ordinary signatures.
+    var text   = fs_read("file.txt")?;
+    var html   = fetch("https://example.com", "GET")?;
 }
 ```
 
@@ -1451,10 +1456,11 @@ var size = s.len();
 
 ### Iterator Chains
 ```csharp
+// `sort` reorders in place and returns nothing, so it cannot end a chain.
 var evens = nums
     .filter((x) => x % 2 == 0)
-    .map((x) => x * 2)
-    .sort();
+    .map((x) => x * 2);
+evens.sort();
 
 var found = items.find((x) => x.starts_with("A"));
 var any   = items.any((x) => x == "target");
@@ -1573,8 +1579,7 @@ var raw     = http_download_base64("https://example.com/image.png", net);
 ### PDF Generation
 ```csharp
 var pdf = pdf_create("My Report");
-pdf_add_section(pdf, "Section 1");
-pdf_add_text(pdf, "Content of section one...");
+pdf_add_section(pdf, "Section 1", "Content of section one...");
 pdf_save(pdf, "report.pdf", files);
 var b64 = pdf_to_base64(pdf);
 ```
@@ -2138,7 +2143,7 @@ if registry_is_installed(reg, "varg-rag") {
 }
 
 registry_uninstall(reg, "old-pkg");
-var http_pkgs = registry_search(reg, "http");
+var http_pkgs = registry_search("http");
 var all       = registry_list(reg);
 ```
 
@@ -2202,12 +2207,13 @@ Requires `--features duckdb`.
 ```csharp
 unsafe {
     var da = DbAccess {};
-    var db = duckdb_open(":memory:");
-    duckdb_execute(db, "CREATE TABLE sales (product TEXT, amount DOUBLE)", da);
-    duckdb_execute(db, "INSERT INTO sales VALUES ('Widget', 120.5)", da);
-    var rows = duckdb_query(db, "SELECT product, SUM(amount) FROM sales GROUP BY product", da);
+    var db = duckdb_open(":memory:", da);
+    duckdb_execute(db, "CREATE TABLE sales (product TEXT, amount DOUBLE)", [], da);
+    duckdb_execute(db, "INSERT INTO sales VALUES ('Widget', 120.5)", [], da);
+    var rows = duckdb_query(db, "SELECT product, SUM(amount) FROM sales GROUP BY product", [], da);
+    // A row is a list of column values in select order, not a map by column name.
     for row in rows {
-        print $"{row["product"]}: {row["SUM(amount)"]}";
+        print $"{row[0]}: {row[1]}";
     }
     duckdb_close(db);
 }
@@ -2220,7 +2226,7 @@ unsafe {
 Requires `--features fts`.
 
 ```csharp
-var idx = fts_open(":memory:");
+var idx = fts_open(":memory:", files);
 fts_add(idx, "doc1", "the quick brown fox");
 fts_add(idx, "doc2", "rust systems programming");
 fts_commit(idx);
@@ -2252,7 +2258,7 @@ rag_index(store, "doc2", "Rust provides memory safety without GC", {});
 var chunks = rag_retrieve(store, embed_local("AI agent language"), 3);
 
 // Build prompt with injected context
-var prompt = rag_build_prompt("What is Varg?", chunks);
+var prompt = rag_build_prompt(store, "What is Varg?", 3);
 print prompt;
 ```
 

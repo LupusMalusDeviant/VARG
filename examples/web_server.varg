@@ -1,0 +1,72 @@
+/// The whole web-facing surface in one program: a page, a stylesheet, a JSON API with query
+/// parameters, a POST body, server-sent events and a WebSocket.
+///
+/// It is an example, but it also guards two defects that only a program exercising every route
+/// kind would find. `http_sse_route` took `&mut VargHttpServer` while `http_serve()` hands back a
+/// `VargHttpServerHandle`, so it type-checked and then failed in rustc -- unreachable from the
+/// language for as long as it existed. And `http_response` set no `content-type` at all, which
+/// HTML survives by browser sniffing and a stylesheet does not.
+agent WebServer {
+    public async void Run() {
+        unsafe {
+            var page = """
+<!doctype html>
+<meta charset="utf-8">
+<title>Varg</title>
+<link rel="stylesheet" href="/style.css">
+<h1>served by varg</h1>
+<ul id="items"></ul>
+<script>
+  fetch('/api/items?limit=2')
+    .then(r => r.json())
+    .then(d => document.getElementById('items').textContent = JSON.stringify(d));
+  new EventSource('/events').onmessage = e => console.log('sse', e.data);
+  const ws = new WebSocket('ws://' + location.host + '/ws');
+  ws.onopen = () => ws.send('hello');
+  ws.onmessage = e => console.log('ws', e.data);
+</script>
+""";
+
+            var srv = http_serve();
+
+            // A page. Two arguments means HTML.
+            http_route(srv, "GET", "/", (req) => {
+                return http_response(200, page);
+            });
+
+            // Anything else names its type in the third argument. Without one the browser had
+            // to sniff, and a stylesheet served that way is ignored.
+            http_route(srv, "GET", "/style.css", (req) => {
+                return http_response(200, "h1 { color: rebeccapurple }", "text/css");
+            });
+
+            // A JSON API. Query parameters are a map, read with `get` and a fallback.
+            http_route(srv, "GET", "/api/items", (req) => {
+                var limit = req.query_params.get("limit", "10");
+                return http_response_json(200, $"{{\"limit\": \"{limit}\", \"items\": [1, 2, 3]}}");
+            });
+
+            // A POST body is a raw JSON string, which the accessors read directly.
+            http_route(srv, "POST", "/api/echo", (req) => {
+                var name = json_get(req.body, "name") or "";
+                if (name == "") {
+                    return http_response_json(400, "{\"error\": \"name is required\"}");
+                }
+                return http_response_json(200, $"{{\"hello\": \"{name}\"}}");
+            });
+
+            // Server-sent events: the handler returns the events to send.
+            http_sse_route(srv, "/events", (req) => {
+                return [sse_event("", "tick-1"), sse_event("", "tick-2")];
+            });
+
+            // A WebSocket route: message in, message out.
+            ws_route(srv, "/ws", (msg) => {
+                return "echo: " + msg;
+            });
+
+            print "listening on http://127.0.0.1:8080";
+            http_listen(srv, "127.0.0.1:8080");
+        }
+    }
+}
