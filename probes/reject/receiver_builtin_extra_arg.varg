@@ -1,0 +1,4 @@
+// @probe reject: takes no arguments
+// These branches returned a type without ever looking at `args`, so this type-checked AND ran:
+// codegen drops the extra argument and nothing said the call meant nothing.
+agent Main { public void Run() { print "a".to_upper("x"); } }

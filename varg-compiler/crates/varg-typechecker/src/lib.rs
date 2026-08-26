@@ -62,6 +62,8 @@ pub enum TypeError {
     MissingAwait { method_name: String },
     UnannotatedLambdaParam { param_name: String },
     ValueFromInPlaceMutation { method_name: String },
+    ReceiverBuiltinCalledFree { method_name: String, takes_args: bool },
+    ReceiverBuiltinTakesNoArgs { method_name: String, found: usize },
     DivisionByZeroLiteral,
     FieldTypeMismatch { type_name: String, field_name: String, expected: String, found: String },
     // Plan 29: Contract Enforcement
@@ -140,6 +142,22 @@ impl TypeError {
                 format!(
                     "`{}` changes the collection in place and returns nothing — call it as a statement (`xs.{}();`) and keep using `xs`",
                     method_name, method_name
+                )
+            }
+            TypeError::ReceiverBuiltinCalledFree { method_name, takes_args } => {
+                format!(
+                    "`{}` is a method on the value, not a free function — write `value.{}({})`",
+                    method_name,
+                    method_name,
+                    if *takes_args { "..." } else { "" }
+                )
+            }
+            TypeError::ReceiverBuiltinTakesNoArgs { method_name, found } => {
+                format!(
+                    "`{}` takes no arguments, but {} {} given",
+                    method_name,
+                    found,
+                    if *found == 1 { "was" } else { "were" }
                 )
             }
             TypeError::DivisionByZeroLiteral => {
@@ -249,6 +267,8 @@ impl TypeError {
             TypeError::MissingAwait { method_name } => Some(method_name.as_str()),
             TypeError::UnannotatedLambdaParam { param_name } => Some(param_name.as_str()),
             TypeError::ValueFromInPlaceMutation { method_name } => Some(method_name.as_str()),
+            TypeError::ReceiverBuiltinCalledFree { method_name, .. } => Some(method_name.as_str()),
+            TypeError::ReceiverBuiltinTakesNoArgs { method_name, .. } => Some(method_name.as_str()),
             TypeError::AssignToConst { name } => Some(name.as_str()),
             TypeError::FieldTypeMismatch { field_name, .. } => Some(field_name.as_str()),
             TypeError::WrongArgumentCount { callee, .. } => Some(callee.as_str()),
@@ -2000,8 +2020,53 @@ impl TypeChecker {
                     "push", "pop", "first", "last", "reverse", "keys", "values", "contains_key",
                     // NB: `to_string` is intentionally absent — it IS valid on scalars.
                 ];
+                // Of the whole receiver family, only `len`/`length` also work written as a
+                // free function; measured, every other free-function spelling either leaked a
+                // rustc error or produced an arity message about the method form, which names
+                // neither the real mistake nor a way out. `to_upper("abc")` — the spelling most
+                // languages would accept — compiled to `self.to_uppercase()`, so rustc reported
+                // that `&mut A` has no such method.
+                const FREE_FORM_OK: &[&str] = &["len", "length"];
+                // Receiver builtins that take nothing in method form. Their branches further
+                // down return a type without ever looking at `args`, so `"a".to_upper("x")`
+                // type-checked and ran: codegen drops the extra argument, and nothing told the
+                // author that what they wrote meant nothing. The rest of the family already
+                // checks its own arity, with wording specific enough to keep.
+                const NO_ARG_RECEIVER_METHODS: &[&str] = &[
+                    "to_upper", "to_lower", "trim", "trim_start", "trim_end", "ltrim", "rtrim",
+                    "chars", "reverse", "is_empty", "keys", "values", "pop", "first", "last",
+                ];
                 let caller_is_synthetic_self =
                     matches!(&**caller, Expression::Identifier(n) if n == "self");
+                if RECEIVER_METHODS.contains(&method_name) {
+                    if caller_is_synthetic_self && !FREE_FORM_OK.contains(&method_name) {
+                        return Err(TypeError::ReceiverBuiltinCalledFree {
+                            method_name: method_name.to_string(),
+                            takes_args: !NO_ARG_RECEIVER_METHODS.contains(&method_name),
+                        });
+                    }
+                    // `len`/`length` are the one pair that reads both ways, so each spelling has
+                    // its own count: `xs.len()` takes nothing, `len(xs)` takes the value. Without
+                    // this, `xs.len("x")` type-checked and ran — codegen drops the argument.
+                    let takes_no_args = NO_ARG_RECEIVER_METHODS.contains(&method_name)
+                        || (FREE_FORM_OK.contains(&method_name) && !caller_is_synthetic_self);
+                    if !caller_is_synthetic_self && takes_no_args && !args.is_empty() {
+                        return Err(TypeError::ReceiverBuiltinTakesNoArgs {
+                            method_name: method_name.to_string(),
+                            found: args.len(),
+                        });
+                    }
+                    if caller_is_synthetic_self
+                        && FREE_FORM_OK.contains(&method_name)
+                        && args.len() != 1
+                    {
+                        return Err(TypeError::WrongArgumentCount {
+                            callee: method_name.to_string(),
+                            expected: "1".to_string(),
+                            found: args.len(),
+                        });
+                    }
+                }
                 if RECEIVER_METHODS.contains(&method_name) && !caller_is_synthetic_self {
                     if let Ok(ct) = self.infer_expression_type(caller) {
                         if matches!(ct, TypeNode::Int | TypeNode::Float | TypeNode::Bool) {
@@ -4162,7 +4227,15 @@ impl TypeChecker {
         }
         if matches!(
             e,
-            TypeError::MissingCapability { .. } | TypeError::UndeclaredVariable { .. }
+            TypeError::MissingCapability { .. }
+                | TypeError::UndeclaredVariable { .. }
+                // Calling a receiver builtin as a free function, or handing a no-argument one
+                // arguments, is definite misuse rather than a type the checker could not pin
+                // down. It matters here because these calls are usually chained:
+                // `chars("abc").len()` puts the mistake in the *caller*, where it was discarded
+                // and went back to leaking rustc's "no method named `chars` for `&mut A`".
+                | TypeError::ReceiverBuiltinCalledFree { .. }
+                | TypeError::ReceiverBuiltinTakesNoArgs { .. }
         ) {
             return true;
         }

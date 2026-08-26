@@ -1,0 +1,4 @@
+// @probe reject: is a method on the value, not a free function
+// `to_upper("abc")` -- the spelling most languages accept -- type-checked clean and compiled to
+// `self.to_uppercase()`, so rustc reported that `&mut A` has no such method.
+agent Main { public void Run() { print to_upper("abc"); } }

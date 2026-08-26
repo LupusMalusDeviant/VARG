@@ -22,3 +22,10 @@ OK   to_string_int
 OK   to_hex
 OK   to_binary
 OK   to_fixed
+OK   method_form
+OK   pipe_form
+OK   pipe_chain
+OK   len_free
+OK   len_method
+OK   len_free_list
+OK   length_free

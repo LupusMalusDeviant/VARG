@@ -890,8 +890,8 @@ var fmt = (k, v) => $"{k}={v}";
 
 // Block body
 var process = (item) => {
-    var cleaned = trim(item);
-    return to_upper(cleaned);
+    var cleaned = item.trim();
+    return cleaned.to_upper();
 };
 
 // No params
@@ -1832,8 +1832,8 @@ var count = event_count(bus);   // total events on the bus, not per name
 
 // Pipeline (sequential transforms)
 var pipe = pipeline_new("data_pipe");
-pipeline_add_step(pipe, "clean",   (input) => trim(input));
-pipeline_add_step(pipe, "upper",   (input) => to_upper(input));
+pipeline_add_step(pipe, "clean",   (input) => input.trim());
+pipeline_add_step(pipe, "upper",   (input) => input.to_upper());
 pipeline_add_step(pipe, "bracket", (input) => $"[{input}]");
 var result = pipeline_run(pipe, "  hello world  ");
 ```
@@ -1850,7 +1850,7 @@ orchestrator_add_task(orch, "task3", "input_three");
 
 // Run all tasks with a handler function
 orchestrator_run_all(orch, (input) => {
-    return to_upper(input);
+    return input.to_upper();
 });
 
 // Get results — List<map<string, string>>

@@ -1,0 +1,4 @@
+// @probe reject: is a method on the value, not a free function
+// Chained, the mistake sits in the caller, where errors from a call were discarded -- so this
+// went back to leaking rustc even after the direct form was caught.
+agent Main { public void Run() { print chars("abc").len(); } }

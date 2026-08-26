@@ -62,5 +62,28 @@ agent Main {
         print check("to_binary", five.to_binary(), "101");
         var pi = 3.14159;
         print check("to_fixed", pi.to_fixed(2), "3.14");
+
+        // The spellings that are legal, pinned because a rule now rejects the ones that are not.
+        // The string and collection builtins are methods on the value: `to_upper("abc")` used to
+        // type-check and then compile to `self.to_uppercase()`, so rustc complained that `&mut A`
+        // has no such method. Three shapes have to keep working.
+
+        // 1. The method form itself.
+        print check("method_form", "abc".to_upper(), "ABC");
+
+        // 2. The pipe operator, which feeds the left value in as the receiver — this reads like
+        //    the free-function spelling and must not be caught by the same rule.
+        var loud = "ada" |> to_upper();
+        print check("pipe_form", loud, "ADA");
+        var clean = "a b " |> replace(" ", "_") |> trim();
+        print check("pipe_chain", clean, "a_b_");
+
+        // 3. `len`/`length` are the one pair that reads both ways, so each spelling has its own
+        //    argument count: the free one takes the value, the method one takes nothing.
+        print check("len_free", $"{len("abcd")}", "4");
+        print check("len_method", $"{"abcd".len()}", "4");
+        var xs = [1, 2, 3];
+        print check("len_free_list", $"{len(xs)}", "3");
+        print check("length_free", $"{length("ab")}", "2");
     }
 }

@@ -1,0 +1,4 @@
+// @probe reject: takes no arguments
+// `len` is the one receiver builtin that also reads as a free function, so each spelling has its
+// own count: `len(xs)` takes the value, `xs.len()` takes nothing.
+agent Main { public void Run() { print "abc".len("x"); } }
