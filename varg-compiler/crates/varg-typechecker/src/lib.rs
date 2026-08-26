@@ -64,6 +64,7 @@ pub enum TypeError {
     ValueFromInPlaceMutation { method_name: String },
     ReceiverBuiltinCalledFree { method_name: String, takes_args: bool },
     RetiredBuiltin { method_name: String, replacement: String, why: String },
+    OrFallbackMismatch { expected: String, found: String },
     ReceiverBuiltinTakesNoArgs { method_name: String, found: usize },
     DivisionByZeroLiteral,
     FieldTypeMismatch { type_name: String, field_name: String, expected: String, found: String },
@@ -151,6 +152,12 @@ impl TypeError {
                     method_name,
                     method_name,
                     if *takes_args { "..." } else { "" }
+                )
+            }
+            TypeError::OrFallbackMismatch { expected, found } => {
+                format!(
+                    "the `or` fallback must be usable as `{}`, but it is `{}`",
+                    expected, found
                 )
             }
             TypeError::RetiredBuiltin { method_name, replacement, why } => {
@@ -2227,7 +2234,9 @@ impl TypeChecker {
                     if args.len() != 2 {
                         return Err(TypeError::TypeMismatch { expected: "2 arguments".to_string(), found: format!("{} arguments", args.len()) });
                     }
-                    Ok(TypeNode::String)
+                    // Fallible: encryption can fail, and decryption used to hand its error message
+                    // back as the plaintext.
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "file_read" {
                     self.check_ocap(&CapabilityType::FileAccess, "file_read")?;
                     if args.len() != 1 {
@@ -2758,7 +2767,9 @@ impl TypeChecker {
                 } else if method_name == "checkpoint_open" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (path, agent_id)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::FileAccess, "checkpoint_open")?;
-                    Ok(TypeNode::Custom("CheckpointHandle".to_string()))
+                    // Fallible: the in-memory fallback can fail too, and unwrapping it turned a
+                    // recoverable situation into a crash.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("CheckpointHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "checkpoint_save" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, state_json)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Bool)
@@ -2959,25 +2970,27 @@ impl TypeChecker {
                     Ok(TypeNode::Custom("TensorHandle".to_string()))
                 } else if method_name == "tensor_from_list" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (data, shape)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("TensorHandle".to_string()))
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("TensorHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "tensor_shape" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (tensor)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Array(Box::new(TypeNode::Int)))
                 } else if method_name == "tensor_reshape" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (tensor, shape)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("TensorHandle".to_string()))
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("TensorHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "tensor_slice" {
                     if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (tensor, dim, start, end)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("TensorHandle".to_string()))
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("TensorHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "tensor_add" || method_name == "tensor_sub" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (a, b)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("TensorHandle".to_string()))
+                    // Fallible: mismatched shapes used to panic from inside ndarray's operator,
+                    // reporting "IncompatibleShape" and naming neither tensor.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("TensorHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "tensor_mul_scalar" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (tensor, scalar)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Custom("TensorHandle".to_string()))
                 } else if method_name == "tensor_matmul" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (a, b)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("TensorHandle".to_string()))
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("TensorHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "tensor_dot" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (a, b)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Float)
@@ -2992,29 +3005,36 @@ impl TypeChecker {
                 } else if method_name == "df_read_csv" || method_name == "df_read_parquet" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::FileAccess, method_name)?;
-                    Ok(TypeNode::Custom("DataFrameHandle".to_string()))
+                    // Fallible: a path that is not there, or a file that is not CSV.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("DataFrameHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "df_write_csv" || method_name == "df_write_parquet" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (df, path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::FileAccess, method_name)?;
-                    Ok(TypeNode::Void)
+                    // Fallible: a path that cannot be created.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::Error)))
                 } else if method_name == "df_select" || method_name == "df_groupby" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (df, cols)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("DataFrameHandle".to_string()))
+                    // Fallible: a column name that is not in the frame.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("DataFrameHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "df_filter" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (df, expr)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("DataFrameHandle".to_string()))
+                    // Fallible: an expression the frame cannot evaluate.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("DataFrameHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "df_sort" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (df, col, ascending)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("DataFrameHandle".to_string()))
+                    // Fallible: a column name that is not in the frame.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("DataFrameHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "df_agg" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (df, by_cols, agg_fn)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("DataFrameHandle".to_string()))
+                    // Fallible: a column name that is not in the frame.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("DataFrameHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "df_head" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (df, n)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Custom("DataFrameHandle".to_string()))
                 } else if method_name == "df_with_column" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (df, name, data)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("DataFrameHandle".to_string()))
+                    // Fallible: a series that does not fit the frame.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("DataFrameHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "df_shape" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (df)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Tuple(vec![TypeNode::Int, TypeNode::Int]))
@@ -3032,15 +3052,19 @@ impl TypeChecker {
                 } else if method_name == "duckdb_open" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (path, db_cap)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::DbAccess, "duckdb_open")?;
-                    Ok(TypeNode::Custom("DuckDbHandle".to_string()))
+                    // Fallible: opening used to `expect`, so an unreachable path took the
+                    // program down instead of being reported.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("DuckDbHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "duckdb_query" {
                     if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (db, sql, params, db_cap)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::DbAccess, "duckdb_query")?;
-                    Ok(TypeNode::Array(Box::new(TypeNode::Array(Box::new(TypeNode::String)))))
+                    // Fallible: a typo in the SQL used to panic, which is the most ordinary
+                    // mistake anyone makes with a database.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::Array(Box::new(TypeNode::String))))), Box::new(TypeNode::Error)))
                 } else if method_name == "duckdb_execute" {
                     if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (db, sql, params, db_cap)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::DbAccess, "duckdb_execute")?;
-                    Ok(TypeNode::Void)
+                    Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::Error)))
                 } else if method_name == "duckdb_close" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (db)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
@@ -3048,25 +3072,32 @@ impl TypeChecker {
                 } else if method_name == "fts_open" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (path, file_cap)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::FileAccess, "fts_open")?;
-                    Ok(TypeNode::Custom("FtsHandle".to_string()))
+                    // Fallible: an index directory that cannot be opened, created or locked.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("FtsHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "fts_add" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (handle, doc_id, text)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Void)
+                    // Fallible: an index writer that cannot take the document.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::Error)))
                 } else if method_name == "fts_commit" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Void)
+                    // Fallible: a commit that cannot reach the disk.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::Error)))
                 } else if method_name == "fts_search" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (handle, query, limit)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                    // Fallible: a corrupt or locked index.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::String))), Box::new(TypeNode::Error)))
                 } else if method_name == "fts_delete" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (handle, doc_id)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Void)
+                    // Fallible: a commit that cannot reach the disk.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::Error)))
                 } else if method_name == "fts_close" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (handle)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Void)
+                    // Fallible: a final flush that cannot reach the disk.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Void), Box::new(TypeNode::Error)))
                 } else if method_name == "rag_hybrid_search" {
                     if args.len() != 5 { return Err(TypeError::TypeMismatch { expected: "5 arguments (fts, vector_store, query_text, query_embedding, limit)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                    // Fallible: it searches a text index, and inherits that failure.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Array(Box::new(TypeNode::String))), Box::new(TypeNode::Error)))
                 // ===== Wave 13: Stdlib Expansion — time =====
                 } else if method_name == "sleep" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (ms)".to_string(), found: format!("{} arguments", args.len()) }); }
@@ -3128,7 +3159,8 @@ impl TypeChecker {
                 } else if method_name == "db_open" {
                     self.check_ocap(&CapabilityType::DbAccess, "db_open")?;
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("DbConnection".to_string()))
+                    // Fallible: an unreachable path used to take the program down.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("DbConnection".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "db_execute" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (conn, sql, params)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
@@ -3197,7 +3229,8 @@ impl TypeChecker {
                     Ok(TypeNode::Array(Box::new(TypeNode::Float)))
                 } else if method_name == "vector_store_open" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("VectorStoreHandle".to_string()))
+                    // Fallible: an unreachable path or a corrupt database used to panic.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("VectorStoreHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "vector_store_upsert" {
                     if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (store, id, embedding, metadata)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
@@ -3251,7 +3284,8 @@ impl TypeChecker {
                 // ===== Wave 21: Agent Memory =====
                 } else if method_name == "memory_open" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (name)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("MemoryHandle".to_string()))
+                    // Fallible: it opens a vector store, and inherits that failure.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("MemoryHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "memory_set" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (mem, key, value)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
@@ -3395,7 +3429,8 @@ impl TypeChecker {
                 // ===== Wave 26: Self-Improving Loop =====
                 } else if method_name == "self_improver_new" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (name, max_retries)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::Custom("SelfImproverHandle".to_string()))
+                    // Fallible: it opens a memory store, and inherits that failure.
+                    Ok(TypeNode::Result(Box::new(TypeNode::Custom("SelfImproverHandle".to_string())), Box::new(TypeNode::Error)))
                 } else if method_name == "self_improver_record_success" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (improver, task, solution)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
@@ -3943,8 +3978,8 @@ impl TypeChecker {
                         && Self::is_definite_primitive(&default_ty)
                         && !self.types_match(inner_ty, &default_ty);
                     if handle_vs_value || both_primitive {
-                        return Err(TypeError::TypeMismatch {
-                            expected: format!("a fallback usable as `{:?}`", inner_ty),
+                        return Err(TypeError::OrFallbackMismatch {
+                            expected: format!("{:?}", inner_ty),
                             found: format!("{:?}", default_ty),
                         });
                     }
@@ -4337,6 +4372,11 @@ impl TypeChecker {
                 // and went back to leaking rustc's "no method named `chars` for `&mut A`".
                 | TypeError::ReceiverBuiltinCalledFree { .. }
                 | TypeError::ReceiverBuiltinTakesNoArgs { .. }
+                // A fallback of the wrong type is misuse, not a type the checker could not pin
+                // down, and it is usually chained: `(tensor_add(a, b) or "oops").to_string()`
+                // puts it in the *caller*, where a plain TypeMismatch would be discarded and the
+                // program would go back to failing in rustc.
+                | TypeError::OrFallbackMismatch { .. }
         ) {
             return true;
         }

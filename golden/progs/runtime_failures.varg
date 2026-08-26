@@ -1,0 +1,50 @@
+/// Failures the runtime used to answer with a panic.
+///
+/// Each of these took the whole program down from inside a Rust library: ndarray reporting
+/// "IncompatibleShape" without naming either tensor, DuckDB panicking on a typo in the SQL --
+/// the most ordinary mistake anyone makes with a database -- and the vector store panicking on
+/// a path it could not open. They are reported now, so a program can say what went wrong or try
+/// something else.
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            var a = tensor_from_list([1.0, 2.0, 3.0, 4.0], [2, 2])?;
+            var b = tensor_from_list([1.0, 2.0, 3.0], [3])?;
+
+            print check("tensor_add_shapes", yn(tensor_add(a, b).is_err()), "reported");
+            print check("tensor_sub_shapes", yn(tensor_sub(a, b).is_err()), "reported");
+            print check("tensor_reshape_count", yn(tensor_reshape(a, [3, 3]).is_err()), "reported");
+            print check("tensor_slice_axis", yn(tensor_slice(a, 5, 0, 1).is_err()), "reported");
+            print check("tensor_matmul_rank", yn(tensor_matmul(a, b).is_err()), "reported");
+            print check("tensor_from_list_len", yn(tensor_from_list([1.0], [2, 2]).is_err()), "reported");
+
+            // The good paths still work, which is the other half of the claim.
+            var sum = tensor_add(a, a)?;
+            print check("tensor_add_ok", $"{tensor_sum(sum)}", "20");
+            var re = tensor_reshape(a, [4])?;
+            print check("tensor_reshape_ok", $"{tensor_shape(re).len()}", "1");
+
+            var da = DbAccess {};
+            var db = duckdb_open(":memory:", da)?;
+            print check("duckdb_create", $"{duckdb_execute(db, "CREATE TABLE t (a INT)", [], da) or -1}", "0");
+            print check("duckdb_bad_sql", yn(duckdb_execute(db, "CREAT TABEL oops", [], da).is_err()), "reported");
+            print check("duckdb_bad_query", yn(duckdb_query(db, "SELEKT 1", [], da).is_err()), "reported");
+            print check("duckdb_query_ok", $"{(duckdb_query(db, "SELECT 1", [], da) or []).len()}", "1");
+            duckdb_close(db);
+
+            // Opening a store in memory cannot fail, and says so by succeeding.
+            var store = vector_store_open(":memory:")?;
+            print check("vector_open_ok", $"{vector_store_count(store)}", "0");
+        }
+    }
+}
+
+fn yn(bool b) -> string {
+    if b { return "reported"; }
+    return "silent";
+}

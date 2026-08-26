@@ -1,0 +1,4 @@
+// @probe reject: handle the Result
+// The filter expression comes straight from the caller, so a typo used to panic out of the
+// runtime -- the most ordinary mistake anyone makes writing a filter.
+agent Main { public void Run() { unsafe { var df = df_read_csv("x.csv")?; print df_filter(df, "age >"); } } }

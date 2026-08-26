@@ -46,7 +46,7 @@ pub type MemoryHandle = Arc<Mutex<AgentMemory>>;
 /// Pass ":memory:" for pure in-memory mode, or a name for SQLite persistence.
 /// Episodic memory persists to {name}_episodic.vector.db
 /// Semantic memory persists to {name}_semantic.graph.db
-pub fn __varg_memory_open(name: &str) -> MemoryHandle {
+pub fn __varg_memory_open(name: &str) -> Result<MemoryHandle, String> {
     let episodic_name = if name == ":memory:" {
         ":memory:".to_string()
     } else {
@@ -58,12 +58,14 @@ pub fn __varg_memory_open(name: &str) -> MemoryHandle {
         format!("{}_semantic", name)
     };
 
-    Arc::new(Mutex::new(AgentMemory {
+    // The episodic half is a vector store, and opening one can fail on an unreachable path or a
+    // corrupt file. That used to panic, taking the program down rather than telling the agent.
+    Ok(Arc::new(Mutex::new(AgentMemory {
         name: name.to_string(),
         working: HashMap::new(),
-        episodic: __varg_vector_store_open(&episodic_name),
+        episodic: __varg_vector_store_open(&episodic_name)?,
         semantic: __varg_graph_open(&semantic_name),
-    }))
+    })))
 }
 
 /// Store a key-value pair in working memory
@@ -135,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_memory_open_memory() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         let m = mem.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(m.name, ":memory:");
         assert!(m.working.is_empty());
@@ -143,7 +145,7 @@ mod tests {
 
     #[test]
     fn test_memory_working_set_get() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         __varg_memory_set(&mem, "task", "implement wave 21");
         let val = __varg_memory_get(&mem, "task", "none");
         assert_eq!(val, "implement wave 21");
@@ -153,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_memory_store_and_recall() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         let meta = HashMap::new();
         __varg_memory_store(&mem, "The user asked about Rust performance", &meta);
         __varg_memory_store(&mem, "We discussed compiler optimization techniques", &meta);
@@ -169,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_memory_semantic_facts() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         let props = HashMap::from([("name".to_string(), "Varg".to_string())]);
         let id = __varg_memory_add_fact(&mem, "Project", &props);
         assert!(id > 0);
@@ -181,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_memory_clear_working() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         __varg_memory_set(&mem, "a", "1");
         __varg_memory_set(&mem, "b", "2");
         __varg_memory_clear_working(&mem);
@@ -189,11 +191,11 @@ mod tests {
         assert_eq!(val, "gone");
     }
 
-    // ── Adversarial / edge-case tests ────────────────────────────────────────
+    // â”€â”€ Adversarial / edge-case tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_memory_set_overwrites_existing_key() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         __varg_memory_set(&mem, "k", "first");
         __varg_memory_set(&mem, "k", "second");
         assert_eq!(__varg_memory_get(&mem, "k", "x"), "second",
@@ -202,23 +204,23 @@ mod tests {
 
     #[test]
     fn test_memory_set_empty_string_value_is_distinct_from_missing() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         __varg_memory_set(&mem, "empty_key", "");
-        // Key exists with value "" — must NOT return default
+        // Key exists with value "" â€” must NOT return default
         let val = __varg_memory_get(&mem, "empty_key", "default");
         assert_eq!(val, "", "empty string value must be stored, not replaced by default");
     }
 
     #[test]
     fn test_memory_get_missing_key_returns_default() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         let val = __varg_memory_get(&mem, "never_set", "fallback");
         assert_eq!(val, "fallback");
     }
 
     #[test]
     fn test_memory_clear_working_does_not_affect_episodic() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         __varg_memory_store(&mem, "hello world", &HashMap::new());
         __varg_memory_set(&mem, "k", "v");
 
@@ -232,14 +234,14 @@ mod tests {
 
     #[test]
     fn test_memory_recall_from_empty_episodic_returns_empty() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         let results = __varg_memory_recall(&mem, "any query", 5);
         assert!(results.is_empty(), "recall from empty store must return empty vec");
     }
 
     #[test]
     fn test_memory_recall_top_k_capped_by_stored_count() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         __varg_memory_store(&mem, "entry one", &HashMap::new());
         __varg_memory_store(&mem, "entry two", &HashMap::new());
         // Ask for 10 but only 2 stored
@@ -249,14 +251,14 @@ mod tests {
 
     #[test]
     fn test_memory_query_facts_nonexistent_label_returns_empty() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         let facts = __varg_memory_query_facts(&mem, "NeverAdded");
         assert!(facts.is_empty(), "querying facts with unknown label must return empty");
     }
 
     #[test]
     fn test_memory_episode_count_tracks_each_store() {
-        let mem = __varg_memory_open(":memory:");
+        let mem = __varg_memory_open(":memory:").unwrap();
         assert_eq!(__varg_memory_episode_count(&mem), 0);
         for i in 0..5 {
             __varg_memory_store(&mem, &format!("episode {i}"), &HashMap::new());
@@ -276,7 +278,7 @@ mod tests {
 
         // Create memory, store episodic + semantic data
         {
-            let mem = __varg_memory_open(&mem_name);
+            let mem = __varg_memory_open(&mem_name).unwrap();
             let meta = HashMap::new();
             __varg_memory_store(&mem, "User likes Rust programming", &meta);
             __varg_memory_store(&mem, "User asked about Varg compiler", &meta);
@@ -290,7 +292,7 @@ mod tests {
 
         // Reopen and verify persistence
         {
-            let mem = __varg_memory_open(&mem_name);
+            let mem = __varg_memory_open(&mem_name).unwrap();
 
             // Episodic memory should persist
             assert_eq!(__varg_memory_episode_count(&mem), 2);

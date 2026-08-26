@@ -68,21 +68,23 @@ impl std::fmt::Debug for VectorStore {
 pub type VectorStoreHandle = Arc<Mutex<VectorStore>>;
 
 /// Initialize SQLite schema for vector persistence
-fn init_vector_schema(conn: &Connection) {
+fn init_vector_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS vector_entries (
             id TEXT PRIMARY KEY,
             embedding TEXT NOT NULL,
             metadata TEXT NOT NULL
         );"
-    ).expect("Varg runtime error: vector_store_open() failed — could not initialize the vector database schema (check disk space and file permissions)");
+    )
+    .map_err(|e| format!("vector_store_open: could not create the schema: {}", e))
 }
 
 /// Load existing vectors from SQLite into memory
-fn load_vectors_from_db(conn: &Connection) -> Vec<VectorEntry> {
+fn load_vectors_from_db(conn: &Connection) -> Result<Vec<VectorEntry>, String> {
     let mut entries = Vec::new();
-    let mut stmt = conn.prepare("SELECT id, embedding, metadata FROM vector_entries")
-        .expect("Varg runtime error: vector_store_open() failed — could not read existing vectors from database (the database file may be corrupted)");
+    let mut stmt = conn
+        .prepare("SELECT id, embedding, metadata FROM vector_entries")
+        .map_err(|e| format!("vector_store_open: could not read the stored vectors: {}", e))?;
     let rows = stmt.query_map([], |row| {
         let id: String = row.get(0).unwrap_or_default();
         let emb_json: String = row.get(1).unwrap_or_default();
@@ -90,41 +92,47 @@ fn load_vectors_from_db(conn: &Connection) -> Vec<VectorEntry> {
         let embedding: Vec<f32> = serde_json::from_str(&emb_json).unwrap_or_default();
         let metadata: HashMap<String, String> = serde_json::from_str(&meta_json).unwrap_or_default();
         Ok(VectorEntry { id, embedding, metadata })
-    }).expect("Varg runtime error: vector_store_open() failed — could not iterate stored vector entries (the database may be corrupted)");
+    })
+    .map_err(|e| format!("vector_store_open: could not read the stored vectors: {}", e))?;
 
     for row in rows {
-        entries.push(row.expect("Varg runtime error: vector_store_open() failed — could not decode a stored vector entry (the database may contain corrupted data)"));
+        entries.push(
+            row.map_err(|e| format!("vector_store_open: a stored vector could not be read: {}", e))?,
+        );
     }
-    entries
+    Ok(entries)
 }
 
 /// Open or create a named vector store
 /// If name is ":memory:", uses pure in-memory mode.
 /// Otherwise, persists to {name}.vector.db
-pub fn __varg_vector_store_open(name: &str) -> VectorStoreHandle {
+pub fn __varg_vector_store_open(name: &str) -> Result<VectorStoreHandle, String> {
     if name == ":memory:" {
-        return Arc::new(Mutex::new(VectorStore {
+        return Ok(Arc::new(Mutex::new(VectorStore {
             name: name.to_string(),
             entries: Vec::new(),
             db: None,
             #[cfg(feature = "ann")]
             ann: None,
-        }));
+        })));
     }
 
+    // Opening a store used to panic when the file could not be opened or the database held
+    // something unreadable — an unreachable path or a corrupt file took the whole program
+    // down instead of being reported to the agent that asked for the store.
     let db_path = format!("{}.vector.db", name);
     let conn = Connection::open(&db_path)
-        .unwrap_or_else(|e| panic!("Varg runtime error: vector_store_open() failed — could not open vector database file '{}': {} (check the path and file permissions)", db_path, e));
-    init_vector_schema(&conn);
-    let entries = load_vectors_from_db(&conn);
+        .map_err(|e| format!("vector_store_open: could not open '{}': {}", db_path, e))?;
+    init_vector_schema(&conn)?;
+    let entries = load_vectors_from_db(&conn)?;
 
-    Arc::new(Mutex::new(VectorStore {
+    Ok(Arc::new(Mutex::new(VectorStore {
         name: name.to_string(),
         entries,
         db: Some(conn),
         #[cfg(feature = "ann")]
         ann: None,
-    }))
+    })))
 }
 
 /// Accepts an embedding as either `f32` (what `embed()` returns) or `f64` (what a Varg float array
@@ -576,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_vector_store_open_memory() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.name, ":memory:");
         assert!(s.entries.is_empty());
@@ -585,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_vector_store_upsert_and_count() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let meta = HashMap::from([("source".to_string(), "test".to_string())]);
         __varg_vector_store_upsert(&store, "doc1", &[1.0, 0.0, 0.0], &meta);
         __varg_vector_store_upsert(&store, "doc2", &[0.0, 1.0, 0.0], &meta);
@@ -594,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_vector_store_upsert_overwrites() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let meta1 = HashMap::from([("v".to_string(), "1".to_string())]);
         let meta2 = HashMap::from([("v".to_string(), "2".to_string())]);
         __varg_vector_store_upsert(&store, "doc1", &[1.0, 0.0], &meta1);
@@ -606,7 +614,7 @@ mod tests {
 
     #[test]
     fn test_vector_store_search() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let empty = HashMap::new();
         __varg_vector_store_upsert(&store, "a", &[1.0, 0.0, 0.0], &empty);
         __varg_vector_store_upsert(&store, "b", &[0.9, 0.1, 0.0], &empty);
@@ -620,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_vector_store_delete() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let empty = HashMap::new();
         __varg_vector_store_upsert(&store, "doc1", &[1.0], &empty);
         __varg_vector_store_upsert(&store, "doc2", &[2.0], &empty);
@@ -677,7 +685,7 @@ mod tests {
 
         // Create store and add data
         {
-            let store = __varg_vector_store_open(&store_name);
+            let store = __varg_vector_store_open(&store_name).unwrap();
             let meta = HashMap::from([("tag".to_string(), "test".to_string())]);
             __varg_vector_store_upsert(&store, "v1", &[1.0, 0.0, 0.0], &meta);
             __varg_vector_store_upsert(&store, "v2", &[0.0, 1.0, 0.0], &meta);
@@ -686,7 +694,7 @@ mod tests {
 
         // Reopen and verify data persisted
         {
-            let store = __varg_vector_store_open(&store_name);
+            let store = __varg_vector_store_open(&store_name).unwrap();
             assert_eq!(__varg_vector_store_count(&store), 2);
             let results = __varg_vector_store_search(&store, &[1.0, 0.0, 0.0], 1);
             assert_eq!(results[0].get("_id").unwrap(), "v1");
@@ -704,16 +712,16 @@ mod tests {
         std::fs::remove_file(&db_path).ok();
 
         {
-            let store = __varg_vector_store_open(&store_name);
+            let store = __varg_vector_store_open(&store_name).unwrap();
             let empty = HashMap::new();
             __varg_vector_store_upsert(&store, "a", &[1.0], &empty);
             __varg_vector_store_upsert(&store, "b", &[2.0], &empty);
             __varg_vector_store_delete(&store, "a");
         }
 
-        // Reopen — should only have "b"
+        // Reopen â€” should only have "b"
         {
-            let store = __varg_vector_store_open(&store_name);
+            let store = __varg_vector_store_open(&store_name).unwrap();
             assert_eq!(__varg_vector_store_count(&store), 1);
             let s = store.lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(s.entries[0].id, "b");
@@ -722,11 +730,11 @@ mod tests {
         std::fs::remove_file(&db_path).ok();
     }
 
-    // ── vector_store_search top-k tests ──────────────────────────────────
+    // â”€â”€ vector_store_search top-k tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_vector_store_search_returns_top_k() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         // doc_a is most similar to query [1, 0, 0]
         let meta_a = HashMap::from([("label".to_string(), "alpha".to_string())]);
         let meta_b = HashMap::from([("label".to_string(), "beta".to_string())]);
@@ -746,14 +754,14 @@ mod tests {
 
     #[test]
     fn test_vector_store_search_empty_store() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let results = __varg_vector_store_search(&store, &[1.0, 0.0, 0.0], 5);
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_vector_search_text_returns_json_strings() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let meta = HashMap::from([("doc".to_string(), "test".to_string())]);
         // Use embed to get the actual embedding of the text, then store it
         let emb = __varg_embed("hello world");
@@ -766,14 +774,14 @@ mod tests {
         assert_eq!(v["_id"].as_str().unwrap(), "hello_doc");
     }
 
-    // ── LSH Index tests ───────────────────────────────────────────────────
+    // â”€â”€ LSH Index tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    /// The built index must be *kept* on the handle — the previous LSH implementation discarded it
+    /// The built index must be *kept* on the handle â€” the previous LSH implementation discarded it
     /// and rebuilt per query, which made "fast" search slower than a plain scan.
     #[cfg(feature = "ann")]
     #[test]
     fn test_ann_index_is_persisted_on_the_handle() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         for i in 0..20 {
             let v: Vec<f32> = (0..16).map(|j| ((i * 16 + j) as f32).sin()).collect();
             __varg_vector_store_upsert(&store, &format!("d{i}"), &v, &std::collections::HashMap::new());
@@ -792,7 +800,7 @@ mod tests {
     #[cfg(feature = "ann")]
     #[test]
     fn test_ann_search_matches_exact_top1() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         // 50 well-separated one-hot-ish vectors.
         for i in 0..50 {
             let mut v = vec![0.0f32; 50];
@@ -814,14 +822,14 @@ mod tests {
     #[cfg(feature = "ann")]
     #[test]
     fn test_ann_stale_index_falls_back_to_exact() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         for i in 0..10 {
             let mut v = vec![0.0f32; 10];
             v[i] = 1.0;
             __varg_vector_store_upsert(&store, &format!("d{i}"), &v, &std::collections::HashMap::new());
         }
         __varg_vector_build_index(&store);
-        // Add a new best match AFTER indexing — the index doesn't know about it.
+        // Add a new best match AFTER indexing â€” the index doesn't know about it.
         let mut newv = vec![0.0f32; 10];
         newv[0] = 1.0;
         newv[1] = 0.05;
@@ -838,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_ann_build_index_empty_store() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let info = __varg_vector_build_index(&store);
         let v: serde_json::Value = serde_json::from_str(&info).unwrap();
         assert_eq!(v["indexed"], 0);
@@ -846,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_ann_build_index_with_entries() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let v1: Vec<f32> = (0..128).map(|i| i as f32 / 128.0).collect();
         let v2: Vec<f32> = (0..128).map(|i| (127 - i) as f32 / 128.0).collect();
         __varg_vector_store_upsert(&store, "a", &v1, &std::collections::HashMap::new());
@@ -858,7 +866,7 @@ mod tests {
 
     #[test]
     fn test_ann_search_fast_returns_results() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         for i in 0..10 {
             let v: Vec<f32> = (0..64).map(|j| (i * 64 + j) as f32 / 1000.0).collect();
             __varg_vector_store_upsert(&store, &format!("doc_{i}"), &v, &std::collections::HashMap::new());
@@ -877,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_ann_search_most_similar_first() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let target: Vec<f32> = (0..32).map(|i| i as f32).collect();
         let similar: Vec<f32> = target.iter().map(|v| v + 0.01).collect();
         let dissimilar: Vec<f32> = target.iter().map(|v| -v).collect();

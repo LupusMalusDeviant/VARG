@@ -18,7 +18,8 @@ pub fn __varg_query(query: &str) -> String {
         let key = parts[1];
         let val = parts[2..].join(" ");
         db.insert(key.to_string(), val);
-        let _ = std::fs::write(db_path, serde_json::to_string(&db).unwrap());
+        // Cannot fail: `db` is a map of String to String, which always serialises.
+    let _ = std::fs::write(db_path, serde_json::to_string(&db).unwrap());
         return "{\"status\": \"ok\"}".to_string();
     } else if cmd == "GET" && parts.len() == 2 {
         let key = parts[1];

@@ -1,0 +1,4 @@
+// @probe reject: handle the Result
+// Every decrypt failure used to come back as the *plaintext*: a wrong password produced the
+// string "[VargOS] decrypt error: ...", which the caller then stored or sent on as the secret.
+agent Main { public void Run() { unsafe { print decrypt("bad", "key"); } } }

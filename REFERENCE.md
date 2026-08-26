@@ -1412,7 +1412,7 @@ var est = estimate_tokens("hello world");    // int — heuristic: chars/4
 Writes to disk, so it needs `FileAccess` in scope like any other file operation.
 
 ```csharp
-var cp = checkpoint_open("state.db", "agent_v1"); // CheckpointHandle
+var cp = checkpoint_open("state.db", "agent_v1")?; // Result<CheckpointHandle, string>
 checkpoint_save(cp, json_stringify(state));        // bool
 var json = checkpoint_load(cp);                    // string (empty if none)
 var exists = checkpoint_exists(cp);               // bool
@@ -1727,7 +1727,7 @@ prompt Summarize(string text, int max_words) {
 var t = tensor_zeros([3, 4]);              // 3×4 all-zeros
 var o = tensor_ones([2, 2]);              // 2×2 all-ones
 var e = tensor_eye(4);                    // 4×4 identity
-var f = tensor_from_list([1.0, 2.0, 3.0, 4.0], [2, 2]); // from flat list
+var f = tensor_from_list([1.0, 2.0, 3.0, 4.0], [2, 2])?; // values must fill the shape
 
 // Inspect
 var sh = tensor_shape(t);                 // int[] — e.g. [3, 4]
@@ -1757,10 +1757,10 @@ var mn   = tensor_min(t);               // float
 
 ```csharp
 // I/O (requires FileAccess in scope — the token is not an argument)
-var df = df_read_csv("data.csv");
-var pq = df_read_parquet("data.parquet");
-df_write_csv(df, "out.csv");
-df_write_parquet(df, "out.parquet");
+var df = df_read_csv("data.csv")?;
+var pq = df_read_parquet("data.parquet")?;
+df_write_csv(df, "out.csv")?;
+df_write_parquet(df, "out.parquet")?;
 
 // Transformation
 var slim   = df_select(df, ["col1", "col2"]);   // column projection

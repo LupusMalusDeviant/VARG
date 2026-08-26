@@ -45,7 +45,7 @@ print(sys.argv[1].upper() + "!")
             print $"[create] neues Tool zur Laufzeit geschrieben -> {path}";
 
             // ── LAYER 1: Skill-Dokument (Wissen) im Agent-Memory ablegen ──
-            var mem = memory_open(":memory:");
+            var mem = memory_open(":memory:")?;
             memory_set(mem, "skill:shout", "shout(text): schreibt GROSS und haengt '!' an. Nutze es fuer Betonung.");
 
             // ── LAYER 2: den neuen Skill NUTZEN (delegierte Ausfuehrung) ──
@@ -57,7 +57,7 @@ print(sys.argv[1].upper() + "!")
             print $"[recall] {recalled}";
 
             // ── Feedback-Loop: Erfolg des Skills festhalten ──
-            var improver = self_improver_new("skill_agent", 3);
+            var improver = self_improver_new("skill_agent", 3)?;
             self_improver_record_success(improver, "shout", result.trim());
             print $"[learn]  success_rate={self_improver_success_rate(improver)}%";
 

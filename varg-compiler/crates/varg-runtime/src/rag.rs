@@ -54,13 +54,15 @@ pub fn __varg_rag_hybrid_search(
     query_text: &str,
     query_embedding: &[f32],
     limit: i64,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     use std::collections::HashMap;
     const K: f64 = 60.0;
     let fetch = (limit * 2).max(10);
 
     // BM25 ranked list
-    let bm25_results = crate::fts::__varg_fts_search(fts_handle, query_text, fetch);
+    // The text half can fail (a locked or corrupt index), so the hybrid search says so
+    // rather than panicking halfway through.
+    let bm25_results = crate::fts::__varg_fts_search(fts_handle, query_text, fetch)?;
 
     // Vector ranked list — cosine similarity against the store's in-memory embeddings.
     // (The previous code queried a non-existent `store.conn` field; VectorStore keeps the
@@ -89,7 +91,7 @@ pub fn __varg_rag_hybrid_search(
 
     let mut ranked: Vec<(String, f64)> = rrf_scores.into_iter().collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.into_iter().take(limit as usize).map(|(id, _)| id).collect()
+    Ok(ranked.into_iter().take(limit as usize).map(|(id, _)| id).collect())
 }
 
 #[cfg(test)]
@@ -99,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_rag_index_and_retrieve() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
 
         // Index two documents
         __varg_rag_index(&store, "doc1", "the quick brown fox", "article about foxes");
@@ -117,14 +119,14 @@ mod tests {
 
     #[test]
     fn test_rag_retrieve_empty_store() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let context = __varg_rag_retrieve(&store, "anything", 5);
         assert!(context.is_empty(), "empty store should yield empty context");
     }
 
     #[test]
     fn test_rag_build_prompt_format() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         __varg_rag_index(&store, "doc1", "sample document text", "meta");
 
         let prompt = __varg_rag_build_prompt(&store, "sample query", 1);
@@ -144,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_rag_build_prompt_empty_store() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         let prompt = __varg_rag_build_prompt(&store, "my question", 3);
         // Even with empty store, format must be correct
         assert!(prompt.starts_with("Context:\n"), "prompt should start with Context header");
@@ -153,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_rag_index_stores_metadata() {
-        let store = __varg_vector_store_open(":memory:");
+        let store = __varg_vector_store_open(":memory:").unwrap();
         __varg_rag_index(&store, "id1", "test content here", "my custom metadata");
 
         // Retrieve and verify metadata is accessible

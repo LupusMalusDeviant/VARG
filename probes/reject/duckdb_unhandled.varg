@@ -1,0 +1,4 @@
+// @probe reject: handle the Result
+// A typo in the SQL used to take the whole program down -- the most ordinary mistake anyone
+// makes with a database was unrecoverable.
+agent Main { public void Run() { unsafe { var da = DbAccess {}; var db = duckdb_open(":memory:", da)?; print duckdb_query(db, "SELEKT 1", [], da); } } }

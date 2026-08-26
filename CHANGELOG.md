@@ -46,6 +46,36 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Changed — the runtime reports failures instead of panicking
+
+An inventory of every place the runtime could take the process down found 56 reachable ones
+(the rest were test code, or mutex-poison recovery, which is the opposite of a panic). 48 are
+gone; the 8 that remain either cannot fire or are the point, and now say so in the code.
+
+The ones that mattered were all reachable with ordinary input:
+
+- **A typo in SQL took the whole program down.** `duckdb_execute`, `duckdb_query` and
+  `duckdb_open` panicked out of the driver; `db_open` did the same for SQLite. The most ordinary
+  mistake anyone makes with a database was unrecoverable.
+- **Tensor shape mismatches panicked from inside ndarray**, reporting "IncompatibleShape" and
+  naming neither tensor. `tensor_add`, `tensor_sub`, `tensor_slice` and `tensor_matmul` did not
+  even appear in the inventory, because ndarray panics through its operators rather than through
+  an `expect` — the count was an undercount.
+- **`df_filter("age >")` and `df_agg(df, cols, "avarage")` panicked on the caller's own string.**
+  So did reading a CSV that is not there, and every column name with a typo in it.
+- **`decrypt` returned its error as the plaintext.** A wrong password produced the string
+  "[VargOS] decrypt error: wrong password or corrupted data", which the caller then stored,
+  printed or sent on as though it were the secret — the same shape as the retired `file_read`.
+  Three tests asserted exactly that behaviour.
+- Full-text search (`fts_*`), the vector store, agent memory, the self-improver and
+  `checkpoint_open` panicked on an unreachable path or a locked index. `checkpoint_open` also
+  unwrapped its own in-memory fallback, turning a recoverable situation into a crash.
+
+`or` gained a check while this was going on: the fallback was never compared against the value it
+stands in for, so `proc_spawn(cmd) or "failed"` reached rustc as "expected `Arc<Mutex<ProcState>>`,
+found `String`". It has its own error now, which also surfaces when the mistake sits in a caller.
+
+
 ### Fixed — five defects found by running the documentation
 
 Type-checking the documentation was not enough. Running the newly documented builtins, rather

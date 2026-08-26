@@ -2,7 +2,7 @@
 // Demonstrates embed, vector_store_open, upsert, search, delete, count
 
 fn main() {
-    var store = vector_store_open("documents")
+    var store = vector_store_open("documents")?;
 
     // Create embeddings and store them
     var e1 = embed("Alice works on the Varg compiler project")

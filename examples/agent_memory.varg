@@ -2,7 +2,7 @@
 // 3-layer memory: working (key-value), episodic (vector), semantic (graph)
 
 fn main() {
-    var mem = memory_open("assistant")
+    var mem = memory_open("assistant")?;
 
     // Layer 1: Working Memory (session context)
     memory_set(mem, "current_task", "research Varg compiler")

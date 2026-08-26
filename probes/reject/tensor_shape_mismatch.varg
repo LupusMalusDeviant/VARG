@@ -1,0 +1,4 @@
+// @probe reject: handle the Result
+// Mismatched shapes used to panic from inside ndarray's own operator, reporting
+// "IncompatibleShape" and naming neither tensor.
+agent Main { public void Run() { var a = tensor_from_list([1.0], [1])?; print tensor_add(a, a); } }

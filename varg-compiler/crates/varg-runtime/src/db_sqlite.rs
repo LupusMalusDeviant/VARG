@@ -13,16 +13,20 @@ pub struct VargDbConnection {
 }
 
 /// Open a SQLite database connection
-pub fn __varg_db_open(path: &str) -> VargDbConnection {
+pub fn __varg_db_open(path: &str) -> Result<VargDbConnection, String> {
+    // An unreachable path or a directory that is not writable used to take the program down
+    // rather than telling the caller which file could not be opened.
     let conn = if path == ":memory:" {
-        Connection::open_in_memory().expect("Varg runtime error: db_open() failed — could not create an in-memory SQLite database (out of memory?)")
+        Connection::open_in_memory()
+            .map_err(|e| format!("db_open: could not create an in-memory database: {}", e))?
     } else {
-        Connection::open(path).unwrap_or_else(|e| panic!("Varg runtime error: db_open() failed — could not open database file '{}': {} (check the path exists and you have read/write permissions)", path, e))
+        Connection::open(path)
+            .map_err(|e| format!("db_open: could not open `{}`: {}", path, e))?
     };
-    VargDbConnection {
+    Ok(VargDbConnection {
         path: path.to_string(),
         conn,
-    }
+    })
 }
 
 /// Execute a SQL statement (INSERT, UPDATE, DELETE, CREATE, etc.)
@@ -75,27 +79,27 @@ mod tests {
 
     #[test]
     fn test_db_open_memory() {
-        let conn = __varg_db_open(":memory:");
+        let conn = __varg_db_open(":memory:").unwrap();
         assert_eq!(conn.path, ":memory:");
     }
 
     #[test]
     fn test_db_execute_empty_sql() {
-        let conn = __varg_db_open(":memory:");
+        let conn = __varg_db_open(":memory:").unwrap();
         let result = __varg_db_execute(&conn, "", &[]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_db_query_empty_sql() {
-        let conn = __varg_db_open(":memory:");
+        let conn = __varg_db_open(":memory:").unwrap();
         let result = __varg_db_query(&conn, "", &[]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_db_create_and_insert() {
-        let conn = __varg_db_open(":memory:");
+        let conn = __varg_db_open(":memory:").unwrap();
         let r1 = __varg_db_execute(&conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", &[]);
         assert!(r1.is_ok());
 
@@ -108,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_db_query_returns_rows() {
-        let conn = __varg_db_open(":memory:");
+        let conn = __varg_db_open(":memory:").unwrap();
         __varg_db_execute(&conn, "CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT)", &[]).unwrap();
         __varg_db_execute(&conn, "INSERT INTO items (label) VALUES (?1)", &["hello".to_string()]).unwrap();
         __varg_db_execute(&conn, "INSERT INTO items (label) VALUES (?1)", &["world".to_string()]).unwrap();
@@ -121,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_db_query_with_params() {
-        let conn = __varg_db_open(":memory:");
+        let conn = __varg_db_open(":memory:").unwrap();
         __varg_db_execute(&conn, "CREATE TABLE kv (key TEXT, value TEXT)", &[]).unwrap();
         __varg_db_execute(&conn, "INSERT INTO kv VALUES (?1, ?2)", &["a".to_string(), "1".to_string()]).unwrap();
         __varg_db_execute(&conn, "INSERT INTO kv VALUES (?1, ?2)", &["b".to_string(), "2".to_string()]).unwrap();

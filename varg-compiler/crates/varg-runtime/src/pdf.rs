@@ -105,6 +105,7 @@ fn render_pdf(handle: &PdfHandle) -> Vec<u8> {
         "Layer 1",
     );
 
+    // Cannot fail: the built-in fonts are compiled into printpdf, not loaded from disk.
     let font = doc.add_builtin_font(BuiltinFont::Helvetica).unwrap();
     let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold).unwrap();
 

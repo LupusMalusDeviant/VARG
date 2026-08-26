@@ -37,15 +37,20 @@ pub struct SelfImprover {
 pub type SelfImproverHandle = Arc<Mutex<SelfImprover>>;
 
 /// Create a new self-improving agent wrapper
-pub fn __varg_self_improver_new(name: &str, max_retries: i64) -> SelfImproverHandle {
-    Arc::new(Mutex::new(SelfImprover {
+pub fn __varg_self_improver_new(
+    name: &str,
+    max_retries: i64,
+) -> Result<SelfImproverHandle, String> {
+    // It keeps its lessons in a memory store, so it inherits that store's fallibility rather
+    // than panicking on a path it cannot open.
+    Ok(Arc::new(Mutex::new(SelfImprover {
         name: name.to_string(),
-        memory: __varg_memory_open(&format!("{}_learnings", name)),
+        memory: __varg_memory_open(&format!("{}_learnings", name))?,
         iterations: 0,
         successes: 0,
         failures: 0,
         max_retries: max_retries as u64,
-    }))
+    })))
 }
 
 /// Record a successful attempt
@@ -122,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_self_improver_new() {
-        let si = __varg_self_improver_new("test_agent", 3);
+        let si = __varg_self_improver_new("test_agent", 3).unwrap();
         let s = si.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.name, "test_agent");
         assert_eq!(s.iterations, 0);
@@ -131,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_record_success_and_failure() {
-        let si = __varg_self_improver_new("test", 3);
+        let si = __varg_self_improver_new("test", 3).unwrap();
         __varg_self_improver_record_success(&si, "sort array", "used quicksort");
         __varg_self_improver_record_failure(&si, "parse JSON", "invalid syntax");
         __varg_self_improver_record_success(&si, "fetch API", "used reqwest");
@@ -142,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_recall_learnings() {
-        let si = __varg_self_improver_new("test", 3);
+        let si = __varg_self_improver_new("test", 3).unwrap();
         __varg_self_improver_record_success(&si, "sort algorithm", "used merge sort for stability");
         __varg_self_improver_record_success(&si, "search algorithm", "binary search on sorted data");
         __varg_self_improver_record_failure(&si, "parse CSV", "missed escape handling");
@@ -155,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_stats() {
-        let si = __varg_self_improver_new("agent", 5);
+        let si = __varg_self_improver_new("agent", 5).unwrap();
         __varg_self_improver_record_success(&si, "t1", "ok");
         __varg_self_improver_record_success(&si, "t2", "ok");
         __varg_self_improver_record_failure(&si, "t3", "err");
@@ -170,16 +175,16 @@ mod tests {
 
     #[test]
     fn test_success_rate_zero_iterations() {
-        let si = __varg_self_improver_new("test", 3);
+        let si = __varg_self_improver_new("test", 3).unwrap();
         assert_eq!(__varg_self_improver_success_rate(&si), 0);
     }
 
-    // ── Adversarial / edge-case tests ────────────────────────────────────────
+    // â”€â”€ Adversarial / edge-case tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_success_rate_all_successes_is_100() {
         let si = __varg_self_improver_new(
-            &format!("si_all_ok_{}", std::process::id()), 5);
+            &format!("si_all_ok_{}", std::process::id()), 5).unwrap();
         __varg_self_improver_record_success(&si, "t1", "s1");
         __varg_self_improver_record_success(&si, "t2", "s2");
         __varg_self_improver_record_success(&si, "t3", "s3");
@@ -189,7 +194,7 @@ mod tests {
     #[test]
     fn test_success_rate_all_failures_is_0() {
         let si = __varg_self_improver_new(
-            &format!("si_all_fail_{}", std::process::id()), 5);
+            &format!("si_all_fail_{}", std::process::id()), 5).unwrap();
         __varg_self_improver_record_failure(&si, "t1", "err");
         __varg_self_improver_record_failure(&si, "t2", "err");
         assert_eq!(__varg_self_improver_success_rate(&si), 0);
@@ -197,9 +202,9 @@ mod tests {
 
     #[test]
     fn test_success_rate_rounds_down() {
-        // 1 success / 3 iterations = 33.33% → cast to i64 → 33
+        // 1 success / 3 iterations = 33.33% â†’ cast to i64 â†’ 33
         let si = __varg_self_improver_new(
-            &format!("si_rounding_{}", std::process::id()), 5);
+            &format!("si_rounding_{}", std::process::id()), 5).unwrap();
         __varg_self_improver_record_success(&si, "t", "ok");
         __varg_self_improver_record_failure(&si, "t", "err");
         __varg_self_improver_record_failure(&si, "t", "err");
@@ -210,7 +215,7 @@ mod tests {
     #[test]
     fn test_iterations_equals_successes_plus_failures() {
         let si = __varg_self_improver_new(
-            &format!("si_counter_{}", std::process::id()), 5);
+            &format!("si_counter_{}", std::process::id()), 5).unwrap();
         __varg_self_improver_record_success(&si, "t1", "ok");
         __varg_self_improver_record_failure(&si, "t2", "err");
         __varg_self_improver_record_success(&si, "t3", "ok");
@@ -222,7 +227,7 @@ mod tests {
     #[test]
     fn test_stats_contains_all_expected_keys() {
         let si = __varg_self_improver_new(
-            &format!("si_stats_{}", std::process::id()), 5);
+            &format!("si_stats_{}", std::process::id()), 5).unwrap();
         let stats = __varg_self_improver_stats(&si);
         for key in &["name", "iterations", "successes", "failures", "success_rate", "max_retries"] {
             assert!(stats.contains_key(*key), "stats must contain key '{key}'");
@@ -232,9 +237,9 @@ mod tests {
     #[test]
     fn test_recall_before_any_records_returns_empty_or_zero_results() {
         let si = __varg_self_improver_new(
-            &format!("si_empty_{}", std::process::id()), 5);
+            &format!("si_empty_{}", std::process::id()), 5).unwrap();
         let results = __varg_self_improver_recall(&si, "any query", 5);
-        // No episodes stored → recall must return 0 results
+        // No episodes stored â†’ recall must return 0 results
         assert!(results.is_empty(), "recall from empty memory must return empty vec");
     }
 
@@ -242,7 +247,7 @@ mod tests {
     fn test_negative_max_retries_stored_as_large_u64() {
         // -1i64 as u64 = u64::MAX; the struct accepts it without panic
         let si = __varg_self_improver_new(
-            &format!("si_neg_{}", std::process::id()), -1);
+            &format!("si_neg_{}", std::process::id()), -1).unwrap();
         let s = si.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.max_retries, u64::MAX, "-1 max_retries must wrap to u64::MAX");
         // stats must still work (no division by max_retries)

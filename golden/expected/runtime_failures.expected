@@ -1,0 +1,13 @@
+OK   tensor_add_shapes
+OK   tensor_sub_shapes
+OK   tensor_reshape_count
+OK   tensor_slice_axis
+OK   tensor_matmul_rank
+OK   tensor_from_list_len
+OK   tensor_add_ok
+OK   tensor_reshape_ok
+OK   duckdb_create
+OK   duckdb_bad_sql
+OK   duckdb_bad_query
+OK   duckdb_query_ok
+OK   vector_open_ok

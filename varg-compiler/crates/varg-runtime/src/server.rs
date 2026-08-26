@@ -155,6 +155,8 @@ fn varg_response_to_axum(resp: VargHttpResponse) -> impl IntoResponse {
     builder.body(Body::from(resp.body)).unwrap_or_else(|_| {
         axum::http::Response::builder()
             .status(500)
+            // Cannot fail: a fixed status and a static body. This is already the fallback for a
+            // response that could not be built, so there is nowhere further to fall back to.
             .body(Body::from("Internal Server Error"))
             .unwrap()
     })

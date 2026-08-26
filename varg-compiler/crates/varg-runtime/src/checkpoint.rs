@@ -88,13 +88,20 @@ impl CheckpointStore {
 
 pub type CheckpointHandle = Arc<Mutex<CheckpointStore>>;
 
-pub fn __varg_checkpoint_open(path: &str, agent_id: &str) -> CheckpointHandle {
-    let store = CheckpointStore::open(path, agent_id)
-        .unwrap_or_else(|e| {
+pub fn __varg_checkpoint_open(path: &str, agent_id: &str) -> Result<CheckpointHandle, String> {
+    let store = match CheckpointStore::open(path, agent_id) {
+        Ok(s) => s,
+        Err(e) => {
             eprintln!("[Varg] checkpoint open failed ({e}), using in-memory fallback");
-            CheckpointStore::open(":memory:", agent_id).unwrap()
-        });
-    Arc::new(Mutex::new(store))
+            // The fallback can fail too, and unwrapping it turned a recoverable situation into
+            // a crash. SQLite refusing an in-memory database means the process is out of memory,
+            // so there is nothing left to fall back to — but say so rather than panic.
+            CheckpointStore::open(":memory:", agent_id).map_err(|e2| {
+                format!("checkpoint_open: neither `{}` nor an in-memory store could be opened: {}", path, e2)
+            })?
+        }
+    };
+    Ok(Arc::new(Mutex::new(store)))
 }
 
 pub fn __varg_checkpoint_save(h: &CheckpointHandle, state_json: &str) -> bool {
@@ -122,7 +129,7 @@ mod tests {
     use super::*;
 
     fn mem(id: &str) -> CheckpointHandle {
-        __varg_checkpoint_open(":memory:", id)
+        __varg_checkpoint_open(":memory:", id).unwrap()
     }
 
     #[test]
@@ -250,7 +257,7 @@ mod tests {
     #[test]
     fn test_checkpoint_fallback_to_memory_on_bad_path() {
         // Invalid path should fall back to in-memory (not panic)
-        let h = __varg_checkpoint_open("/no/such/directory/does/not/exist/ck.db", "fallback_test");
+        let h = __varg_checkpoint_open("/no/such/directory/does/not/exist/ck.db", "fallback_test").unwrap();
         // Must be usable — fallback to :memory: succeeded
         assert!(__varg_checkpoint_save(&h, "{\"fallback\":true}"), "in-memory fallback must be functional");
         assert_eq!(__varg_checkpoint_load(&h), "{\"fallback\":true}");

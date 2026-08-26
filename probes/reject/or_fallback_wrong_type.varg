@@ -1,4 +1,4 @@
-// @probe reject: a fallback usable as
+// @probe reject: the `or` fallback must be usable as
 // The fallback was never compared against the value it stands in for, so this reached rustc as
 // "expected `Arc<Mutex<ProcState>>`, found `String`" — a runtime type the author never wrote.
 agent Main { public void Run() { unsafe { var p = proc_spawn("echo x") or "failed"; print "x"; } } }

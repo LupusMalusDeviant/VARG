@@ -1809,7 +1809,8 @@ var neighbors  = graph_neighbors(g, p1);
 ## 31. Agent Memory (3-Layer)
 
 ```csharp
-var mem = memory_open("bot_memory");
+// Fallible: it opens a vector store, which can fail on an unreachable path.
+var mem = memory_open("bot_memory")?;
 
 // Working memory (ephemeral KV)
 memory_set(mem, "current_task", "analysis");
@@ -1910,7 +1911,7 @@ var summary = fan_in(answers, (acc, x) => {
 ## 35. Self-Improving Agents
 
 ```csharp
-var si = self_improver_new("coder_agent", 5);
+var si = self_improver_new("coder_agent", 5)?;
 
 self_improver_record_success(si, "Fix null pointer", "Added null check before access");
 self_improver_record_failure(si, "Parse JSON", "Forgot to handle empty string");
@@ -1992,7 +1993,7 @@ public string QueryAi(string prompt, LlmAccess llm) {
 ## 39. Agent Checkpoint & Resume
 
 ```csharp
-var cp = checkpoint_open("agent.db", "worker_v1");
+var cp = checkpoint_open("agent.db", "worker_v1")?;
 
 if checkpoint_exists(cp) {
     var saved = checkpoint_load(cp);
@@ -2197,7 +2198,8 @@ var all       = registry_list(reg);
 var zeros = tensor_zeros([3, 4]);
 var ones  = tensor_ones([2, 2]);
 var eye   = tensor_eye(4);
-var t     = tensor_from_list([1.0, 2.0, 3.0, 4.0], [2, 2]);
+// Fallible: the values have to fill the shape exactly.
+var t     = tensor_from_list([1.0, 2.0, 3.0, 4.0], [2, 2])?;
 
 var shape = tensor_shape(t);          // [2, 2]
 var flat  = tensor_reshape(t, [4]);
@@ -2221,23 +2223,23 @@ var data = tensor_to_list(t);         // float[]
 Requires `--features dataframe` when building varg-runtime.
 
 ```csharp
-var df = df_read_csv("data.csv");
-var pq = df_read_parquet("data.parquet");
-df_write_csv(df, "out.csv");
-df_write_parquet(df, "out.parquet");
+var df = df_read_csv("data.csv")?;
+var pq = df_read_parquet("data.parquet")?;
+df_write_csv(df, "out.csv")?;
+df_write_parquet(df, "out.parquet")?;
 
-var slim   = df_select(df, ["name", "age"]);
+var slim   = df_select(df, ["name", "age"])?;
 var adults = df_filter(df, "age > 18");         // DSL: "col op value"
 var sorted = df_sort(df, "score", true);         // ascending=true
 
-var grouped = df_groupby(df, ["city"]);
+var grouped = df_groupby(df, ["city"])?;
 var agg     = df_agg(df, ["city"], "mean");      // sum|mean|count|min|max
 
 var top     = df_head(df, 10);
 var shape   = df_shape(df);                      // (rows, cols)
 var cols    = df_columns(df);
 
-var extended = df_with_column(df, "rank", [1.0, 2.0, 3.0]);
+var extended = df_with_column(df, "rank", [1.0, 2.0, 3.0])?;
 ```
 
 ---
@@ -2249,10 +2251,11 @@ Requires `--features duckdb`.
 ```csharp
 unsafe {
     var da = DbAccess {};
-    var db = duckdb_open(":memory:", da);
-    duckdb_execute(db, "CREATE TABLE sales (product TEXT, amount DOUBLE)", [], da);
-    duckdb_execute(db, "INSERT INTO sales VALUES ('Widget', 120.5)", [], da);
-    var rows = duckdb_query(db, "SELECT product, SUM(amount) FROM sales GROUP BY product", [], da);
+    // Fallible throughout: a typo in the SQL used to take the program down.
+    var db = duckdb_open(":memory:", da)?;
+    duckdb_execute(db, "CREATE TABLE sales (product TEXT, amount DOUBLE)", [], da)?;
+    duckdb_execute(db, "INSERT INTO sales VALUES ('Widget', 120.5)", [], da)?;
+    var rows = duckdb_query(db, "SELECT product, SUM(amount) FROM sales GROUP BY product", [], da)?;
     // A row is a list of column values in select order, not a map by column name.
     for row in rows {
         print $"{row[0]}: {row[1]}";
@@ -2268,18 +2271,18 @@ unsafe {
 Requires `--features fts`.
 
 ```csharp
-var idx = fts_open(":memory:", files);
-fts_add(idx, "doc1", "the quick brown fox");
-fts_add(idx, "doc2", "rust systems programming");
-fts_commit(idx);
+var idx = fts_open(":memory:", files)?;
+fts_add(idx, "doc1", "the quick brown fox")?;
+fts_add(idx, "doc2", "rust systems programming")?;
+fts_commit(idx)?;
 
 var results = fts_search(idx, "fox", 10);   // ranked doc IDs
 for id in results {
     print id;
 }
 
-fts_delete(idx, "doc1");
-fts_close(idx);
+fts_delete(idx, "doc1")?;
+fts_close(idx)?;
 
 // Hybrid BM25 + vector search (RRF fusion)
 var hits = rag_hybrid_search(fts_idx, vector_store, embed_local(query), query, 5);
@@ -2290,11 +2293,11 @@ var hits = rag_hybrid_search(fts_idx, vector_store, embed_local(query), query, 5
 ## 50. RAG Pipeline
 
 ```csharp
-var store = vector_store_open("docs");
+var store = vector_store_open("docs")?;
 
 // Index
-rag_index(store, "doc1", "Varg is a compiled language for AI agents", {});
-rag_index(store, "doc2", "Rust provides memory safety without GC", {});
+rag_index(store, "doc1", "Varg is a compiled language for AI agents", {})?;
+rag_index(store, "doc2", "Rust provides memory safety without GC", {})?;
 
 // Retrieve
 var chunks = rag_retrieve(store, embed_local("AI agent language"), 3);

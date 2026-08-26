@@ -20,7 +20,7 @@ agent Main {
             var fs = FileAccess {};
 
             // ── Checkpoint / resume ─────────────────────────────────────────
-            var cp = checkpoint_open("agent_infra.db", "agent_v1");
+            var cp = checkpoint_open("agent_infra.db", "agent_v1")?;
             print check("cp_empty_at_start", yn(checkpoint_exists(cp)), "false");
             var saved = checkpoint_save(cp, "{\"step\": 3}");
             print check("cp_save", yn(saved), "true");
@@ -47,7 +47,7 @@ agent Main {
             print check("rl_reset_restores", yn(ratelimiter_try_acquire(rl)), "true");
 
             // ── Self-improvement ────────────────────────────────────────────
-            var si = self_improver_new("coder", 5);
+            var si = self_improver_new("coder", 5)?;
             self_improver_record_success(si, "Fix null pointer", "Added a guard");
             self_improver_record_failure(si, "Parse JSON", "Forgot the empty string");
             self_improver_record_success(si, "Fix null deref", "Guarded the pointer");
