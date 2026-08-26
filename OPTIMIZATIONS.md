@@ -977,7 +977,7 @@ hat keine Spans pro Ausdruck) — mit einem blanken `str::find`. Also traf ein F
 das Wort *checked* in einem Doc-Kommentar 36 Zeilen weiter oben, und der Caret zeigte auf Prosa.
 Die Suche überspringt jetzt Kommentare und String-Literale und verlangt Bezeichner-Grenzen.
 
-### Offen — und größer als es aussieht
+### Offen — und größer als es aussieht *(erledigt in Stufe 25)*
 
 **Lambda-Rümpfe werden gar nicht typgeprüft.** Gefunden, weil der neue Nullable-Guard in einem
 MCP-Handler nicht griff. Gemessen: undeklarierte Variablen, `5 > "x"`, `true + 1` — innerhalb
@@ -989,6 +989,77 @@ Binden untypisierter Parameter ohne Falschmeldungen ist eine eigene, sorgfältig
 ### Stand danach
 1243 Unit-Tests (default) / 1396 (`--features full`) · Golden **38/38** · Probes **58/58** ·
 18 Programme (examples + spikes + dashboard) bauen.
+
+---
+
+
+## Lambda-Rümpfe typprüfen (Stufe 25)
+
+Der offene Punkt aus Stufe 24. Die Erwartung war "Lambda-Rümpfe werden nicht besucht" — die
+Messung ergab etwas anderes und Wichtigeres.
+
+### Die Ursache war nicht, was sie zu sein schien
+
+Die Rümpfe **wurden** die ganze Zeit gelaufen (`Expression::Lambda` ruft `check_block`). Was
+fehlte, war eine Zeile weiter oben: Der Walk in Caller und Argumente eines Aufrufs war seinerzeit
+eingebaut worden, um ein **OCAP-Schlupfloch** zu schließen (`list.map((x) => fs_read(x))` erreichte
+`check_ocap` nie). Er meldete deshalb *nur* Capability-Verletzungen und verwarf alles andere —
+ausdrücklich, damit vorher gültige Programme gültig bleiben. Dieses `_ => {}` warf die
+Lambda-Fehler gleich mit weg.
+
+### Der Fund war größer als Lambdas
+
+Dieselbe Zeile verschluckte **jeden** Fehler in einem Builtin-Argument. Gemessen:
+
+```
+print BOOM;                 -> gefangen
+print to_upper(BOOM);       -> ging durch
+print to_upper(trim(BOOM)); -> ging durch
+```
+
+`to_upper(BOOM)` kam sauber durch den Typechecker und wurde zu `self.to_uppercase()` kompiliert —
+rustc meldete dann, `&mut A` habe keine solche Methode. Eine Meldung über generierten Code, die
+weder den undeklarierten Namen nennt noch irgendetwas, das im Quelltext steht.
+
+Auf der **Caller**-Seite dasselbe: `zs.map((m) => BOOM).len()` war blind, `zs.map((m) => BOOM)`
+nicht — der Fehler verschwand, sobald das Ergebnis Empfänger eines weiteren Aufrufs wurde.
+
+### Die Regel
+
+Eine Funktion, an einer Stelle formuliert (`error_is_not_an_inference_gap`), für Caller und
+Argumente gleichermaßen. Ein Fehler wird gemeldet, wenn er **keine Inferenzlücke** ist:
+
+- **alles aus einem Lambda-Rumpf** — ein Lambda-Argument ist kein Wert mit unsicherem Typ,
+  sondern ein Block eigenen Codes;
+- **jeder unauflösbare Name** — Namensauflösung ist keine Inferenz.
+
+Alles Übrige bleibt verworfen, damit vorher gültige Programme gültig bleiben. Eine Ausnahme war
+nötig: freie Builtins werden als Methodenaufruf auf einem **synthetischen `self`** geparst, das
+außerhalb einer Agent-Methode (`fn main()`) auf nichts auflöst — ohne die Ausnahme wäre jeder
+Builtin-Aufruf in einer normalen Funktion ein Fehler über einen Empfänger geworden, den niemand
+geschrieben hat. Genau das haben vier Beispielprogramme sofort gemeldet.
+
+### Was jetzt greift
+
+Fehlerklasse × Position, jeweils auf Methodenebene und im Lambda gemessen — beide Spalten
+identisch: undeklarierte Variable, `5 > "x"`, `true + 1`, unbehandeltes `Result`,
+Nullable-Arithmetik, String-Methode auf einer Zahl, Division durch 0, unbekanntes Feld.
+
+Positionen: Builtin-Methode, freies Builtin (`http_route`), User-Methode, freie Funktion,
+Block-Rumpf, Ausdrucks-Rumpf, verschachtelte Lambdas (dreifach), Array-Literal, Rückgabewert,
+`retry`, `try/catch`, `if`, `foreach` — alle gefangen.
+
+### Preis: 36 Test-Fixtures
+
+Die Unit-Tests bauen AST-Fragmente von Hand, mit `Expression::Identifier("srv")` als Argument,
+ohne dass `srv` je deklariert wurde. Sie liefen nur durch, **weil** der Verwurf sie deckte. Jetzt
+sagen die Fixtures, was sie immer meinten (`checker_with(&["srv"])`). Zwei bauten ein ganzes
+Programm, in dem an ein undeklariertes `worker` gesendet wurde — dort wird der Agent jetzt
+gespawnt, wie das Programm es die ganze Zeit beschrieb.
+
+### Stand danach
+1243 Unit-Tests (default) / 1396 (`--features full`) · Golden **38/38** · Probes **62/62** ·
+18 Programme bauen. Keine einzige Falschmeldung über Golden, Beispiele, Spikes und Dashboard.
 
 ---
 

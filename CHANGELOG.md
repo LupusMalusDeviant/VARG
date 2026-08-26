@@ -46,11 +46,28 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
-### Known limitation
+### Fixed — lambda bodies are type-checked
 
-- **Lambda bodies are not type-checked.** Undeclared variables, mismatched comparisons and
-  invalid arithmetic inside a lambda pass the typechecker and surface, if at all, as rustc
-  errors. This covers route handlers, MCP tool handlers, pipeline steps and `map`/`filter`.
+- **Nothing inside a lambda was ever checked.** Undeclared variables, `5 > "x"`, `true + 1`,
+  unhandled `Result`s, string methods on numbers — every error class the typechecker knows
+  passed silently inside a lambda body and surfaced, if at all, as a rustc error about
+  generated code. This covered route handlers, MCP tool handlers, pipeline steps and
+  `map`/`filter`: the construct agent programs are mostly made of was the one construct the
+  typechecker never looked inside.
+
+  The cause was not that lambda bodies went unvisited — they were walked all along. Walking
+  into a call's caller and arguments had been added to close an OCAP bypass, and it surfaced
+  capability violations while discarding every other error, so that programs which type-checked
+  before would continue to. That discard also threw away the lambda bodies' errors.
+
+- **`to_upper(nope)` type-checked clean**, for the same reason: an undeclared name inside any
+  builtin's argument was discarded too. It compiled to `self.to_uppercase()`, so rustc reported
+  that `&mut A` has no such method — a complaint about generated code naming neither the
+  undeclared name nor anything in the source.
+
+  Errors from a caller or argument now surface when they are not inference gaps: anything from
+  a lambda body, and any unresolved name. Everything else stays discarded, so programs that
+  type-checked before still do.
 
 ---
 
