@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-26 · Version 1.0.0 · 1234 Compiler-Tests (default) / 1386 (`--features full`) · Golden 35/35 · Probes 51/51 · Builtin-Abdeckung 97,9 %
+> Stand: 2026-08-26 · Version 1.0.0 · 1234 Compiler-Tests (default) / 1386 (`--features full`) · Golden 35/35 · Probes 52/52 · Builtin-Abdeckung 97,9 %
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -657,8 +657,8 @@ Verifiziert: Agent überlebt, Fehler protokolliert, Exit 0.
 ### Drei Ergonomie-Lücken, beim Bauen aufgelaufen
 | Lücke | Status |
 |---|---|
-| Interpolation kennt **kein Escaping für literale Klammern** — ein JSON-Objekt lässt sich in `$"…"` nicht schreiben | offen, umgangen (Konkatenation); C#-Vorbild wäre `{{`/`}}` |
-| Interpolation verträgt kein String-Literal als Argument (`$"{f(\"x\")}"`) | offen, umgangen (Wert vorher binden) |
+| ~~Interpolation kennt kein Escaping für literale Klammern~~ — **Einschätzung war falsch**: `\{`/`\}` gab es längst, nur undokumentiert. Siehe Stufe 20 | korrigiert in Stufe 20 |
+| ~~Interpolation verträgt kein String-Literal als Argument~~ — **auch das war zu breit**: plain quotes funktionieren, nur die *escapte* Form bricht | korrigiert in Stufe 20 |
 | Eine `fn` **nach** einem Agenten war für diesen unsichtbar | **behoben** — der Typechecker registriert Standalone-Funktionen jetzt in einem Vorlauf, wie der Codegen längst |
 
 ### Was die Architektur formt
@@ -680,6 +680,54 @@ Konsolenfehler.
 
 ### Stand danach
 1234 Unit-Tests (default) / 1386 (`--features full`), 0 Failures · Golden **35/35** · Probes 51/51.
+
+---
+
+## Interpolation: eine Korrektur und zwei echte Funde (Stufe 20)
+
+**Zuerst die Korrektur an mir selbst.** In Stufe 19 hatte ich notiert, Interpolation könne keine
+literalen Klammern und damit kein JSON. Beim Nachmessen: `$"\{\"used\": {n}\}"` funktionierte die
+ganze Zeit — die Backslash-Form war implementiert, nur nirgends dokumentiert. Ebenso war
+„verträgt kein String-Literal als Argument" zu breit: `$"{s.replace("-", "+")}"` läuft; nur die
+*escapte* Schreibweise `\"` bricht, und die braucht man dort gar nicht. Beide Einträge sind in
+Stufe 19 durchgestrichen.
+
+Übrig blieben damit ein Idiomatik-Problem und zwei echte Defekte.
+
+### `{{` und `}}` ergänzt
+Varg wirbt mit C#-ähnlicher Syntax, und in C# verdoppelt man die Klammer. Genau das greift man,
+wenn man JSON aus einem interpolierten String schreiben will — und es schlug fehl. Jetzt
+unterstützt, die Backslash-Form bleibt gültig.
+
+### Der eigentliche Fund: Interpolation **ohne** Ausdruck gab die Maskierung roh aus
+`$"{{a}}"` druckte `{{a}}`. Der Codegen verdoppelt Klammern für `format!` — emittiert einen String
+ohne Ausdrücke aber als **einfaches Literal**, wo diese Verdopplung nie aufgelöst wird. Ein
+vorbestehender Bug, der die ganze Zeit dalag: mit einem Ausdruck drin (`$"\{a\} {n}"`) lief alles
+über `format!` und war korrekt, ohne Ausdruck war es falsch. Genau die Art Fall, die man nur
+findet, wenn man beide Varianten prüft — mein erster Golden-Test hatte nur die mit Ausdruck.
+
+### Zwei Fehlermeldungen brauchbar gemacht
+- Escapte Quotes in einer Interpolation warfen den zerstückelten Text zurück. Jetzt: „quotes inside
+  an interpolation are not escaped — write {…}" mit der korrigierten Fassung. Als Sonde abgesichert.
+- Eine nicht geschlossene Interpolation (`$"a { b"`) meldet weiterhin „unexpected end of file".
+  **Bewusst so gelassen:** das scheitert schon im *Lexer*, der Klammer-Tiefe zählt, um Quotes in
+  Ausdrücken zu erlauben — die Parser-Ebene sieht den Fall nie. Eine bessere Meldung bräuchte einen
+  Fehlerpfad durch den Logos-Callback; der Aufwand steht nicht zum Nutzen.
+
+### Dogfooding
+Die beiden Payload-Builder im Dashboard sind von Konkatenation auf Interpolation umgestellt — aus
+fünf Zeilen wird eine, und der Fix ist damit in einem echten Programm belegt, nicht nur im Test.
+Nebenbei aufgefallen und behoben: der Demo-Graph wuchs bei jedem Neustart (jetzt nur noch geseedet,
+wenn leer), und `graph_open("x.graph.db")` legt `x.graph.db.graph.db` an — die Runtime hängt das
+Suffix selbst an, der Name im Programm ist jetzt entsprechend bloß `dashboard`.
+
+### Abgesichert
+4 Prüfungen im Golden-Programm `syntax` (beide Klammer-Formen, JSON-Fall, String-Argument) und eine
+Sonde für die neue Fehlermeldung. Der No-Expression-Bug hätte sich sonst wieder verstecken können —
+er trat nur ohne Ausdruck auf.
+
+### Stand danach
+1234 Unit-Tests (default), 0 Failures · Golden 35/35 · Probes **52/52**.
 
 ---
 

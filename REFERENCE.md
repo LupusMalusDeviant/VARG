@@ -770,6 +770,33 @@ print $"Result: {add(3, 4)}";
 print $"Status: {items.len()} items remaining";
 ```
 
+#### Literal braces
+
+Double a brace to emit it literally, as in C#. The backslash form works too:
+
+```csharp
+var used = 36;
+var who  = "worker";
+
+print $"{{literal}} and {used}";        // {literal} and 36
+print $"\{literal\}";                   // {literal}
+
+// Which is how you emit JSON from an interpolated string:
+print $"{{\"used\": {used}, \"name\": \"{who}\"}}";
+// {"used": 36, "name": "worker"}
+```
+
+#### Quotes inside an interpolation
+
+An expression inside `{...}` is already inside the braces, so a string argument there is written
+with plain quotes — escaping them puts backslashes into the expression and it stops parsing:
+
+```csharp
+var s = "a-b";
+print $"{s.replace("-", "+")}";        // a+b
+print $"{s.replace(\"-\", ...)}";   // error: quotes here are not escaped
+```
+
 ### Multiline Strings
 
 ```csharp
