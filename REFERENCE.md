@@ -214,6 +214,30 @@ agent Counter {
 }
 ```
 
+### How the entry agent is constructed
+
+The program's entry agent is the first one with a parameterless `Run` or `Main`. The generated
+runtime constructs it, so:
+
+- a parameterless constructor runs before `Run()`,
+- fields without a constructor start zero-valued (initialise them in `on_start`),
+- a constructor **taking parameters** is rejected — nobody is there to pass them.
+
+Dependency injection therefore happens one level down, which is where it belongs anyway:
+
+```csharp
+agent Service {
+    ILog logger;
+    public Service(ILog l) { self.logger = l; }
+}
+
+agent Main {
+    public void Run() {
+        var svc = Service(ConsoleLog());   // wire it here
+    }
+}
+```
+
 ### System Agents
 
 System agents run with elevated privileges (Ring 0):
@@ -649,6 +673,7 @@ Varg enforces capability-based security at compile time. Privileged operations r
 | `NetworkAccess` | `fetch`, `http_request` |
 | `DbAccess` | Database queries |
 | `LlmAccess` | `llm_infer`, `llm_chat` |
+
 | `SystemAccess` | `exec`, `exec_status` |
 
 ```csharp
@@ -788,7 +813,9 @@ import math.{sqrt, abs};
 // Import single item
 import utils.helper;
 
-// External crate (from crates.io) — 'import crate' + name = "version"
+// External crate (from crates.io). The version is optional; without one the newest
+// compatible release is used. Importing a crate the runtime already bundles
+// (serde, serde_json, and tokio/chrono/rand when in use) is accepted and ignored.
 import crate serde_json;                              // simple, auto-added to Cargo.toml
 import crate serde = "1.0" features ["derive"];       // versioned with features
 import crate reqwest = "0.11" features ["json"];
@@ -1156,6 +1183,29 @@ var ver = registry_version(reg, "varg-http");            // string
 var all = registry_list(reg);                            // string[]
 var found = registry_search("http");                     // string[] — query only (1 arg)
 ```
+
+### LLM calls are fallible
+
+`llm_infer` and `llm_chat` return `Result<string, string>`. A call that cannot reach its provider
+used to hand the error payload back *as the answer*, so an agent stored
+`{"error": "Network error: ..."}` in its memory and carried on as though the model had replied.
+Handle it, or propagate it:
+
+```csharp
+unsafe {
+    var llm = LlmAccess {};
+    var reply = llm_infer("Summarise this", "gpt-4o-mini") or "the model is unavailable";
+    print reply;
+}
+
+// or, in a method that is allowed to fail:
+fn summarise(string text, LlmAccess llm) -> string {
+    return llm_infer(text, "gpt-4o-mini")?;
+}
+```
+
+On failure the error carries the provider response, so the reason survives. `llm_chat` leaves the
+context with the user turn and no assistant turn, so a retry does not replay a phantom reply.
 
 ### Extended LLM
 

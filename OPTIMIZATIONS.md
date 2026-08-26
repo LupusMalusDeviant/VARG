@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-26 · Version 1.0.0 · 1241 Compiler-Tests (default) · Golden 36/36 · Probes 52/52 · Builtin-Abdeckung 97,9 %
+> Stand: 2026-08-26 · Version 1.0.0 · 1241 Compiler-Tests (default) / 1393 (`--features full`) · Golden 37/37 · Probes 54/54
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -781,6 +781,68 @@ brechen würden.
 
 ### Stand danach
 1241 Unit-Tests (default), 0 Failures · Golden **36/36** · Probes 52/52.
+
+---
+
+## Die drei Funde aus der Usecase-Sonde (Stufe 22)
+
+Ein realistisches Agenten-Programm pro beworbenem Usecase gebaut, statt zu schätzen. Was trägt:
+Knowledge Graph + Vector Store + RAG, MCP Client **und** Server, Actor-Model mit Registry,
+HTTP-Server, Observability, Cost, Memory. Was hakte, waren drei Stellen — alle „dokumentiert ≠
+implementiert".
+
+### 1. LLM-Fehler waren unsichtbar — der schwerste der drei
+`__varg_llm_infer` endete auf `parse_response(&res).unwrap_or(res)`. Scheiterte der Aufruf, kam
+die Fehlermeldung des Providers **als Antwort** zurück:
+
+```
+agent would store: [{ "error": "Network error: ... 127.0.0.1:11434 ..." }]
+```
+
+Ein Agent legte den Netzwerkfehler als Modellantwort ins Memory und arbeitete damit weiter. `or`
+und `?` kompilierten nicht, weil der Rückgabetyp `String` war. Dieselbe Klasse wie `parse_int` →
+stumme 0, nur im **Kernversprechen** der Sprache.
+
+`llm_infer` und `llm_chat` liefern jetzt `Result<string, string>`; der Fehler trägt die
+Provider-Antwort, damit der Grund erhalten bleibt. `llm_chat` lässt den Kontext bei einem Fehler
+mit dem User-Turn und **ohne** Assistant-Turn zurück — ein Retry wiederholt also keine
+Phantom-Antwort. Beide sind in der Signatur-Tabelle (Drift-Lock greift) und in der
+`NETWORK_ONLY`-Ausnahmeliste, weil ohne Provider nichts Deterministisches prüfbar ist.
+
+### 2. DI funktionierte überall außer im Entry-Agenten
+`agent Main { public Main(ILog l) … }` leakte rustcs „no associated item `new`". Zwei Ursachen:
+`main()` rief `Name::new()`, während der Codegen den Konstruktor unter dem **Agentennamen**
+emittiert — und der Entry-Point-Picker hielt einen Konstruktor namens `Main` für die
+Einstiegs*methode* und rief `instance.Main()`.
+
+Jetzt: parameterloser Konstruktor läuft vor `Run()`; ein Konstruktor **mit** Parametern wird mit
+einer Meldung abgelehnt, die den funktionierenden Weg nennt (DI eine Ebene tiefer). Konstruktoren
+sind aus der Entry-Methoden-Auswahl ausgeschlossen.
+
+### 3. `import crate` — die dokumentierte Form ging nicht
+`import crate serde_json;` (genau so in REFERENCE) → „expected Assign": die Version war Pflicht.
+Mit Version → „duplicate key", weil serde_json schon im generierten `Cargo.toml` steht. Also
+scheiterte ausgerechnet der Import der gewöhnlichsten Crates.
+
+Version ist jetzt optional (`*` = neueste kompatible). Immer vorhandene Crates werden übersprungen;
+die **bedingt** vorhandenen (tokio, chrono, rand) werden erst dedupliziert, wenn feststeht, ob sie
+überhaupt eingezogen wurden — sonst hätte ein `import crate tokio;` in einem nicht-async-Programm
+die Abhängigkeit weggekürzt, die der generierte `use tokio;` braucht.
+
+### Neue Sondenkategorie: `probes/reject-at-build/`
+Punkt 2 ist eine Eigenschaft der Codegenerierung, nicht der Typen — `vargc check` kann sie nicht
+sehen. In den Typechecker gehört sie nicht: ein **Nicht**-Entry-Agent darf Konstruktor und `Run`
+gleichzeitig haben, die Regel dort wäre ein False Positive. Also prüft der Runner jetzt eine dritte
+Kategorie: `check` akzeptiert, `build` lehnt ab, **und** die Meldung ist unsere, nicht rustcs.
+Negativ verifiziert (WRONG-REASON schlägt an).
+
+### Stand danach
+1241 Unit-Tests (default) / 1393 (`--features full`), 0 Failures · Golden **37/37** · Probes
+**54/54**.
+
+### Was die Sonde nicht abgedeckt hat
+Multimodal, Checkpoint/Resume, HITL, Rate-Limiting und der Self-Improve-Loop blieben ungetestet.
+Nach der Trefferquote hier (drei Funde in einem Querschnitt) wären dort weitere zu erwarten.
 
 ---
 
