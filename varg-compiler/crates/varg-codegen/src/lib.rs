@@ -1955,6 +1955,28 @@ impl RustGenerator {
         }
     }
 
+    /// Lower a map literal to a `serde_json::Value::Object`.
+    ///
+    /// Built entry by entry rather than through the `json!` macro: the macro restricts what a key
+    /// may be, while a Varg key is an arbitrary expression. Values go through `json!` individually,
+    /// so a string stays a string and a number stays a number in the same object.
+    fn gen_json_object(&mut self, entries: &[(Expression, Expression)]) -> String {
+        if entries.is_empty() {
+            return "serde_json::Value::Object(serde_json::Map::new())".to_string();
+        }
+        let mut out = String::from("{ let mut __obj = serde_json::Map::new(); ");
+        for (k, v) in entries {
+            let key = self.gen_expression(k);
+            let val = self.gen_expression(v);
+            out.push_str(&format!(
+                "__obj.insert(format!(\"{{}}\", {}), serde_json::json!({})); ",
+                key, val
+            ));
+        }
+        out.push_str("serde_json::Value::Object(__obj) }");
+        out
+    }
+
     fn gen_operand(&mut self, expr: &Expression) -> String {
         let needs_parens = match expr {
             Expression::BinaryOp { operator, left, right } => {
@@ -3368,7 +3390,16 @@ impl RustGenerator {
                 } else if method_name == "mcp_list_tools" {
                     format!("varg_runtime::mcp::__varg_mcp_list_tools(&{})", arg_strs[0])
                 } else if method_name == "mcp_call_tool" {
-                    format!("varg_runtime::mcp::__varg_mcp_call_tool(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
+                    // Tool arguments are a JSON object, not a Varg map. Lowering the literal to a
+                    // HashMap forced every value to the same type, so `{"query": "x", "top_k": 3}`
+                    // — the ordinary shape of a tool call — did not compile, and an int-valued map
+                    // had no matching impl at all. Building a serde_json object instead lets each
+                    // value keep its own type, and makes `{}` unambiguous.
+                    let args_code = match args.get(2) {
+                        Some(Expression::MapLiteral(entries)) => self.gen_json_object(entries),
+                        _ => arg_strs[2].clone(),
+                    };
+                    format!("varg_runtime::mcp::__varg_mcp_call_tool(&{}, &{}, &{})", arg_strs[0], arg_strs[1], args_code)
                 } else if method_name == "mcp_disconnect" {
                     format!("varg_runtime::mcp::__varg_mcp_disconnect(&{})", arg_strs[0])
                 // ===== Wave 20: Knowledge Graph Builtins =====

@@ -214,6 +214,19 @@ impl ToToolArgs for HashMap<String, String> {
 // no arguments", the most common call of all — ambiguous, because Rust could no longer infer the
 // value type. Mixed or numeric arguments go through the JSON string form below, which is also the
 // only way to express a heterogeneous object: a Varg map literal is homogeneous.
+// The shape codegen produces for a map literal in tool-argument position. One impl, and the
+// value types inside the object are whatever they were written as — which is why the empty
+// literal is no longer ambiguous: it is a Value, not a HashMap of some type to be inferred.
+impl ToToolArgs for serde_json::Value {
+    fn to_arguments(&self) -> serde_json::Value {
+        match self {
+            v @ serde_json::Value::Object(_) => v.clone(),
+            // The protocol requires an object; anything else would be silently wrong.
+            _ => serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+}
+
 impl ToToolArgs for String {
     fn to_arguments(&self) -> serde_json::Value {
         // Forward a JSON object as-is; anything else becomes an empty object rather than

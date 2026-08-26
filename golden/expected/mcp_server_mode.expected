@@ -5,3 +5,7 @@ OK   struct_return_title
 OK   struct_return_score
 OK   unknown_tool_errors
 OK   usable_after_error
+OK   args_mixed_literal
+OK   args_json_string
+OK   args_map_variable
+OK   args_escaping

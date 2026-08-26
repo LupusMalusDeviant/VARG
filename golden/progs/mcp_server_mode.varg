@@ -26,6 +26,11 @@ agent Main {
         return $"found {top_k} for {query}";
     }
 
+    @[McpTool("Echo the argument types back")]
+    public string echo(string s, int n, bool flag) {
+        return $"{s}|{n}|{flag}";
+    }
+
     @[McpTool("Look up the best document")]
     public Doc best(string query) {
         return Doc { title: $"best: {query}", score: 99 };
@@ -39,19 +44,16 @@ agent Main {
             var conn = mcp_connect(exe_path(), ["--mcp-serve"])?;
 
             var tools = mcp_list_tools(conn)?;
-            print check("tool_count", $"{tools.len()}", "3");
+            print check("tool_count", $"{tools.len()}", "4");
 
-            // Arguments arrive by name and are parsed into the declared parameter types, so an
-            // `int` parameter receives a number. They are written as JSON because a Varg map
-            // literal is homogeneous and most tool argument sets are not.
-            var sum = mcp_call_tool(conn, "add", "{\"a\": 17, \"b\": 25}") or "CALL-FAILED";
+            // Arguments arrive by name and are parsed into the declared parameter type, so an
+            // `int` parameter receives a number rather than the string "17".
+            var sum = mcp_call_tool(conn, "add", {"a": 17, "b": 25}) or "CALL-FAILED";
             print check("call_int_args", sum.trim(), "42");
 
-            // Mixed argument types need the JSON form: a Varg map literal is homogeneous, so
-            // {"query": "...", "top_k": 3} cannot be written as one map. Quotes in an argument
-            // must still survive the round trip.
-            var args_json = "{\"query\": \"say \\\"hi\\\"\", \"top_k\": 3}";
-            var found = mcp_call_tool(conn, "search_docs", args_json) or "CALL-FAILED";
+            // Mixed argument types in one literal — the ordinary shape of a tool call. Quotes in
+            // an argument must survive the round trip through JSON-RPC.
+            var found = mcp_call_tool(conn, "search_docs", {"query": "say \"hi\"", "top_k": 3}) or "CALL-FAILED";
             print check("call_string_arg", found.trim(), "found 3 for say \"hi\"");
 
             // A struct return is serialised as JSON.
@@ -67,8 +69,23 @@ agent Main {
             print check("unknown_tool_errors", missing, "NO-SUCH-TOOL");
 
             // The connection survives that error: a following call still works.
-            var after = mcp_call_tool(conn, "add", "{\"a\": 1, \"b\": 2}") or "CALL-FAILED";
+            var after = mcp_call_tool(conn, "add", {"a": 1, "b": 2}) or "CALL-FAILED";
             print check("usable_after_error", after.trim(), "3");
+
+            // The argument forms, all of which must keep working:
+            // a literal mixing string, int and bool …
+            var mixed = mcp_call_tool(conn, "echo", {"s": "hi", "n": 7, "flag": true}) or "F";
+            print check("args_mixed_literal", mixed.trim(), "hi|7|true");
+            // … a raw JSON string …
+            var raw = mcp_call_tool(conn, "echo", "{\"s\": \"json\", \"n\": 1, \"flag\": false}") or "F";
+            print check("args_json_string", raw.trim(), "json|1|false");
+            // … and a variable holding a plain string map.
+            var as_map = {"s": "var", "n": "2", "flag": "true"};
+            var viamap = mcp_call_tool(conn, "echo", as_map) or "F";
+            print check("args_map_variable", viamap.trim(), "var|2|true");
+            // Quotes and braces inside a value survive the round trip.
+            var esc = mcp_call_tool(conn, "echo", {"s": "say \"hi\" {x}", "n": 0, "flag": true}) or "F";
+            print check("args_escaping", esc.trim(), "say \"hi\" {x}|0|true");
 
             mcp_disconnect(conn);
         }
