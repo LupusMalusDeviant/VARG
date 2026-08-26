@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-25 · Version 1.0.0 · 1227 Compiler-Tests (default) / 1379 (`--features full`) · Golden 34/34 · Builtin-Abdeckung 97,9 %
+> Stand: 2026-08-26 · Version 1.0.0 · 1228 Compiler-Tests (default) / 1380 (`--features full`) · Golden 34/34 · Probes 51/51 · Builtin-Abdeckung 97,9 %
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -574,6 +574,59 @@ Präzedenz, Pipes, Compound-Assignment und Ranges.
 ### Stand danach
 1227 Unit-Tests (default) / 1379 (`--features full`), 0 Failures · Golden **34/34**, drei Läufe
 stabil · 11 Beispiele + 4 Spikes bauen · ~95 Sonden, 1 verbleibender rustc-Leak (s.o.).
+
+---
+
+## Der Rückwärts-Sweep wird ein CI-Schritt (Stufe 18)
+
+Die letzte Runde hat gezeigt, dass der Sweep über **alle** angesammelten Sondenprogramme drei
+Fehler fand, die keine Testsuite gemeldet hatte — zwei selbst eingeschleppte Regressionen und ein
+stiller Falschwert (`abs(-3.7)` → 3). Ein manueller Schritt, der so viel findet, gehört automatisiert.
+
+**Dabei kam heraus, dass die CI die Golden-Suite bisher gar nicht lief.** Das wichtigste
+Sicherheitsnetz des Projekts war nicht in der Pipeline. Beide laufen jetzt.
+
+### `probes/` — die Gegenrichtung zu `golden/`
+| | prüft |
+|---|---|
+| `golden/` | gültige Programme kompilieren **und rechnen das Richtige** (Build + Run + stdout-Diff) |
+| `probes/` | ungültige Programme werden **abgelehnt — und zwar vom Varg-Frontend, nicht von rustc** |
+
+Der Prüfbefehl ist `vargc check` (Parse + Typecheck, kein Codegen, ~40 ms je Programm). Das macht
+den Vertrag exakt: **akzeptiert `check` ein ungültiges Programm, erreicht der Fehler rustc** — und
+genau diese Form hatte jeder gefundene Leak. 51 Sonden laufen dadurch in Sekunden statt Minuten.
+
+### Jede Sonde nennt die erwartete Meldung
+```
+// @probe reject: takes 2 argument(s)
+```
+Ohne diese Angabe würde eine Sonde bestehen, solange *irgendetwas* fehlschlägt — und damit
+stillschweigend eine Ablehnung aus völlig falschem Grund akzeptieren. Fehlt die Direktive, meckert
+der Runner.
+
+### Ausnahmen können nicht verrotten
+`probes/known-rustc-leak/` enthält die eine dokumentierte Ausnahme (Division durch eine Variable,
+die nachweislich 0 ist — rustcs `unconditional_panic`-Lint fängt das korrekt; selbst zu fangen
+bräuchte Konstantenpropagation). Der Runner prüft **beide** Hälften: `check` muss durchlassen und
+der Build muss scheitern. Lernt das Frontend es später, schlägt die Sonde mit
+„NOW-CAUGHT — move it to reject/" fehl. Die Ausnahmeliste kann also nicht unbemerkt veralten.
+
+### Negativ verifiziert
+Jeder Fehlerpfad des Runners wurde durch absichtlich kaputte Sonden ausgelöst: `NOT-REJECTED`
+(gültiges Programm), `WRONG-REASON` (falsche Meldung), `NO-DIRECTIVE` (fehlende Angabe) — alle
+liefern Exit 1. Ein Runner, der nie fehlschlägt, wäre wertlos.
+
+### Nebenbefund: Capability-Konstruktion
+Die Sonde `ocap_construct_outside_unsafe` schlug sofort an. `var cap = FileAccess {};` außerhalb
+von `unsafe` wurde akzeptiert — die Regel war nur für die **typisierte** Form
+(`FileAccess cap = …`) durchgesetzt. **Kein ausnutzbares Loch:** der privilegierte Aufruf selbst
+verlangt weiterhin ein echtes Token im Scope, `fs_write` wurde auch ohne `unsafe` abgelehnt
+(verifiziert). Aber dokumentierte Regel und Durchsetzung waren auseinandergedriftet; jetzt
+deckungsgleich.
+
+### Stand danach
+1228 Unit-Tests (default) / 1380 (`--features full`), 0 Failures · Golden **34/34** · Probes
+**51/51** · CI-Jobs: 3 → **4**.
 
 ---
 
