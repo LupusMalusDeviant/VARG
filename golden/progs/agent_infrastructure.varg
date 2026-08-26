@@ -1,0 +1,76 @@
+/// Checkpoint/resume, rate limiting, self-improvement and multimodal — the parts of the agent
+/// story that had never been exercised by a running program.
+///
+/// Two behaviours here were wrong until they were: `rate_limit_reset` deleted the limiter instead
+/// of refilling it, so every later call was denied forever and looked like throttling; and
+/// `image_load` on a missing path returned a zero-byte image with the format guessed from the
+/// extension, so a mistyped filename travelled on looking valid.
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            var fs = FileAccess {};
+
+            // ── Checkpoint / resume ─────────────────────────────────────────
+            var cp = checkpoint_open("agent_infra.db", "agent_v1");
+            print check("cp_empty_at_start", yn(checkpoint_exists(cp)), "false");
+            var saved = checkpoint_save(cp, "{\"step\": 3}");
+            print check("cp_save", yn(saved), "true");
+            print check("cp_exists", yn(checkpoint_exists(cp)), "true");
+            var restored = checkpoint_load(cp);
+            var step = json_get_int(restored, "/step");
+            print check("cp_roundtrip", $"{step}", "3");
+            var age = checkpoint_age(cp);
+            print check("cp_age_sane", yn(age >= 0), "true");
+            checkpoint_clear(cp);
+            print check("cp_cleared", yn(checkpoint_exists(cp)), "false");
+
+            // ── Rate limiting ───────────────────────────────────────────────
+            // `acquire` blocks until a token frees up; `try_acquire` is the one that reports.
+            var rl = ratelimiter_new(3, 60000);
+            var granted = 0;
+            var denied = 0;
+            for i in 0..6 {
+                if ratelimiter_try_acquire(rl) { granted += 1; } else { denied += 1; }
+            }
+            print check("rl_grants_the_budget", $"{granted}", "3");
+            print check("rl_denies_the_rest", $"{denied}", "3");
+            rate_limit_reset(rl);
+            print check("rl_reset_restores", yn(ratelimiter_try_acquire(rl)), "true");
+
+            // ── Self-improvement ────────────────────────────────────────────
+            var si = self_improver_new("coder", 5);
+            self_improver_record_success(si, "Fix null pointer", "Added a guard");
+            self_improver_record_failure(si, "Parse JSON", "Forgot the empty string");
+            self_improver_record_success(si, "Fix null deref", "Guarded the pointer");
+            print check("si_iterations", $"{self_improver_iterations(si)}", "3");
+            var lessons = self_improver_recall(si, "null pointer", 3);
+            print check("si_recalls", yn(lessons.len() > 0), "true");
+            // stats is a map<string, string>, not a JSON string.
+            var stats = self_improver_stats(si);
+            print check("si_stats_failures", stats["failures"], "1");
+            print check("si_stats_successes", stats["successes"], "2");
+
+            // ── Multimodal ──────────────────────────────────────────────────
+            fs_write("infra_probe.png", "pretend-png-bytes")?;
+            var img = image_load("infra_probe.png")?;
+            print check("img_format_from_extension", image_format(img), "png");
+            print check("img_size", $"{image_size_bytes(img)}", "17");
+            var again = image_from_base64(image_to_base64(img), "png");
+            print check("img_base64_roundtrip", $"{image_size_bytes(again)}", "17");
+            delete_file("infra_probe.png")?;
+
+            // A path that cannot be read is an error, not an empty image.
+            var missing = image_load("definitely_not_here.png") or image_from_base64("", "none");
+            print check("img_missing_is_an_error", $"{image_size_bytes(missing)}", "0");
+        }
+    }
+}

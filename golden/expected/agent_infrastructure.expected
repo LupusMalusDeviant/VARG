@@ -1,0 +1,17 @@
+OK   cp_empty_at_start
+OK   cp_save
+OK   cp_exists
+OK   cp_roundtrip
+OK   cp_age_sane
+OK   cp_cleared
+OK   rl_grants_the_budget
+OK   rl_denies_the_rest
+OK   rl_reset_restores
+OK   si_iterations
+OK   si_recalls
+OK   si_stats_failures
+OK   si_stats_successes
+OK   img_format_from_extension
+OK   img_size
+OK   img_base64_roundtrip
+OK   img_missing_is_an_error
