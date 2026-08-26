@@ -1064,11 +1064,15 @@ var choice = await_choice("Pick one", ["Yes", "No", "Later"]); // int (index)
 
 ### Rate Limiting
 
+One bucket per limiter, not per key — `ratelimiter_new` returns the limiter, and every call
+names it. `acquire` **blocks** until a token frees up (that is throttling, and it returns
+nothing); `try_acquire` is the one that reports whether it got through.
+
 ```csharp
-var rl = ratelimiter_new(10, 60000);          // 10 calls per 60s window
-var ok = ratelimiter_acquire(rl, "user_123"); // bool — consume 1 token for key
-var check = ratelimiter_try_acquire(rl, "user_123"); // bool — non-blocking check
-rate_limit_reset(rl, "user_123");             // reset key's bucket
+var rl = ratelimiter_new(10, 60000);      // 10 calls per 60s window
+ratelimiter_acquire(rl);                  // blocks until a token is free
+var ok = ratelimiter_try_acquire(rl);     // bool — does not block
+rate_limit_reset(rl);                     // full allowance again
 ```
 
 ### LLM Budget / Cost Tracking
@@ -1084,6 +1088,8 @@ var est = estimate_tokens("hello world");    // int — heuristic: chars/4
 ```
 
 ### Agent Checkpoint / Resume
+
+Writes to disk, so it needs `FileAccess` in scope like any other file operation.
 
 ```csharp
 var cp = checkpoint_open("state.db", "agent_v1"); // CheckpointHandle
@@ -1122,17 +1128,21 @@ prop_assert(x >= 0, "must be non-negative");
 
 ### Multimodal (Image / Audio / Vision)
 
+Loading reads a file, so `FileAccess` must be in scope — as a parameter or under `unsafe`, not
+passed as an argument. Loading is fallible: a path that cannot be read is an error, not an empty
+image with the format guessed from its extension.
+
 ```csharp
-var img = image_load("photo.png", cap);        // ImageHandle (requires FileAccess)
+var img = image_load("photo.png")?;            // Result<ImageHandle, string>
 var b64 = image_to_base64(img);                // string
 var fmt = image_format(img);                   // "png" | "jpeg" | ...
-var sz = image_size_bytes(img);                // int
+var sz  = image_size_bytes(img);               // int
 
-var aud = audio_load("voice.mp3", cap);        // AudioHandle
+var aud = audio_load("voice.mp3")?;            // Result<AudioHandle, string>
 var ab64 = audio_to_base64(aud);               // string
 
-// Vision call — sends image to multimodal LLM
-var desc = llm_vision("What is in this image?", b64, "png", llm_cap); // string
+// Vision call — sends the image to a multimodal LLM
+var desc = llm_vision("What is in this image?", b64, "png");
 ```
 
 ### Agent Registry
@@ -1300,10 +1310,13 @@ Annotation parameters must be **string literals** (not named args):
 // @[RateLimit("max_calls", "window_ms")]
 @[RateLimit("10", "60000")]
 public string CallApi(string prompt, LlmAccess llm) {
-    // Enforced: max 10 calls per 60 000 ms (1 minute), per key
+    // Enforced: at most 10 calls per 60 000 ms, per method and per thread
     return llm_chat("gpt-4o", [{"role": "user", "content": prompt}], llm);
 }
 ```
+
+The bucket is keyed by method and by thread, so each spawned agent gets its own allowance. That
+throttles a single worker; it does not cap what a whole program sends to one API.
 
 ### LLM Budget Guards
 

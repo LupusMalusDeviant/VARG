@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-26 · Version 1.0.0 · 1241 Compiler-Tests (default) / 1393 (`--features full`) · Golden 37/37 · Probes 54/54
+> Stand: 2026-08-26 · Version 1.0.0 · 1241 Compiler-Tests (default) / 1394 (`--features full`) · Golden 38/38 · Probes 55/55
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -843,6 +843,57 @@ Negativ verifiziert (WRONG-REASON schlägt an).
 ### Was die Sonde nicht abgedeckt hat
 Multimodal, Checkpoint/Resume, HITL, Rate-Limiting und der Self-Improve-Loop blieben ungetestet.
 Nach der Trefferquote hier (drei Funde in einem Querschnitt) wären dort weitere zu erwarten.
+
+---
+
+## Sonde über die restlichen Bereiche (Stufe 23)
+
+Multimodal, Checkpoint/Resume, HITL, Rate-Limiting, Self-Improve — die fünf, die Stufe 22
+ausdrücklich **nicht** abgedeckt hatte. Erwartung war „weitere Funde"; sie hat sich bestätigt.
+
+### Was trägt
+Checkpoint/Resume (voller Rundlauf inkl. `age`/`clear`), Self-Improve (record/recall/stats),
+Multimodal-Base64-Rundlauf, und HITL: kompiliert, rendert die Prompts und degradiert bei
+geschlossenem stdin sauber (`approval=false`, `choice=-1`, Exit 0) statt zu hängen.
+
+### Zwei echte Bugs
+| Bug | Wirkung |
+|---|---|
+| **`rate_limit_reset` löschte den Limiter** (`remove(key)`), statt ihn aufzufüllen. `try_acquire` liefert für einen unbekannten Key `false` — also verweigerte der Limiter nach einem Reset **für immer**, ununterscheidbar von „gedrosselt". | stilles Fehlverhalten |
+| **`image_load`/`audio_load` bei fehlender Datei**: `fs::read(..).unwrap_or_default()` ergab ein **Null-Byte-Bild** mit aus der Endung geratenem Format. Ein Tippfehler im Dateinamen reiste unbemerkt bis zum Vision-Modell. | stiller Falschwert |
+
+Beide gefixt: Reset füllt den Bucket auf; Laden liefert `Result`.
+
+### Drei Doku-Abweichungen
+- `ratelimiter_acquire(rl, "user_123") // bool` — real **ein** Argument, **blockiert**, liefert
+  nichts. Per-Key-Buckets, wie die Doku sie suggeriert, gibt es nicht: ein Bucket pro Limiter.
+  `try_acquire` ist die berichtende Variante.
+- `image_load("photo.png", cap)` — real ein Argument; die Capability muss im Scope sein, nicht
+  übergeben werden (wie bei `fs_read`). **Kein OCAP-Loch** — verifiziert, dass der Aufruf ohne
+  Token abgelehnt wird.
+- `checkpoint_open` braucht `FileAccess`; die Doku zeigte kein `unsafe`.
+- Dazu präzisiert: der `@[RateLimit]`-Bucket ist nach **Methode und Thread** geschlüsselt, nicht
+  nach einem Aufrufer-Key. Jeder gespawnte Agent hat sein eigenes Kontingent — das drosselt einen
+  Worker, nicht das Programm gegenüber einer API.
+
+### Ein Drift, den erst die neue Prüfung sichtbar machte
+`image_load` fallibel zu machen erzeugte einen **neuen** rustc-Leak: ein unbehandeltes `Result`
+als Builtin-**Argument**. Statt das punktuell zu flicken, ist daraus die allgemeine Regel geworden
+(dieselbe Form wie bei `print` und Arithmetik). Beim Messen fiel sie sofort über `json_parse`:
+der Typechecker typisierte es als `Result`, der Codegen emittiert `unwrap_or(Value::Null)` — die
+`Result`-Typisierung war **nie** benutzbar (`json_parse(x) or d` konnte gar nicht kompilieren) und
+blieb unsichtbar, bis ein unbehandeltes Result zum Fehler wurde. Typ an die Realität angeglichen.
+
+Wieder haben zwei Tests das alte Verhalten festgeschrieben (`test_image_load_missing_path`
+behauptete das stille Leerbild, `test_stdlib_json_parse_type` den Drift) — beide korrigiert.
+
+### Offen gelassen
+`json_parse` liefert bei kaputtem JSON still `Null`. Das ist bewusst so gebaut (die Accessoren
+sollen ohne Unwrap funktionieren) und nehmen auch rohe Strings — es fallibel zu machen wäre eine
+Design-Entscheidung, keine Bugfix. Notiert, nicht geändert.
+
+### Stand danach
+1241 Unit-Tests (default) / 1394 (`--features full`) · Golden **38/38** · Probes **55/55**.
 
 ---
 
