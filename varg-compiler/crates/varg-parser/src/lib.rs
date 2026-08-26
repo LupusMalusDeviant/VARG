@@ -277,6 +277,23 @@ impl Parser {
                         found: None,
                         span: self.current_span(),
                     })?;
+                // The mini-parser stops at the first thing it cannot continue, and nothing used
+                // to look at what was left. So `$"{a >= 1 and a <= 2}"` printed the value of
+                // `a >= 1` and threw the rest away — `and` is not a Varg operator, and with
+                // a = 5 that printed `true` where the whole condition is false. Any typo inside
+                // the braces produced a plausible wrong value in silence, in the construct the
+                // language is most used through.
+                if let Some(leftover) = mini_parser.peek() {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: format!(
+                            "one expression inside {{{}}} — the rest was not read (`&&` and `||` \
+                             are the boolean operators, not `and`/`or`)",
+                            expr_text
+                        ),
+                        found: Some(leftover.clone()),
+                        span: self.current_span(),
+                    });
+                }
                 parts.push(InterpolationPart::Expression(expr));
             } else if ch == '\\' {
                 // Handle escape sequences
@@ -547,7 +564,19 @@ impl Parser {
                             ImportItems::Selected(names)
                         },
                         _ => {
-                            let name = self.parse_identifier()?;
+                            // A chain of dots, not just one: `import core.util.strings;` has to
+                            // reach `core/util/strings.varg`. Only a single dot was accepted, so
+                            // a module could not live below the entry directory and a program
+                            // stayed a flat pile of files. The first segment remains the module,
+                            // which keeps `import math.triple;` meaning "the item triple from
+                            // module math" wherever `math.varg` exists; the resolver tries the
+                            // whole dotted name as a path only when it does not.
+                            let mut name = self.parse_identifier()?;
+                            while self.peek() == Some(&Token::Dot) {
+                                self.advance();
+                                name.push('.');
+                                name.push_str(&self.parse_identifier()?);
+                            }
                             ImportItems::Single(name)
                         }
                     }

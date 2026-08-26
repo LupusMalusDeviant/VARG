@@ -1321,25 +1321,56 @@ fn parse_recursive(path: &str, program: &mut varg_ast::ast::Program, loaded: &mu
             }
             varg_ast::ast::Item::ImportDecl(ref decl) => {
                 let parent_dir = Path::new(path).parent().unwrap_or(Path::new(""));
-                // Try module_name.varg, then module_name/mod.varg, then subdir/module_name.varg
-                let mod_path = parent_dir.join(format!("{}.varg", decl.module_name));
-                let mod_dir_path = parent_dir.join(&decl.module_name).join("mod.varg");
-                let actual_path = if mod_path.exists() {
-                    mod_path
-                } else if mod_dir_path.exists() {
-                    mod_dir_path
-                } else {
-                    // Check nested path: a.b.c → a/b/c.varg
-                    let nested = decl.module_name.replace('.', "/");
-                    let nested_path = parent_dir.join(format!("{}.varg", nested));
-                    if nested_path.exists() {
-                        nested_path
-                    } else {
-                        eprintln!("Error: Imported module '{}' not found. Searched:", decl.module_name);
-                        eprintln!("  - {:?}", mod_path);
-                        eprintln!("  - {:?}", mod_dir_path);
-                        if nested != decl.module_name {
-                            eprintln!("  - {:?}", nested_path);
+                // `import a.b;` parses as "the item `b` from module `a`", so the dotted name
+                // never reached here and the nested-path branch below could not fire. A program
+                // was therefore a flat pile of files beside the entry point, which is what kept
+                // one from growing: nothing else about size is a problem — 1000 functions, 200
+                // agents, 40 modules and 2000 statements in a method all compile in under a
+                // second. When the module file is not there, the dotted name is tried as a path,
+                // so `import util.helpers;` finds `util/helpers.varg`. Item selection still wins
+                // when `util.varg` exists, so nothing that worked before changes meaning.
+                // `import a.b;` parses as "the item `b` from module `a`", so a dotted name
+                // never reached here and the nested-path branch could not fire. A program was a
+                // flat pile of files beside its entry point, which is what kept one from
+                // growing: nothing else about size is a problem — 1000 functions, 200 agents,
+                // 40 modules and 2000 statements in a method all compile in under a second.
+                //
+                // The dotted name is walked from the longest prefix to the shortest, taking the
+                // first file that exists. `core.util.strings` finds `core/util/strings.varg`;
+                // `modules.flat.triple` finds `modules/flat.varg` and treats `triple` as the item
+                // selected from it; and a plain `math.triple` still finds `math.varg` first, so
+                // nothing that worked before changes meaning.
+                let dotted = match &decl.items {
+                    varg_ast::ast::ImportItems::Single(item) => {
+                        format!("{}.{}", decl.module_name, item)
+                    }
+                    _ => decl.module_name.clone(),
+                };
+                let segments: Vec<&str> = dotted.split('.').collect();
+                let mut tried: Vec<std::path::PathBuf> = Vec::new();
+                let mut actual_path = None;
+                for take in (1..=segments.len()).rev() {
+                    let prefix = segments[..take].join("/");
+                    for candidate in [
+                        parent_dir.join(format!("{}.varg", prefix)),
+                        parent_dir.join(&prefix).join("mod.varg"),
+                    ] {
+                        if candidate.exists() {
+                            actual_path = Some(candidate);
+                            break;
+                        }
+                        tried.push(candidate);
+                    }
+                    if actual_path.is_some() {
+                        break;
+                    }
+                }
+                let actual_path = match actual_path {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("Error: Imported module '{}' not found. Searched:", dotted);
+                        for t in &tried {
+                            eprintln!("  - {:?}", t);
                         }
                         exit(1);
                     }

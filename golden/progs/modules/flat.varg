@@ -1,0 +1,2 @@
+fn triple(int x) -> int { return x * 3; }
+fn quad(int x) -> int { return x * 4; }

@@ -1,0 +1,30 @@
+/// Modules in subdirectories, which is what lets a program grow past one directory.
+///
+/// `import a.b;` parses as "the item `b` from module `a`", so a dotted name never reached the
+/// resolver and its nested-path branch could never fire. A program was a flat pile of files
+/// beside its entry point. Nothing else about size was ever the problem: 1000 functions, 200
+/// agents, 40 modules and 2000 statements in one method all compile in well under a second.
+///
+/// The module files live in `progs/modules/`, which the golden runner skips because it globs
+/// `progs/*.varg` and does not recurse.
+import modules.util.strings;
+import modules.model;
+import modules.flat.triple;
+
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+agent Main {
+    public void Run() {
+        print check("two_levels_deep", shout("varg"), "VARG!");
+        var c = Counter { n: 0 };
+        c.bump();
+        c.bump();
+        print check("agent_from_module", $"{c.value()}", "2");
+        // Item selection from a flat module still means what it always did.
+        print check("item_selection", $"{triple(5)}", "15");
+        print check("sibling_in_same_module", $"{quad(5)}", "20");
+    }
+}

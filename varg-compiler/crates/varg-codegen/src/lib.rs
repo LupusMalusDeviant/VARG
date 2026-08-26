@@ -1638,6 +1638,12 @@ impl RustGenerator {
                     // the value type from the returns themselves) and `Ok(None)` when the body just
                     // falls through; the call site turns Some back into a real return.
                     out.push_str(&format!("{}#[allow(unreachable_code, unused_labels, unused_variables)]\n", indent));
+                    // Tell the panic hook that this stretch is being caught. The hook exits the
+                    // process for a failure on the main thread, and it runs *before* the unwind
+                    // reaches this catch_unwind — so try/catch caught nothing wherever the entry
+                    // point runs. It worked only on spawned agent threads, which is where it had
+                    // been tested.
+                    out.push_str(&format!("{}varg_runtime::__varg_catching_enter();\n", indent));
                     out.push_str(&format!("{}let _varg_try_res =\n", indent));
                     out.push_str(&format!("{}    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n", indent));
                     out.push_str(&format!("{}        #[allow(unreachable_code)] 'varg_try: {{\n", indent));
@@ -1654,6 +1660,7 @@ impl RustGenerator {
                     out.push_str(&format!("{}            else {{ \"runtime error\".to_string() }};\n", indent));
                     out.push_str(&format!("{}        Err(_emsg)\n", indent));
                     out.push_str(&format!("{}    }});\n", indent));
+                    out.push_str(&format!("{}varg_runtime::__varg_catching_exit();\n", indent));
                     out.push_str(&format!("{}match _varg_try_res {{\n", indent));
                     out.push_str(&format!("{}    Ok(Some(__varg_ret)) => return __varg_ret,\n", indent));
                     out.push_str(&format!("{}    Ok(None) => {{}}\n", indent));
@@ -1988,6 +1995,16 @@ impl RustGenerator {
         }
         out.push_str("serde_json::Value::Object(__obj) }");
         out
+    }
+
+    /// A method call's receiver, parenthesised when it is a compound expression.
+    ///
+    /// The receiver was emitted bare, so `(n * 2).to_string()` became `n * 2.to_string()` and
+    /// rustc reported "cannot multiply {integer} by String" — the same precedence mistake that
+    /// made `abs(-5.0)` return -5, in the other half of the expression. Parenthesising a
+    /// receiver is always safe, so this reuses the operand rule rather than inventing a second.
+    fn gen_receiver(&mut self, expr: &Expression) -> String {
+        self.gen_operand(expr)
     }
 
     fn gen_operand(&mut self, expr: &Expression) -> String {
@@ -2570,7 +2587,7 @@ impl RustGenerator {
                 if self.user_impl_methods.contains(method_name.as_str()) {
                     let mut cloned_args: Vec<String> = self.gen_adapted_method_args(method_name, args);
                     self.pad_method_defaults(method_name, &mut cloned_args);
-                    return format!("{}.{}({})", self.gen_expression(caller), method_name, cloned_args.join(", "));
+                    return format!("{}.{}({})", self.gen_receiver(caller), method_name, cloned_args.join(", "));
                 }
                 if method_name == "encrypt" {
                     format!("__varg_encrypt(&{}, &{})", arg_strs[0], arg_strs[1])
@@ -2621,95 +2638,95 @@ impl RustGenerator {
                     let target = if matches!(**caller, Expression::Identifier(ref n) if n == "self") && !args.is_empty() {
                         self.gen_expression(&args[0])
                     } else {
-                        self.gen_expression(caller)
+                        self.gen_receiver(caller)
                     };
                     // Parens are required so that `len() as i64 < N` does not get
                     // parsed by rustc as the start of a turbofish (`i64<...>`).
                     format!("({}.len() as i64)", target)
                 } else if method_name == "contains" {
-                    format!("{}.contains(&{})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.contains(&{})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "starts_with" {
-                    format!("{}.starts_with(&{})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.starts_with(&{})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "ends_with" {
-                    format!("{}.ends_with(&{})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.ends_with(&{})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "to_upper" {
-                    format!("{}.to_uppercase()", self.gen_expression(caller))
+                    format!("{}.to_uppercase()", self.gen_receiver(caller))
                 } else if method_name == "to_lower" {
-                    format!("{}.to_lowercase()", self.gen_expression(caller))
+                    format!("{}.to_lowercase()", self.gen_receiver(caller))
                 } else if method_name == "substring" {
-                    format!("{}.chars().skip({} as usize).take({} as usize).collect::<String>()", self.gen_expression(caller), arg_strs[0], arg_strs[1])
+                    format!("{}.chars().skip({} as usize).take({} as usize).collect::<String>()", self.gen_receiver(caller), arg_strs[0], arg_strs[1])
                 } else if method_name == "char_at" {
                     // Nullable: an index past the end has no character. The default made that
                     // the empty string, which is not a character either — nothing in the program
                     // could tell "no such position" from anything else.
-                    format!("{}.chars().nth({} as usize).map(|c| c.to_string())", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.chars().nth({} as usize).map(|c| c.to_string())", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "index_of" {
-                    format!("{}.find(&{}).map(|i| i as i64).unwrap_or(-1)", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.find(&{}).map(|i| i as i64).unwrap_or(-1)", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "trim" {
-                    format!("{}.trim().to_string()", self.gen_expression(caller))
+                    format!("{}.trim().to_string()", self.gen_receiver(caller))
                 } else if method_name == "trim_start" || method_name == "ltrim" {
-                    format!("{}.trim_start().to_string()", self.gen_expression(caller))
+                    format!("{}.trim_start().to_string()", self.gen_receiver(caller))
                 } else if method_name == "trim_end" || method_name == "rtrim" {
-                    format!("{}.trim_end().to_string()", self.gen_expression(caller))
+                    format!("{}.trim_end().to_string()", self.gen_receiver(caller))
                 } else if method_name == "split_once" {
                     // Returns (string, string) tuple option
                     // Nullable: without the separator there is no split. The default returned
                     // `("", "")`, which is exactly what splitting "=" on "=" legitimately gives
                     // — success and failure were the same two values.
-                    format!("{}.split_once(&{}).map(|(a,b)| (a.to_string(), b.to_string()))", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.split_once(&{}).map(|(a,b)| (a.to_string(), b.to_string()))", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "count_occurrences" {
-                    format!("{}.matches({}.as_str()).count() as i64", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.matches({}.as_str()).count() as i64", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "chars" {
                     // Returns Vec<String> — each char as a single-char string
-                    format!("{}.chars().map(|c| c.to_string()).collect::<Vec<String>>()", self.gen_expression(caller))
+                    format!("{}.chars().map(|c| c.to_string()).collect::<Vec<String>>()", self.gen_receiver(caller))
                 } else if method_name == "repeat" {
-                    format!("{}.repeat({} as usize)", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.repeat({} as usize)", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "pad_left" {
                     // pad_left(total_width) → prepend spaces on the left
-                    let s = self.gen_expression(caller);
+                    let s = self.gen_receiver(caller);
                     let w = &arg_strs[0];
                     format!("{{ let __s = {s}; let __w = {w} as usize; if __s.len() >= __w {{ __s.clone() }} else {{ format!(\"{{}}{{}}\", \" \".repeat(__w - __s.len()), __s) }} }}")
                 } else if method_name == "pad_right" {
                     // pad_right(total_width) → append spaces on the right
-                    let s = self.gen_expression(caller);
+                    let s = self.gen_receiver(caller);
                     let w = &arg_strs[0];
                     format!("{{ let __s = {s}; let __w = {w} as usize; if __s.len() >= __w {{ __s.clone() }} else {{ format!(\"{{}}{{}}\", __s, \" \".repeat(__w - __s.len())) }} }}")
                 } else if method_name == "split" {
-                    format!("{}.split(&{}).map(|s| s.to_string()).collect::<Vec<String>>()", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.split(&{}).map(|s| s.to_string()).collect::<Vec<String>>()", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "replace" {
-                    format!("{}.replace(&{}, &{})", self.gen_expression(caller), arg_strs[0], arg_strs[1])
+                    format!("{}.replace(&{}, &{})", self.gen_receiver(caller), arg_strs[0], arg_strs[1])
                 // ===== Wave 5: Collection Methods =====
                 } else if method_name == "push" {
-                    format!("{}.push({})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.push({})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "pop" {
-                    format!("{}.pop().unwrap()", self.gen_expression(caller))
+                    format!("{}.pop().unwrap()", self.gen_receiver(caller))
                 } else if method_name == "reverse" {
                     // Arrays reverse in place; a string has no such method in Rust, so it
                     // reverses through its characters. The comment here already said so while
                     // the code emitted `.reverse()` for both, which type-checked and then left
                     // rustc to report that `String` has no method `reverse`.
-                    let c = self.gen_expression(caller);
+                    let c = self.gen_receiver(caller);
                     if matches!(self.resolve_type(caller), Some(TypeNode::String)) {
                         format!("{{ {c}.chars().rev().collect::<String>() }}", c = c)
                     } else {
                         format!("{{ {c}.reverse() }}", c = c)
                     }
                 } else if method_name == "is_empty" {
-                    format!("{}.is_empty()", self.gen_expression(caller))
+                    format!("{}.is_empty()", self.gen_receiver(caller))
                 } else if method_name == "keys" {
-                    format!("{}.keys().cloned().collect::<Vec<_>>()", self.gen_expression(caller))
+                    format!("{}.keys().cloned().collect::<Vec<_>>()", self.gen_receiver(caller))
                 } else if method_name == "values" {
-                    format!("{}.values().cloned().collect::<Vec<_>>()", self.gen_expression(caller))
+                    format!("{}.values().cloned().collect::<Vec<_>>()", self.gen_receiver(caller))
                 } else if method_name == "contains_key" {
-                    format!("{}.contains_key(&{})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.contains_key(&{})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "remove" {
-                    format!("{}.remove(&{})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.remove(&{})", self.gen_receiver(caller), arg_strs[0])
                 // ===== Wave 19: map.get(key, default) =====
                 } else if method_name == "get" {
-                    format!("{}.get(&{}).cloned().unwrap_or({})", self.gen_expression(caller), arg_strs[0], arg_strs[1])
+                    format!("{}.get(&{}).cloned().unwrap_or({})", self.gen_receiver(caller), arg_strs[0], arg_strs[1])
                 // ===== Plan 42: Stdlib Expansion =====
                 } else if method_name == "to_string" {
-                    format!("{}.to_string()", self.gen_expression(caller))
+                    format!("{}.to_string()", self.gen_receiver(caller))
                 } else if method_name == "parse_int" {
                     // When called as free function parse_int(x), parser emits MethodCall{caller:self, args:[x]}
                     let target = if args.is_empty() { self.gen_operand(caller) } else { arg_ops[0].clone() };
@@ -2728,9 +2745,9 @@ impl RustGenerator {
                     let cast = if matches!(self.resolve_type(target), Some(TypeNode::Float)) { "f64" } else { "i64" };
                     format!("(({}) as {}).abs()", val, cast)
                 } else if method_name == "sort" {
-                    format!("{}.sort()", self.gen_expression(caller))
+                    format!("{}.sort()", self.gen_receiver(caller))
                 } else if method_name == "join" {
-                    format!("{}.join(&{})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.join(&{})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "min" {
                     // min(a, b) standalone OR a.min(b) method form
                     let (a, b) = if args.len() >= 2 { (arg_ops[0].clone(), arg_strs[1].clone()) }
@@ -2743,36 +2760,36 @@ impl RustGenerator {
                     format!("{}.max({})", a, b)
                 } else if method_name == "sqrt" {
                     // sqrt(x) standalone OR x.sqrt() method form — double-paren prevents `a * b as f64`
-                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    let val = if args.is_empty() { self.gen_receiver(caller) } else { arg_strs[0].clone() };
                     format!("(({}) as f64).sqrt()", val)
                 } else if method_name == "floor" {
-                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    let val = if args.is_empty() { self.gen_receiver(caller) } else { arg_strs[0].clone() };
                     format!("(({}) as f64).floor()", val)
                 } else if method_name == "ceil" {
-                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    let val = if args.is_empty() { self.gen_receiver(caller) } else { arg_strs[0].clone() };
                     format!("(({}) as f64).ceil()", val)
                 } else if method_name == "round" {
-                    let val = if args.is_empty() { self.gen_expression(caller) } else { arg_strs[0].clone() };
+                    let val = if args.is_empty() { self.gen_receiver(caller) } else { arg_strs[0].clone() };
                     format!("(({}) as f64).round()", val)
                 } else if method_name == "pow" {
                     // pow(base, exp): base^exp as float. Standalone: pow(2, 10). Method: base.pow(exp).
                     let (base, exp) = if args.len() >= 2 { (arg_strs[0].clone(), arg_strs[1].clone()) }
-                                      else { (self.gen_expression(caller), arg_strs[0].clone()) };
+                                      else { (self.gen_receiver(caller), arg_strs[0].clone()) };
                     format!("(({}) as f64).powi(({}) as i32)", base, exp)
                 } else if method_name == "to_fixed" {
                     let decimals = if arg_strs.is_empty() { "2".to_string() } else { arg_strs[0].clone() };
-                    format!("format!(\"{{:.prec$}}\", {} as f64, prec = {} as usize)", self.gen_expression(caller), decimals)
+                    format!("format!(\"{{:.prec$}}\", {} as f64, prec = {} as usize)", self.gen_receiver(caller), decimals)
                 } else if method_name == "to_hex" {
-                    format!("format!(\"{{:x}}\", {} as i64)", self.gen_expression(caller))
+                    format!("format!(\"{{:x}}\", {} as i64)", self.gen_receiver(caller))
                 } else if method_name == "to_binary" {
-                    format!("format!(\"{{:b}}\", {} as i64)", self.gen_expression(caller))
+                    format!("format!(\"{{:b}}\", {} as i64)", self.gen_receiver(caller))
                 } else if method_name == "clamp" {
                     let lo = &arg_strs[0];
                     let hi = &arg_strs[1];
-                    format!("({}).clamp({}, {})", self.gen_expression(caller), lo, hi)
+                    format!("({}).clamp({}, {})", self.gen_receiver(caller), lo, hi)
                 // ===== Plan 43: Iterator Chains =====
                 } else if method_name == "filter" {
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     // filter() closure receives &Item; wrap lambda to clone/deref to owned value
                     let filter_closure = match &args[0] {
                         Expression::Lambda { params, body, .. } => {
@@ -2790,64 +2807,64 @@ impl RustGenerator {
                     format!("{}.iter().filter({}).cloned().collect::<Vec<_>>()", caller_code, filter_closure)
                 } else if method_name == "map" {
                     let lambda = self.gen_expression(&args[0]);
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     // Clone first: `into_iter()` alone consumed the collection, so a list could
                     // be used exactly once and a second call reached rustc as "use of moved
                     // value". `filter` above was already fixed; these were not.
                     format!("{}.clone().into_iter().map({}).collect::<Vec<_>>()", caller_code, lambda)
                 } else if method_name == "any" {
                     let lambda = self.gen_expression(&args[0]);
-                    let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().any({})", caller_code, lambda)
+                    let caller_code = self.gen_receiver(caller);
+                    format!("{}.clone().into_iter().any({})", caller_code, lambda)
                 } else if method_name == "all" {
                     let lambda = self.gen_expression(&args[0]);
-                    let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().all({})", caller_code, lambda)
+                    let caller_code = self.gen_receiver(caller);
+                    format!("{}.clone().into_iter().all({})", caller_code, lambda)
                 } else if method_name == "count" {
-                    format!("{}.len()", self.gen_expression(caller))
+                    format!("{}.len()", self.gen_receiver(caller))
                 } else if method_name == "first" {
-                    format!("{}.first().cloned()", self.gen_expression(caller))
+                    format!("{}.first().cloned()", self.gen_receiver(caller))
                 } else if method_name == "last" {
-                    format!("{}.last().cloned()", self.gen_expression(caller))
+                    format!("{}.last().cloned()", self.gen_receiver(caller))
                 } else if method_name == "flat_map" {
                     let lambda = self.gen_expression(&args[0]);
-                    let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().flat_map({}).collect::<Vec<_>>()", caller_code, lambda)
+                    let caller_code = self.gen_receiver(caller);
+                    format!("{}.clone().into_iter().flat_map({}).collect::<Vec<_>>()", caller_code, lambda)
                 } else if method_name == "zip" {
                     let other = self.gen_expression(&args[0]);
-                    let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().zip({}.into_iter()).collect::<Vec<_>>()", caller_code, other)
+                    let caller_code = self.gen_receiver(caller);
+                    format!("{}.clone().into_iter().zip({}.clone().into_iter()).collect::<Vec<_>>()", caller_code, other)
                 } else if method_name == "enumerate" {
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     format!("{}.clone().into_iter().enumerate().collect::<Vec<_>>()", caller_code)
                 } else if method_name == "take" {
                     let n = &arg_strs[0];
-                    let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().take({} as usize).collect::<Vec<_>>()", caller_code, n)
+                    let caller_code = self.gen_receiver(caller);
+                    format!("{}.clone().into_iter().take({} as usize).collect::<Vec<_>>()", caller_code, n)
                 } else if method_name == "skip" {
                     let n = &arg_strs[0];
-                    let caller_code = self.gen_expression(caller);
-                    format!("{}.into_iter().skip({} as usize).collect::<Vec<_>>()", caller_code, n)
+                    let caller_code = self.gen_receiver(caller);
+                    format!("{}.clone().into_iter().skip({} as usize).collect::<Vec<_>>()", caller_code, n)
                 } else if method_name == "reduce" || method_name == "fold" {
                     let init = self.gen_expression(&args[0]);
                     let lambda = self.gen_expression(&args[1]);
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     format!("{}.clone().into_iter().fold({}, {})", caller_code, init, lambda)
                 } else if method_name == "sum" {
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     format!("{}.iter().sum::<i64>()", caller_code)
                 } else if method_name == "flatten" {
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     format!("{}.clone().into_iter().flatten().collect::<Vec<_>>()", caller_code)
                 } else if method_name == "dedup" {
                     // `dedup` is Rust's: adjacent duplicates only, which is what the name says.
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     format!("{{ let mut __v = {}.clone(); __v.dedup(); __v }}", caller_code)
                 } else if method_name == "unique" || method_name == "distinct" {
                     // These shared `dedup`'s implementation, so `[3, 1, 2, 1].unique()` returned
                     // all four elements: no two duplicates were adjacent. A name that promises
                     // uniqueness has to deliver it, in first-seen order.
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     format!(
                         "{{ let mut __seen = Vec::new(); \
                          for __x in {}.clone().into_iter() {{ \
@@ -2857,12 +2874,12 @@ impl RustGenerator {
                     )
                 } else if method_name == "lines" {
                     // string.lines() → Vec<String>
-                    format!("{}.lines().map(|l| l.to_string()).collect::<Vec<_>>()", self.gen_expression(caller))
+                    format!("{}.lines().map(|l| l.to_string()).collect::<Vec<_>>()", self.gen_receiver(caller))
                 } else if method_name == "find" {
                     // `Iterator::find` hands the predicate a *reference*, so a lambda written
                     // against the element type (`(n) => n > 10`) did not compile at all. Bind the
                     // owned value first, exactly as `filter` does, and clone the hit out.
-                    let caller_code = self.gen_expression(caller);
+                    let caller_code = self.gen_receiver(caller);
                     let find_closure = match &args[0] {
                         Expression::Lambda { params, body, .. } if params.len() == 1 => {
                             let param_name = esc_ident(&params[0].name);
@@ -3002,10 +3019,24 @@ impl RustGenerator {
                     format!("varg_runtime::proptest::__varg_prop_gen_int_list({})", arg_strs[0])
                 } else if method_name == "prop_gen_string_list" {
                     format!("varg_runtime::proptest::__varg_prop_gen_string_list({}, {})", arg_strs[0], arg_strs[1])
-                } else if method_name == "prop_check" {
-                    format!("varg_runtime::proptest::__varg_prop_check(|| {{ {} }}, {})", arg_strs[0], arg_strs[1])
-                } else if method_name == "prop_assert" {
-                    format!("varg_runtime::proptest::__varg_prop_assert(&{}, || {{ {} }}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
+                } else if method_name == "prop_check" || method_name == "prop_assert" {
+                    // The argument is already a lambda, so wrapping it in `|| { .. }` produced
+                    // `|| || <expr>` and rustc reported "expected bool, found closure". The wrap
+                    // is only needed when the caller passed a bare expression instead.
+                    let wrap = |code: &str| -> String {
+                        if code.trim_start().starts_with('|') || code.trim_start().starts_with("move |") {
+                            code.to_string()
+                        } else {
+                            format!("|| {{ {} }}", code)
+                        }
+                    };
+                    if method_name == "prop_check" {
+                        format!("varg_runtime::proptest::__varg_prop_check({}, {})",
+                                wrap(&arg_strs[0]), arg_strs[1])
+                    } else {
+                        format!("varg_runtime::proptest::__varg_prop_assert(&{}, {}, {})",
+                                arg_strs[0], wrap(&arg_strs[1]), arg_strs[2])
+                    }
                 // ===== Wave 34: Multimodal =====
                 } else if method_name == "image_load" {
                     format!("varg_runtime::multimodal::__varg_image_load(&{})", arg_strs[0])
@@ -3250,13 +3281,28 @@ impl RustGenerator {
                     format!("if !format!(\"{{:?}}\", {}).contains(&format!(\"{{}}\", {})) {{ panic!(\"{{}}\", {}); }}", arg_strs[0], arg_strs[1], msg)
                 } else if method_name == "assert_throws" {
                     let msg = if arg_strs.len() > 1 { arg_strs[1].clone() } else { "\"assert_throws: expected panic but none occurred\"".to_string() };
-                    format!("{{ let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{ {} }})); if __result.is_ok() {{ panic!(\"{{}}\", {}); }} }}", arg_strs[0], msg)
+                    // The argument is already a lambda, so the old `|| {{ .. }}` around it built a
+                    // closure that was never called — catch_unwind saw a body that merely
+                    // *created* a closure, always succeeded, and assert_throws then reported that
+                    // nothing was thrown. A bare expression still gets wrapped.
+                    let body = if arg_strs[0].trim_start().starts_with('|')
+                        || arg_strs[0].trim_start().starts_with("move |")
+                    {
+                        arg_strs[0].clone()
+                    } else {
+                        format!("|| {{ {} }}", arg_strs[0])
+                    };
+                    // Yields whether the body panicked, instead of an `if` with no else — which
+                    // is a statement, so using the result as a value gave rustc's "`if` may be
+                    // missing an else clause". It still panics when nothing was thrown, so its
+                    // use as a bare assertion is unchanged.
+                    format!("{{ varg_runtime::__varg_catching_enter(); let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe({})); varg_runtime::__varg_catching_exit(); if __result.is_ok() {{ panic!(\"{{}}\", {}); }} __result.is_err() }}", body, msg)
                 // ===== Wave 16: set_of() constructor =====
                 } else if method_name == "set_of" {
                     format!("vec![{}].into_iter().collect::<std::collections::HashSet<_>>()", arg_strs.join(", "))
                 } else if method_name == "add" {
                     // HashSet.add(x) → .insert(x) in Rust
-                    format!("{}.insert({})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.insert({})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "exec_status" {
                     format!("{{ let __cmd: String = {}; std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", __cmd.as_str()] }} else {{ vec![\"-c\", __cmd.as_str()] }}).status().map(|s| s.code().unwrap_or(-1) as i64).map_err(|e| e.to_string()) }}", arg_strs[0])
                 // ===== Wave 13: Stdlib Expansion — path =====
@@ -3369,7 +3415,12 @@ impl RustGenerator {
                                 .ok_or_else(|| format!(\"timestamp {{}} is out of range\", __ts)) \
                         }} }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "time_parse" {
-                    format!("chrono::NaiveDateTime::parse_from_str(&{}, &{}).map(|dt| dt.and_utc().timestamp_millis()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
+                    // A date without a time is the documented example (`"%Y-%m-%d"`), and
+                    // `NaiveDateTime` rejects it — so the snippet in REFERENCE could never have
+                    // worked. Fall back to parsing a date and taking midnight, which is what the
+                    // caller means. The doc gate did not catch this because it type-checks and
+                    // this fails at runtime: the very gap these golden programs exist to close.
+                    format!("{{ let __t: String = {}; let __f: String = {};                         chrono::NaiveDateTime::parse_from_str(&__t, &__f)                             .map(|dt| dt.and_utc().timestamp_millis())                             .or_else(|_| chrono::NaiveDate::parse_from_str(&__t, &__f)                                 .map(|d| d.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc().timestamp_millis()))                             .map_err(|e| e.to_string()) }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "time_add" {
                     format!("({} + {})", arg_strs[0], arg_strs[1])
                 } else if method_name == "time_diff" {
@@ -3391,35 +3442,35 @@ impl RustGenerator {
                     // A dropped message is worse than a loud one: the receiver thread may already
                     // be gone (its handle out of scope), and `.unwrap()` would then abort the
                     // sender instead of the caller learning about it.
-                    format!("{{ if {}.send(({}, {}, None)).is_err() {{ eprintln!(\"[WARN] send(`{{}}`) failed: agent mailbox is closed\", {}); }} }}", self.gen_expression(caller), method_arg, args_vec, method_arg)
+                    format!("{{ if {}.send(({}, {}, None)).is_err() {{ eprintln!(\"[WARN] send(`{{}}`) failed: agent mailbox is closed\", {}); }} }}", self.gen_receiver(caller), method_arg, args_vec, method_arg)
                 } else if method_name == "request" {
                     // Request/reply: handle.request("Method", args...)
                     let method_arg = &arg_strs[0];
                     let args_vec = self.gen_message_payload(&args[1..], &arg_strs[1..]);
                     if self.use_async {
-                        format!("{{\n    let (__reply_tx, __reply_rx) = tokio::sync::oneshot::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.await.unwrap()\n}}", self.gen_expression(caller), method_arg, args_vec)
+                        format!("{{\n    let (__reply_tx, __reply_rx) = tokio::sync::oneshot::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.await.unwrap()\n}}", self.gen_receiver(caller), method_arg, args_vec)
                     } else {
-                        format!("{{\n    let (__reply_tx, __reply_rx) = std::sync::mpsc::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.recv().unwrap()\n}}", self.gen_expression(caller), method_arg, args_vec)
+                        format!("{{\n    let (__reply_tx, __reply_rx) = std::sync::mpsc::channel();\n    {}.send(({}, {}, Some(__reply_tx))).unwrap();\n    __reply_rx.recv().unwrap()\n}}", self.gen_receiver(caller), method_arg, args_vec)
                     }
                 // ===== F41-5: Result methods (direct Rust passthrough) =====
                 } else if method_name == "map_err" {
                     let lambda = self.gen_expression(&args[0]);
-                    format!("{}.map_err({})", self.gen_expression(caller), lambda)
+                    format!("{}.map_err({})", self.gen_receiver(caller), lambda)
                 } else if method_name == "and_then" {
                     let lambda = self.gen_expression(&args[0]);
-                    format!("{}.and_then({})", self.gen_expression(caller), lambda)
+                    format!("{}.and_then({})", self.gen_receiver(caller), lambda)
                 } else if method_name == "unwrap" {
-                    format!("{}.unwrap()", self.gen_expression(caller))
+                    format!("{}.unwrap()", self.gen_receiver(caller))
                 } else if method_name == "unwrap_or" {
-                    format!("{}.unwrap_or({})", self.gen_expression(caller), arg_strs[0])
+                    format!("{}.unwrap_or({})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "is_ok" {
-                    format!("{}.is_ok()", self.gen_expression(caller))
+                    format!("{}.is_ok()", self.gen_receiver(caller))
                 } else if method_name == "is_err" {
-                    format!("{}.is_err()", self.gen_expression(caller))
+                    format!("{}.is_err()", self.gen_receiver(caller))
                 } else if method_name == "is_some" {
-                    format!("{}.is_some()", self.gen_expression(caller))
+                    format!("{}.is_some()", self.gen_receiver(caller))
                 } else if method_name == "is_none" {
-                    format!("{}.is_none()", self.gen_expression(caller))
+                    format!("{}.is_none()", self.gen_receiver(caller))
                 // ===== F41-2: HTTP Server Builtins =====
                 } else if method_name == "http_serve" {
                     // http_serve(cap) → VargHttpServer::new()
@@ -3704,7 +3755,7 @@ impl RustGenerator {
                         // Plan 22: Defensive cloning for user-defined method calls
                         let mut cloned_args: Vec<String> = self.gen_adapted_method_args(method_name, args);
                         self.pad_method_defaults(method_name, &mut cloned_args);
-                        format!("{}.{}({})", self.gen_expression(caller), method_name, cloned_args.join(", "))
+                        format!("{}.{}({})", self.gen_receiver(caller), method_name, cloned_args.join(", "))
                     }
                 }
             },
@@ -3715,7 +3766,7 @@ impl RustGenerator {
                         return format!("{}::{}", name, property_name);
                     }
                 }
-                format!("{}.{}", self.gen_expression(caller), property_name)
+                format!("{}.{}", self.gen_receiver(caller), property_name)
             },
             Expression::IndexAccess { caller, index } => {
                 let idx_str = self.gen_expression(index);
@@ -3723,14 +3774,14 @@ impl RustGenerator {
                 let is_map = matches!(**index, Expression::String(_))
                     || if let Expression::Identifier(name) = &**caller { self.map_vars.contains(name) } else { false };
                 if is_map {
-                    format!("{}.get(&{}).unwrap().clone()", self.gen_expression(caller), idx_str)
+                    format!("{}.get(&{}).unwrap().clone()", self.gen_receiver(caller), idx_str)
                 } else {
                     // .clone() ensures String elements from Vec<String> are properly copied.
                     // Wave 29: parenthesize the index expression so binary ops like
                     // `arr[len - 1]` don't get tangled by `as` precedence:
                     // `arr[len - 1 as usize]` is `len - (1 as usize)`, which fails
                     // to type-check. `arr[(len - 1) as usize]` is correct.
-                    format!("{}[({}) as usize].clone()", self.gen_expression(caller), idx_str)
+                    format!("{}[({}) as usize].clone()", self.gen_receiver(caller), idx_str)
                 }
             },
             Expression::ArrayLiteral(elements) => {
@@ -4061,7 +4112,7 @@ impl RustGenerator {
                     if matches!(**caller, Expression::Identifier(ref n) if n == "self") {
                         format!("{}({})", method_name, ordered_args.join(", "))
                     } else {
-                        format!("{}.{}({})", self.gen_expression(caller), method_name, ordered_args.join(", "))
+                        format!("{}.{}({})", self.gen_receiver(caller), method_name, ordered_args.join(", "))
                     }
                 } else {
                     // Unknown function (builtin or forward-declared): pass in given order
@@ -4071,7 +4122,7 @@ impl RustGenerator {
                     if matches!(**caller, Expression::Identifier(ref n) if n == "self") {
                         format!("{}({})", method_name, arg_strs.join(", "))
                     } else {
-                        format!("{}.{}({})", self.gen_expression(caller), method_name, arg_strs.join(", "))
+                        format!("{}.{}({})", self.gen_receiver(caller), method_name, arg_strs.join(", "))
                     }
                 }
             },

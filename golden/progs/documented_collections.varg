@@ -1,0 +1,74 @@
+/// The collection, string and Result builtins the documentation describes and no program ran.
+///
+/// The doc gate type-checks 235 blocks; golden builds and runs. Twice in a row the defects were
+/// in the gap between the two: `"abc".reverse()` emitted `String::reverse`, `unique` shared
+/// `dedup`'s implementation and returned duplicates, `fold` consumed the collection. All three
+/// type-checked perfectly.
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        // ── Predicates over a collection ─────────────────────────────────
+        var nums = [4, 8, 15, 16];
+        print check("all", yn(nums.all((n) => n > 0)), "true");
+        print check("all_false", yn(nums.all((n) => n > 10)), "false");
+        print check("any", yn(nums.any((n) => n == 15)), "true");
+        print check("any_false", yn(nums.any((n) => n == 99)), "false");
+
+        // ── Slicing && pairing ──────────────────────────────────────────
+        print check("take", $"{nums.take(2).len()}", "2");
+        print check("skip", $"{nums.skip(2).len()}", "2");
+        var letters = ["a", "b"];
+        print check("zip", $"{letters.zip(["x", "y"]).len()}", "2");
+        print check("index_of", $"{"hello".index_of("ll")}", "2");
+        print check("index_of_missing", $"{"hello".index_of("zz")}", "-1");
+
+        // ── In-place mutation, and what it returns ───────────────────────
+        var stack = [1, 2];
+        stack.push(3);
+        print check("push", $"{stack.len()}", "3");
+        print check("pop", $"{stack.pop()}", "3");
+        print check("pop_shrinks", $"{stack.len()}", "2");
+        print check("last", $"{[7, 9].last() or -1}", "9");
+
+        // `dedup` removes neighbours only; `unique` removes duplicates. They shared an
+        // implementation, so `unique` returned all four of [3, 1, 2, 1].
+        var dups = [3, 3, 1, 3];
+        print check("dedup_adjacent", $"{dups.dedup().len()}", "3");
+        print check("unique_all", $"{dups.unique().len()}", "2");
+        print check("collection_survives", $"{dups.len()}", "4");
+
+        // ── Maps ─────────────────────────────────────────────────────────
+        var m = {"a": "1", "b": "2"};
+        print check("map_get", m.get("a", "?"), "1");
+        print check("map_get_default", m.get("zz", "?"), "?");
+        print check("map_keys", $"{m.keys().len()}", "2");
+        print check("map_values", $"{m.values().len()}", "2");
+        print check("contains_key", yn(m.contains_key("b")), "true");
+        m.remove("a");
+        print check("map_remove", $"{m.keys().len()}", "1");
+
+        // ── Result combinators ───────────────────────────────────────────
+        // and_then chains another fallible step, so its closure returns a Result.
+        var chained = parse_int("21").and_then((n) => parse_int((n * 2).to_string()));
+        print check("and_then", $"{chained or -1}", "42");
+        // map_err changes the error, not the value, so the fallback is still an int.
+        var relabelled = parse_int("nope").map_err((e) => "cannot read a number");
+        print check("map_err", yn(relabelled.is_err()), "true");
+        print check("map_err_keeps_ok", $"{parse_int("5").map_err((e) => e) or -1}", "5");
+
+        // ── Regex ────────────────────────────────────────────────────────
+        print check("regex_match", yn(regex_match("^h.*o$", "hello") or false), "true");
+        print check("regex_no_match", yn(regex_match("^z", "hello") or false), "false");
+        print check("regex_find_all", $"{(regex_find_all("[0-9]+", "a1b22c") or []).len()}", "2");
+        print check("regex_replace", regex_replace("[0-9]", "a1b2", "#") or "<err>", "a#b#");
+    }
+}

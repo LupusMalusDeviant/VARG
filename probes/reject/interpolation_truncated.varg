@@ -1,0 +1,6 @@
+// @probe reject: the rest was not read
+// The mini-parser inside `${...}` stopped at the first thing it could not continue and nothing
+// looked at the remainder, so `$"{a >= 1 and a <= 2}"` printed the value of `a >= 1`. With a = 5
+// that is `true`, where the whole condition is false: a plausible wrong value, in silence, in
+// the construct the language is most used through.
+agent Main { public void Run() { var a = 5; print $"{a >= 1 and a <= 2}"; } }

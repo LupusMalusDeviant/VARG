@@ -1,0 +1,4 @@
+// @probe reject: and_then
+// `and_then` chains another fallible step, so its closure has to return a Result. A plain value
+// was accepted and left rustc to report "expected `Result<_, String>`, found `i64`".
+agent Main { public void Run() { print parse_int("21").and_then((n) => n * 2) or -1; } }

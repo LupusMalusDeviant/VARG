@@ -1,0 +1,92 @@
+/// The assertion, property-testing, logging, path and PDF builtins the documentation describes
+/// and no program ran.
+///
+/// The doc gate type-checks; golden runs. This file exists because that gap is where the defects
+/// kept turning up: `(n * 2).to_string()` lost its parentheses and became `n * 2.to_string()`,
+/// and `any`/`all`/`take`/`skip`/`zip` consumed the collection so a list could be used once.
+/// Both type-checked perfectly.
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    public void Run() {
+        unsafe {
+            var files = FileAccess {};
+
+            // ── Assertions: they pass silently and throw on a mismatch ───
+            assert(1 + 1 == 2, "arithmetic still works");
+            assert_eq(6 * 7, 42, "product");
+            assert_ne(1, 2, "different");
+            assert_true(true, "true is true");
+            assert_false(false, "false is false");
+            assert_contains("hello world", "lo wo", "substring");
+            print check("assertions_passed", "reached", "reached");
+
+            // assert_throws catches a failure instead of ending the program.
+            print check("assert_throws", yn(assert_throws(() => {
+                assert(false, "deliberate");
+            }, "a failing assertion is caught")), "true");
+
+            // ── Property testing ─────────────────────────────────────────
+            var i = prop_gen_int(-10, 10);
+            print check("prop_gen_int_range", yn(i >= -10 && i <= 10), "true");
+            var f = prop_gen_float();
+            print check("prop_gen_float_range", yn(f >= 0.0 && f <= 1.0), "true");
+            var b = prop_gen_bool();
+            print check("prop_gen_bool", yn(b || !b), "true");
+            print check("prop_gen_string", yn(prop_gen_string(5).len() <= 5), "true");
+            print check("prop_gen_int_list", yn(prop_gen_int_list(4).len() <= 4), "true");
+            print check("prop_gen_string_list", yn(prop_gen_string_list(3, 5).len() <= 5), "true");
+            // prop_check runs the property `runs` times and reports; prop_assert panics instead.
+            var stats = prop_check(() => prop_gen_int(0, 10) >= 0, 50);
+            print check("prop_check_ran", yn(stats.keys().len() > 0), "true");
+            prop_assert("never negative", () => prop_gen_int(0, 10) >= 0, 20);
+            print check("prop_assert_passed", "reached", "reached");
+
+            // ── Logging: each level writes and returns nothing ───────────
+            log_debug("a debug line");
+            log_info("an info line");
+            log_warn("a warning");
+            log_error("an error");
+            print check("logging_returned", "reached", "reached");
+
+            // ── Time ─────────────────────────────────────────────────────
+            print check("time_format_epoch", time_format(0, "%Y") or "<err>", "1970");
+            var parsed = time_parse("1970-01-02", "%Y-%m-%d") or -1;
+            print check("time_parse", $"{parsed}", "86400000");
+            print check("time_add", $"{time_add(0, 1000)}", "1000");
+            print check("time_diff", $"{time_diff(5000, 2000)}", "3000");
+
+            // ── Paths and directories ────────────────────────────────────
+            create_dir("dt_dir")?;
+            fs_write("dt_dir/a.txt", "one\ntwo\n")?;
+            print check("fs_read_lines", $"{(fs_read_lines("dt_dir/a.txt") or []).len()}", "2");
+            print check("fs_read_dir", yn((fs_read_dir("dt_dir") or []).len() >= 1), "true");
+            print check("path_resolve", yn((path_resolve("dt_dir") or "").len() > 0), "true");
+            print check("cache_dir", yn(cache_dir().len() > 0), "true");
+            print check("data_dir", yn(data_dir().len() > 0), "true");
+
+            // ── Environment ──────────────────────────────────────────────
+            set_env("VARG_GOLDEN_PROBE", "set-by-golden");
+            print check("set_env", env("VARG_GOLDEN_PROBE") or "<unset>", "set-by-golden");
+
+            // ── PDF: build one in memory and read its size back ──────────
+            var pdf = pdf_create("Golden Report");
+            pdf_add_section(pdf, "Section", "Body text for the section.");
+            pdf_add_text(pdf, "A paragraph outside any section.");
+            print check("pdf_to_base64", yn(pdf_to_base64(pdf).len() > 100), "true");
+            pdf_save(pdf, "dt_dir/out.pdf");
+            print check("pdf_save", yn((fs_size("dt_dir/out.pdf") or 0) > 100), "true");
+
+            delete_file("dt_dir/a.txt")?;
+            delete_file("dt_dir/out.pdf")?;
+        }
+    }
+}

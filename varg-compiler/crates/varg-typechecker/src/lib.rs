@@ -3595,6 +3595,22 @@ impl TypeChecker {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (closure)".to_string(), found: format!("{} arguments", args.len()) });
                     }
                     let caller_ty = self.infer_expression_type(caller)?;
+                    // `and_then` chains another fallible step, so its closure has to return a
+                    // Result. A closure returning a plain value was accepted here and left rustc
+                    // to report "expected `Result<_, String>`, found `i64`" — about generated
+                    // code, naming a type the author never wrote. Only a definite non-Result is
+                    // rejected; anything the checker cannot pin down passes, as before.
+                    if let Some(body_ty) = self.lambda_result_type(&args[0]) {
+                        if !matches!(body_ty, TypeNode::Result(_, _))
+                            && Self::is_definite_primitive(&body_ty)
+                        {
+                            return Err(TypeError::TypeMismatch {
+                                expected: "an `and_then` closure returning a Result — use `map`                                            semantics by handling the value with `or` instead"
+                                    .to_string(),
+                                found: format!("closure returning {:?}", body_ty),
+                            });
+                        }
+                    }
                     match caller_ty {
                         // Result<T, E>.and_then(fn(T) -> Result<U, E>) → Result<U, E>
                         TypeNode::Result(_, err_ty) => Ok(TypeNode::Result(Box::new(TypeNode::Custom("Dynamic".to_string())), err_ty)),
@@ -4381,6 +4397,26 @@ impl TypeChecker {
             return true;
         }
         matches!(expr, Expression::Lambda { .. })
+    }
+
+    /// The type a lambda's body yields, when it is a single expression the checker can pin down.
+    ///
+    /// Only the expression form is inspected: a block body can return from several places, and
+    /// guessing which one would risk rejecting working code.
+    fn lambda_result_type(&mut self, expr: &Expression) -> Option<TypeNode> {
+        let Expression::Lambda { params, body, .. } = expr else {
+            return None;
+        };
+        let LambdaBody::Expression(inner) = body.as_ref() else {
+            return None;
+        };
+        let saved = self.env.clone();
+        for p in params {
+            self.env.insert(p.name.clone(), p.ty.clone());
+        }
+        let ty = self.infer_expression_type(inner).ok();
+        self.env = saved;
+        ty
     }
 
     fn check_comparable(&self, left: &TypeNode, right: &TypeNode) -> Result<(), TypeError> {

@@ -1,0 +1,6 @@
+// A module one directory below, exporting an agent.
+agent Counter {
+    int n;
+    public void bump() { self.n = self.n + 1; }
+    public int value() { return self.n; }
+}

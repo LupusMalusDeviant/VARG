@@ -33,6 +33,28 @@ pub fn __varg_entry_outcome<T: EntryOutcome>(value: T) -> Result<(), String> {
     value.into_outcome()
 }
 
+thread_local! {
+    /// How many `catch_unwind` stretches this thread is currently inside.
+    ///
+    /// The panic hook exits the process for a failure on the main thread, and it runs before the
+    /// unwind reaches any `catch_unwind`. So `try/catch` caught nothing wherever the entry point
+    /// runs — it worked only on spawned agent threads, which is where it was tested. While this
+    /// is non-zero the hook stays quiet and lets the unwind through to the catch that is waiting.
+    static CATCHING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+pub fn __varg_catching_enter() {
+    CATCHING.with(|c| c.set(c.get() + 1));
+}
+
+pub fn __varg_catching_exit() {
+    CATCHING.with(|c| c.set(c.get().saturating_sub(1)));
+}
+
+fn __varg_is_catching() -> bool {
+    CATCHING.with(|c| c.get()) > 0
+}
+
 pub fn __varg_install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let msg: String = if let Some(s) = info.payload().downcast_ref::<&str>() {
@@ -45,6 +67,11 @@ pub fn __varg_install_panic_hook() {
         let clean = msg
             .strip_prefix("Varg runtime error: ")
             .unwrap_or(&msg);
+        // Inside a `try`, the catch reports what happened; printing here as well would make
+        // one failure look like two.
+        if __varg_is_catching() {
+            return;
+        }
         eprintln!("\x1b[1;31mRuntime error:\x1b[0m {}", clean);
         // Exit only when the *main* thread failed. A spawned agent runs on its own thread,
         // and exiting here took the whole process down over one bad message — the

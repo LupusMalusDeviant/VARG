@@ -46,6 +46,52 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Added — modules can live in subdirectories
+
+`import a.b;` parses as "the item `b` from module `a`", so a dotted name never reached the module
+resolver and its nested-path branch could not fire. A program was a flat pile of files beside its
+entry point, which is what kept one from growing. **Nothing else about size was ever the problem:**
+1000 standalone functions, 200 agents, 40 modules, 60 levels of nesting and 2000 statements in one
+method all compile in well under a second.
+
+`import core.util.strings;` now finds `core/util/strings.varg`. The dotted name is walked from the
+longest prefix to the shortest, so `import modules.flat.triple;` finds `modules/flat.varg` and
+selects `triple` from it, and a plain `import math.triple;` still finds `math.varg` first — nothing
+that worked before changes meaning.
+
+### Fixed — six defects found by running the documentation
+
+Three new golden programs cover 56 builtins the documentation describes and no program ran. Every
+one of these type-checked perfectly and failed only when executed:
+
+- **String interpolation silently discarded whatever it could not parse.** The mini-parser inside
+  `{...}` stopped at the first token it could not continue and nothing looked at the rest, so
+  `$"{a >= 1 and a <= 2}"` printed the value of `a >= 1` — with `a = 5` that is `true`, where the
+  whole condition is false. Any typo inside the braces produced a plausible wrong value, in
+  silence, in the construct the language is most used through. One of this project's own golden
+  programs turned out to contain the mistake.
+- **`(n * 2).to_string()` lost its parentheses** and became `n * 2.to_string()`. The same
+  precedence mistake that made `abs(-5.0)` return -5, in the receiver half of the expression.
+- **`any`, `all`, `take`, `skip`, `zip` and `flat_map` consumed the collection**, so a list could
+  be used exactly once. `map`/`fold`/`enumerate`/`flatten` had been fixed; these had not.
+- **`prop_check`, `prop_assert` and `assert_throws` wrapped their lambda in a second closure**, so
+  `assert_throws` measured a body that merely *created* a closure, always succeeded, and reported
+  that nothing was thrown. `assert_throws` also generated an `if` with no `else`, which is a
+  statement, so using its documented `bool` result did not compile.
+- **`and_then` accepted a closure returning a plain value** and left rustc to report "expected
+  `Result<_, String>`, found `i64`".
+- **`time_parse("2024-01-15", "%Y-%m-%d")` — the example in REFERENCE — could never have worked.**
+  It used `NaiveDateTime`, which requires a time component. A date alone now parses as midnight.
+
+### Fixed — try/catch caught nothing on the main thread
+
+The panic hook exits the process when the failing thread is `main`, and it runs *before* the
+unwind reaches any `catch_unwind`. So `try/catch`, a documented core feature, was inert wherever
+the entry point runs: the program simply died at the failure and neither the catch nor anything
+after it ran. It had only ever been exercised on spawned agent threads. A thread-local depth
+counter now marks the stretches being caught, and the hook stays quiet inside them.
+
+
 ### Fixed — a failing program said it had succeeded
 
 **An error propagating out of the entry point ended the program silently, with status 0.** The

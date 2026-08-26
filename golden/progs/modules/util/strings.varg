@@ -1,0 +1,2 @@
+// A module two directories below the entry point.
+fn shout(string s) -> string { return s.to_upper() + "!"; }
