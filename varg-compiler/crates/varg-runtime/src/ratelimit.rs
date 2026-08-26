@@ -35,6 +35,13 @@ impl TokenBucket {
         }
     }
 
+    /// Refill to capacity. Resetting a limiter means its allowance starts over, not that the
+    /// limiter stops existing.
+    pub fn reset(&mut self) {
+        self.tokens = self.max_tokens;
+        self.last_check = Instant::now();
+    }
+
     pub fn acquire(&mut self) {
         loop {
             self.refill();
@@ -71,9 +78,15 @@ pub fn __varg_rate_limit_try(key: &str, max_calls: u64, window_ms: u64) -> bool 
         .try_acquire()
 }
 
-/// Reset a limiter (primarily for tests).
+/// Reset a limiter, giving it its full allowance again.
+///
+/// This used to `remove()` the limiter from the map. Since `try_acquire` returns false for a key
+/// it cannot find, resetting a limiter made it deny every later call — permanently, and
+/// indistinguishably from being throttled.
 pub fn __varg_rate_limit_reset(key: &str) {
-    limiters().lock().unwrap_or_else(|e| e.into_inner()).remove(key);
+    if let Some(lim) = limiters().lock().unwrap_or_else(|e| e.into_inner()).get_mut(key) {
+        lim.reset();
+    }
 }
 
 // ── Varg builtins for explicit rate limiting ──────────────────────────────
