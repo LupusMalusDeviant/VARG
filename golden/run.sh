@@ -12,6 +12,9 @@ set -uo pipefail
 VARGC="${VARGC:?set VARGC to a vargc binary (e.g. …/target/release/vargc.exe)}"
 cd "$(dirname "$0")"
 mkdir -p expected
+#  where it exists (GNU coreutils on Linux and in Git Bash), nothing where it does not.
+RUNNER=""
+command -v timeout >/dev/null 2>&1 && RUNNER="timeout 120"
 norm() { sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+/<TS>/g'; }
 fail=0
 for v in progs/*.varg; do
@@ -26,7 +29,10 @@ for v in progs/*.varg; do
   # stdin comes from /dev/null: the human-in-the-loop prompts read it, and inheriting a terminal
   # or an open pipe would leave them waiting for input that never comes — a hung CI job rather
   # than a failed one. Closing it is also the situation they are supposed to degrade in.
-  got="$("$exe" </dev/null 2>/dev/null | norm)"
+  # And a time limit, so a program that blocks is a failure rather than a job that never ends.
+  # A hung suite is the worst way for CI not to get through: it reports nothing and burns the
+  # runner until the six-hour cap. 120 s is far above the slowest program here (about 2 s).
+  got="$($RUNNER "$exe" </dev/null 2>/dev/null | norm)"
   # PIPESTATUS[0], not $?: after a pipe $? belongs to `norm`, so the check would have passed
   # for every program no matter how it ended.
   code="${PIPESTATUS[0]}"
