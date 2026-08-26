@@ -1,0 +1,4 @@
+// @probe reject: handle the Result
+// json_set replaced an unparseable document with an empty one and reported success, so the
+// caller believed they had modified their document.
+agent Main { public void Run() { print json_set("not json", "a", "1"); } }

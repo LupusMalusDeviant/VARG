@@ -1,6 +1,7 @@
 OK   time_format_epoch
 OK   time_format_ms
 OK   time_format_hm
+OK   time_format_bad_pattern
 OK   time_millis_recent
 OK   timestamp_rfc3339
 OK   ansi_color

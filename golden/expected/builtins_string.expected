@@ -8,6 +8,7 @@ OK   replace
 OK   substring
 OK   repeat
 OK   char_at
+OK   char_at_past_end
 OK   pad_left
 OK   pad_right
 OK   starts_with

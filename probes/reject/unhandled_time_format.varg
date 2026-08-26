@@ -1,0 +1,4 @@
+// @probe reject: handle the Result
+// Not a silent default but a crash: chrono panics from its Display impl on an unknown specifier,
+// so `time_format(0, "%Q")` took the program down.
+agent Main { public void Run() { print time_format(0, "%Q"); } }

@@ -30,13 +30,24 @@ agent Main {
         print check("json_has_false", yn(has_zzz), "false");
 
         // json_set on a raw string, then read the new value back.
-        var updated = json_set(raw, "city", "vienna");
+        // Fallible: an unparseable document used to be replaced by an empty one, so the
+        // write "succeeded" with everything else in the document gone.
+        var updated = json_set(raw, "city", "vienna") or "<set failed>";
+        print check("json_set_reports_junk",
+                    json_set("not json", "a", "1") or "<document broken>",
+                    "<document broken>");
         print check("json_set", (json_get(updated, "city") or "<missing>"), "vienna");
         print check("json_set_keeps", (json_get(updated, "name") or "<missing>"), "ada");
 
         // json_merge: right side wins on conflict, new keys are added.
         var patch = "{\"age\": 41, \"role\": \"admin\"}";
-        var merged = json_merge(raw, patch);
+        var merged = json_merge(raw, patch) or "<merge failed>";
+        // A side that will not parse used to vanish in silence, which looked exactly like a
+        // merge that legitimately changed nothing.
+        print check("json_merge_reports_left",
+                    json_merge("not json", patch) or "<left broken>", "<left broken>");
+        print check("json_merge_reports_right",
+                    json_merge(raw, "not json") or "<right broken>", "<right broken>");
         var merged_age = (json_get_int(merged, "age") or -1);
         print check("json_merge_override", $"{merged_age}", "41");
         print check("json_merge_add", (json_get(merged, "role") or "<missing>"), "admin");

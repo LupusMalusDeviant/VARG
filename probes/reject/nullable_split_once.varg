@@ -1,0 +1,4 @@
+// @probe reject: supply a fallback with `or`
+// Without the separator there is no split. `("", "")` was both the failure answer and what
+// splitting "=" on "=" legitimately gives -- the two were indistinguishable.
+agent Main { public void Run() { var p = "ab".split_once("="); print p == ("", ""); } }

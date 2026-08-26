@@ -15,9 +15,13 @@ fn yn(bool b) -> string {
 
 agent Main {
     public void Run() {
-        print check("path_stem", path_stem("report.pdf"), "report");
-        print check("path_extension", path_extension("archive.tar.gz"), "gz");
-        print check("path_parent", path_parent("dir/sub/file.txt"), "dir/sub");
+        // Nullable: these answer "nothing there" for a name with no extension and a path
+        // with no directory. All three used to say "", the same as a failure.
+        print check("path_stem", path_stem("report.pdf") or "<none>", "report");
+        print check("path_extension", path_extension("archive.tar.gz") or "<none>", "gz");
+        print check("path_parent", path_parent("dir/sub/file.txt") or "<none>", "dir/sub");
+        print check("path_extension_none", path_extension("README") or "<none>", "<none>");
+        print check("path_parent_none", path_parent("bare") or "<none>", "<none>");
 
         var joined = path_join("dir", "file.txt");
         var join_ok = joined.ends_with("file.txt") && joined.starts_with("dir");

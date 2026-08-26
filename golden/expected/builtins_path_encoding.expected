@@ -1,6 +1,8 @@
 OK   path_stem
 OK   path_extension
 OK   path_parent
+OK   path_extension_none
+OK   path_parent_none
 OK   path_join_shape
 OK   base64_encode
 OK   base64_decode

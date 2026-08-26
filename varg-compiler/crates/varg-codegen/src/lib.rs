@@ -2598,23 +2598,17 @@ impl RustGenerator {
                     let prompt = if arg_strs.len() > 1 { &arg_strs[1] } else { "\"\"" };
                     let model = if arg_strs.len() > 2 { &arg_strs[2] } else { "\"llama3\"" };
                     format!("__varg_llm_chat({}, &{}, &{})", ctx, prompt, model)
-                } else if method_name == "to_json" {
-                    format!("serde_json::to_string(&{}).unwrap_or_else(|e| format!(\"{{}}\", e))", arg_strs[0])
-                } else if method_name == "from_json" {
-                    // For MVP: parse into a flat String HashMap
-                    format!("serde_json::from_str::<std::collections::HashMap<String, String>>(&{}).unwrap_or_default()", arg_strs[0])
+
+
                 } else if method_name == "__varg_create_tensor" {
                     format!("__varg_create_tensor({})", arg_strs[0])
                 } else if method_name == "__varg_create_context" {
                     format!("__varg_create_context(&{})", arg_strs[0])
                 } else if method_name == "context_from" {
                     format!("__varg_context_from(&{})", arg_strs[0])
-                } else if method_name == "file_read" {
-                    format!("std::fs::read_to_string(&{}).unwrap_or_else(|e| format!(\"{{}}\", e))", arg_strs[0])
-                } else if method_name == "file_write" {
-                    format!("std::fs::write(&{}, &{}).unwrap()", arg_strs[0], arg_strs[1])
-                } else if method_name == "time_now" {
-                    "(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64)".to_string()
+
+
+
                 } else if method_name == "str_replace" {
                     format!("{}.replace(&{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 } else if method_name == "str_trim" {
@@ -2645,7 +2639,10 @@ impl RustGenerator {
                 } else if method_name == "substring" {
                     format!("{}.chars().skip({} as usize).take({} as usize).collect::<String>()", self.gen_expression(caller), arg_strs[0], arg_strs[1])
                 } else if method_name == "char_at" {
-                    format!("{}.chars().nth({} as usize).map(|c| c.to_string()).unwrap_or_default()", self.gen_expression(caller), arg_strs[0])
+                    // Nullable: an index past the end has no character. The default made that
+                    // the empty string, which is not a character either — nothing in the program
+                    // could tell "no such position" from anything else.
+                    format!("{}.chars().nth({} as usize).map(|c| c.to_string())", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "index_of" {
                     format!("{}.find(&{}).map(|i| i as i64).unwrap_or(-1)", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "trim" {
@@ -2656,7 +2653,10 @@ impl RustGenerator {
                     format!("{}.trim_end().to_string()", self.gen_expression(caller))
                 } else if method_name == "split_once" {
                     // Returns (string, string) tuple option
-                    format!("{}.split_once(&{}).map(|(a,b)| (a.to_string(), b.to_string())).unwrap_or_default()", self.gen_expression(caller), arg_strs[0])
+                    // Nullable: without the separator there is no split. The default returned
+                    // `("", "")`, which is exactly what splitting "=" on "=" legitimately gives
+                    // — success and failure were the same two values.
+                    format!("{}.split_once(&{}).map(|(a,b)| (a.to_string(), b.to_string()))", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "count_occurrences" {
                     format!("{}.matches({}.as_str()).count() as i64", self.gen_expression(caller), arg_strs[0])
                 } else if method_name == "chars" {
@@ -2890,7 +2890,9 @@ impl RustGenerator {
                 } else if method_name == "readline_new" {
                     "varg_runtime::readline::__varg_readline_new().unwrap()".to_string()
                 } else if method_name == "readline_read" {
-                    format!("varg_runtime::readline::__varg_readline_read(&{}, &{}).unwrap_or_default()", arg_strs[0], arg_strs[1])
+                    // The runtime already reports EOF and Ctrl-C; the default threw that away,
+                    // so end-of-input was indistinguishable from the user pressing return.
+                    format!("varg_runtime::readline::__varg_readline_read(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "set_env" {
                     format!("{{ std::env::set_var({}, {}) }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "readline_add_history" {
@@ -3185,8 +3187,13 @@ impl RustGenerator {
                 } else if method_name == "json_get_array" {
                     format!("varg_runtime::json::__varg_json_get_array(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_stringify" {
+                    // Unreachable rather than silent: serialising a `serde_json::Value` fails
+                    // only for a non-string map key or a non-finite float, and a `Value` can hold
+                    // neither — `Number::from_f64` rejects NaN and infinity, and object keys are
+                    // always `String`. Left as a default deliberately, not overlooked.
                     format!("serde_json::to_string(&{}).unwrap_or_default()", arg_strs[0])
                 } else if method_name == "json_stringify_pretty" {
+                    // Same as `json_stringify` above: a `Value` cannot fail to serialise.
                     format!("serde_json::to_string_pretty(&{}).unwrap_or_default()", arg_strs[0])
                 // Mirror of the above: these only accepted a raw string, so a value that had already
                 // been through json_parse was rejected. Now both shapes work here as well.
@@ -3197,10 +3204,10 @@ impl RustGenerator {
                 } else if method_name == "json_has" {
                     format!("varg_runtime::json::__varg_json_has(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_merge" {
-                    format!("{{ let mut __a = serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Object(serde_json::Map::new())); if let (Some(am), Ok(serde_json::Value::Object(bm))) = (__a.as_object_mut(), serde_json::from_str::<serde_json::Value>(&{})) {{ for (k,v) in bm {{ am.insert(k,v); }} }} serde_json::to_string(&__a).unwrap_or_default() }}", arg_strs[0], arg_strs[1])
+                    format!("varg_runtime::json::__varg_json_merge(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "json_set" {
                     // json_set(json_str, key, value_str) → string
-                    format!("{{ let mut __j = serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Object(serde_json::Map::new())); if let Some(obj) = __j.as_object_mut() {{ obj.insert({}.clone(), serde_json::from_str(&{}).unwrap_or(serde_json::Value::String({}.clone()))); }} serde_json::to_string(&__j).unwrap_or_default() }}", arg_strs[0], arg_strs[1], arg_strs[2], arg_strs[2])
+                    format!("varg_runtime::json::__varg_json_set(&{}, &{}, &{})", arg_strs[0], arg_strs[1], arg_strs[2])
                 // ===== Wave 15: Test Framework — assert builtins =====
                 } else if method_name == "assert" {
                     format!("if !({}) {{ panic!(\"Assertion failed: {{}}\", {}); }}", arg_strs[0], arg_strs[1])
@@ -3235,11 +3242,16 @@ impl RustGenerator {
                 } else if method_name == "path_join" {
                     format!("std::path::Path::new(&{}).join(&{}).to_string_lossy().to_string()", arg_strs[0], arg_strs[1])
                 } else if method_name == "path_parent" {
-                    format!("std::path::Path::new(&{}).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()", arg_strs[0])
+                    // Nullable: a root has no parent, and neither does a bare name — Rust
+                    // answers `Some("")` for that one, which is the same empty string the old
+                    // default handed back on failure, so it is filtered out here.
+                    format!("std::path::Path::new(&{}).parent().map(|p| p.to_string_lossy().to_string()).filter(|p| !p.is_empty())", arg_strs[0])
                 } else if method_name == "path_extension" {
-                    format!("std::path::Path::new(&{}).extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()", arg_strs[0])
+                    // Nullable: a root has no parent, a bare name has no extension.
+                    format!("std::path::Path::new(&{}).extension().map(|e| e.to_string_lossy().to_string())", arg_strs[0])
                 } else if method_name == "path_stem" {
-                    format!("std::path::Path::new(&{}).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()", arg_strs[0])
+                    // Nullable: a root has no parent, a bare name has no extension.
+                    format!("std::path::Path::new(&{}).file_stem().map(|s| s.to_string_lossy().to_string())", arg_strs[0])
                 // ===== Wave 13/14: Stdlib Expansion — regex (Result-based) =====
                 } else if method_name == "regex_match" {
                     format!("varg_runtime::regex_utils::__varg_regex_match(&{}, &{})", arg_strs[0], arg_strs[1])
@@ -3254,7 +3266,7 @@ impl RustGenerator {
                     // `args()` deliberately skips argv[0], so a program had no way to find its own
                     // binary. Needed to re-invoke itself — an MCP server exposing its own tools is
                     // exactly that shape.
-                    "std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()".to_string()
+                    "std::env::current_exe().map(|p| p.display().to_string()).map_err(|e| e.to_string())".to_string()
                 } else if method_name == "stdin_read_line" {
                     "{ let mut __varg_line = String::new(); std::io::stdin().read_line(&mut __varg_line).map(|_| __varg_line.trim_end_matches(|c| c == '\\n' || c == '\\r').to_string()).map_err(|e| e.to_string()) }".to_string()
                 } else if method_name == "stdin_read" {
@@ -3320,7 +3332,19 @@ impl RustGenerator {
                 } else if method_name == "time_millis" {
                     "(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64)".to_string()
                 } else if method_name == "time_format" {
-                    format!("chrono::DateTime::from_timestamp_millis({}).map(|dt| dt.format(&{}).to_string()).unwrap_or_default()", arg_strs[0], arg_strs[1])
+                    // Not a silent default but a crash: chrono's `format` panics from its
+                    // Display impl on an unknown specifier, so `time_format(0, "%Q")` took the
+                    // program down with "a Display implementation returned an error
+                    // unexpectedly". Validate the pattern first, and report a timestamp that has
+                    // no date instead of returning "".
+                    format!("{{ let __ts: i64 = {}; let __fmt: String = {}; \
+                        if chrono::format::StrftimeItems::new(&__fmt).any(|i| matches!(i, chrono::format::Item::Error)) {{ \
+                            Err(format!(\"invalid time format `{{}}`\", __fmt)) \
+                        }} else {{ \
+                            chrono::DateTime::from_timestamp_millis(__ts) \
+                                .map(|dt| dt.format(&__fmt).to_string()) \
+                                .ok_or_else(|| format!(\"timestamp {{}} is out of range\", __ts)) \
+                        }} }}", arg_strs[0], arg_strs[1])
                 } else if method_name == "time_parse" {
                     format!("chrono::NaiveDateTime::parse_from_str(&{}, &{}).map(|dt| dt.and_utc().timestamp_millis()).map_err(|e| e.to_string())", arg_strs[0], arg_strs[1])
                 } else if method_name == "time_add" {
@@ -8794,7 +8818,9 @@ mod tests {
         let code = e2e_compile(r#"
             fn main() {
                 var now = time_millis();
-                var formatted = time_format(now, "%Y-%m-%d %H:%M:%S");
+                // Fallible now: chrono panics on an unknown specifier, so this used to take
+                // the program down rather than return anything.
+                var formatted = time_format(now, "%Y-%m-%d %H:%M:%S") or "<bad format>";
                 var later = time_add(now, 60000);
                 var delta = time_diff(later, now);
                 print formatted;

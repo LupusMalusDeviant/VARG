@@ -13,6 +13,16 @@ use std::borrow::Cow;
 /// JSON input: either an already-parsed `Value` or a raw JSON string.
 pub trait AsJson {
     fn as_json(&self) -> Cow<'_, Value>;
+
+    /// The same value, but saying so when a raw string will not parse.
+    ///
+    /// `as_json` turns unparseable text into `Value::Null`, which is right for the accessors:
+    /// there is no value at that path either way. The builtins that *write* need the difference,
+    /// so that "your document will not parse" does not come out as "your document is not an
+    /// object". A parsed `Value` cannot fail, so the default implementation never errors.
+    fn try_as_json(&self) -> Result<Cow<'_, Value>, String> {
+        Ok(self.as_json())
+    }
 }
 
 impl AsJson for Value {
@@ -25,11 +35,21 @@ impl AsJson for String {
     fn as_json(&self) -> Cow<'_, Value> {
         Cow::Owned(serde_json::from_str(self).unwrap_or(Value::Null))
     }
+
+    fn try_as_json(&self) -> Result<Cow<'_, Value>, String> {
+        self.as_str().try_as_json()
+    }
 }
 
 impl AsJson for str {
     fn as_json(&self) -> Cow<'_, Value> {
         Cow::Owned(serde_json::from_str(self).unwrap_or(Value::Null))
+    }
+
+    fn try_as_json(&self) -> Result<Cow<'_, Value>, String> {
+        serde_json::from_str(self)
+            .map(Cow::Owned)
+            .map_err(|e| format!("invalid JSON: {}", e))
     }
 }
 
@@ -50,6 +70,48 @@ fn lookup<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 /// between "this key is absent" and "this is not JSON".
 pub fn __varg_json_parse(s: &str) -> Result<Value, String> {
     serde_json::from_str::<Value>(s).map_err(|e| format!("invalid JSON: {}", e))
+}
+
+/// Set one key in a JSON document, or report that the document will not parse.
+///
+/// This used to lower to `from_str(..).unwrap_or(Value::Object(Map::new()))`, so an unparseable
+/// document was silently replaced by an empty one and the write then "succeeded":
+/// `json_set("not json", "a", "1")` returned `{"a":1}`. The caller believes they modified their
+/// document; what they got back is a different document with everything else gone.
+///
+/// The value is parsed as JSON when it can be, so `"1"` sets a number and `"[1,2]"` an array;
+/// anything else is stored as a string, which is what a bare word means.
+pub fn __varg_json_set<J: AsJson + ?Sized>(j: &J, key: &str, value: &str) -> Result<String, String> {
+    let mut doc = j.try_as_json()?.into_owned();
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| format!("cannot set `{}`: the document is not a JSON object", key))?;
+    let parsed = serde_json::from_str::<Value>(value).unwrap_or(Value::String(value.to_string()));
+    obj.insert(key.to_string(), parsed);
+    serde_json::to_string(&doc).map_err(|e| e.to_string())
+}
+
+/// Merge `b` into `a`, or report which side will not parse.
+///
+/// Both sides used to fall back to an empty object, so a broken left side vanished and a broken
+/// right side was ignored in silence — `json_merge("{\"a\":1}", "not json")` returned
+/// `{"a":1}`, indistinguishable from a merge that legitimately changed nothing.
+pub fn __varg_json_merge<A: AsJson + ?Sized, B: AsJson + ?Sized>(
+    a: &A,
+    b: &B,
+) -> Result<String, String> {
+    let mut left = a.try_as_json().map_err(|e| format!("left side: {}", e))?.into_owned();
+    let right = b.try_as_json().map_err(|e| format!("right side: {}", e))?.into_owned();
+    let lm = left
+        .as_object_mut()
+        .ok_or_else(|| "cannot merge: the left side is not a JSON object".to_string())?;
+    let rm = right
+        .as_object()
+        .ok_or_else(|| "cannot merge: the right side is not a JSON object".to_string())?;
+    for (k, v) in rm {
+        lm.insert(k.clone(), v.clone());
+    }
+    serde_json::to_string(&left).map_err(|e| e.to_string())
 }
 
 /// Render a value the way `json_get` reports it: a string is its own text (no quotes), any

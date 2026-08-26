@@ -30,7 +30,9 @@ agent Main {
         print check("replace", t.replace("Varg", "World"), "Hello World");
         print check("substring", t.substring(0, 5), "Hello");
         print check("repeat", "ab".repeat(3), "ababab");
-        print check("char_at", t.char_at(1), "e");
+        // Nullable: an index past the end has no character, which "" never distinguished.
+        print check("char_at", t.char_at(1) or "<none>", "e");
+        print check("char_at_past_end", t.char_at(99) or "<none>", "<none>");
         print check("pad_left", "7".pad_left(4), "   7");
         print check("pad_right", "7".pad_right(4), "7   ");
 

@@ -16,9 +16,12 @@ fn yn(bool b) -> string {
 agent Main {
     public void Run() {
         // Fixed epoch → deterministic in every timezone (conversion is UTC).
-        print check("time_format_epoch", time_format(0, "%Y-%m-%d"), "1970-01-01");
-        print check("time_format_ms", time_format(86400000, "%Y-%m-%d"), "1970-01-02");
-        print check("time_format_hm", time_format(3661000, "%H:%M:%S"), "01:01:01");
+        // Fallible: chrono panics from its Display impl on an unknown specifier, so an
+        // invalid pattern used to take the program down rather than return anything.
+        print check("time_format_epoch", time_format(0, "%Y-%m-%d") or "<err>", "1970-01-01");
+        print check("time_format_ms", time_format(86400000, "%Y-%m-%d") or "<err>", "1970-01-02");
+        print check("time_format_hm", time_format(3661000, "%H:%M:%S") or "<err>", "01:01:01");
+        print check("time_format_bad_pattern", time_format(0, "%Q") or "<bad pattern>", "<bad pattern>");
 
         var now = time_millis();
         var now_is_recent = now > 1700000000000;

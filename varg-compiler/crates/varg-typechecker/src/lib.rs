@@ -63,6 +63,7 @@ pub enum TypeError {
     UnannotatedLambdaParam { param_name: String },
     ValueFromInPlaceMutation { method_name: String },
     ReceiverBuiltinCalledFree { method_name: String, takes_args: bool },
+    RetiredBuiltin { method_name: String, replacement: String, why: String },
     ReceiverBuiltinTakesNoArgs { method_name: String, found: usize },
     DivisionByZeroLiteral,
     FieldTypeMismatch { type_name: String, field_name: String, expected: String, found: String },
@@ -150,6 +151,12 @@ impl TypeError {
                     method_name,
                     method_name,
                     if *takes_args { "..." } else { "" }
+                )
+            }
+            TypeError::RetiredBuiltin { method_name, replacement, why } => {
+                format!(
+                    "`{}` is gone — use `{}` instead. It {}",
+                    method_name, replacement, why
                 )
             }
             TypeError::ReceiverBuiltinTakesNoArgs { method_name, found } => {
@@ -268,6 +275,7 @@ impl TypeError {
             TypeError::UnannotatedLambdaParam { param_name } => Some(param_name.as_str()),
             TypeError::ValueFromInPlaceMutation { method_name } => Some(method_name.as_str()),
             TypeError::ReceiverBuiltinCalledFree { method_name, .. } => Some(method_name.as_str()),
+            TypeError::RetiredBuiltin { method_name, .. } => Some(method_name.as_str()),
             TypeError::ReceiverBuiltinTakesNoArgs { method_name, .. } => Some(method_name.as_str()),
             TypeError::AssignToConst { name } => Some(name.as_str()),
             TypeError::FieldTypeMismatch { field_name, .. } => Some(field_name.as_str()),
@@ -1965,6 +1973,36 @@ impl TypeChecker {
             },
             Expression::MethodCall { caller, method_name, args } => {
                 let method_name = method_name.trim_start_matches("__varg_").trim_start_matches("__varg_min_");
+                // Undocumented duplicates of documented builtins, each of which handled failure
+                // by inventing a plausible answer. None appeared in REFERENCE, the guide, or any
+                // program in this repository; what they did appear in was the list of silent
+                // defaults. Rejected by name so the replacement is one message away, rather than
+                // removed into an "unknown function".
+                const RETIRED: &[(&str, &str, &str)] = &[
+                    ("file_read", "fs_read",
+                     "returned the error message as the file's contents, so a missing file read \
+                      back as text describing the failure."),
+                    ("file_write", "fs_write",
+                     "called `.unwrap()`, so a failed write took the program down instead of \
+                      reporting anything."),
+                    ("to_json", "json_stringify",
+                     "returned the error message in place of the JSON."),
+                    ("from_json", "json_parse",
+                     "turned an unparseable document into an empty one, so every later read \
+                      reported the keys as merely absent."),
+                    ("time_now", "timestamp",
+                     "was a second spelling of the same clock, with no documentation saying \
+                      which to reach for."),
+                ];
+                if let Some((_, replacement, why)) =
+                    RETIRED.iter().find(|(n, _, _)| *n == method_name)
+                {
+                    return Err(TypeError::RetiredBuiltin {
+                        method_name: method_name.to_string(),
+                        replacement: replacement.to_string(),
+                        why: why.split_whitespace().collect::<Vec<_>>().join(" "),
+                    });
+                }
                 // B2: close the OCAP-nesting bypass. Each builtin branch below early-returns
                 // after only an arity check, so a capability-gated builtin used as an ARGUMENT
                 // of another call (e.g. `str_trim(fs_read(path))`, `exec(x) |> f`, or
@@ -2256,7 +2294,8 @@ impl TypeChecker {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (index)".to_string(), found: format!("{} arguments", args.len()) });
                     }
-                    Ok(TypeNode::String)
+                    // Nullable: an index past the end has no character.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::String)))
                 } else if method_name == "index_of" {
                     if args.len() != 1 {
                         return Err(TypeError::TypeMismatch { expected: "1 argument (substring)".to_string(), found: format!("{} arguments", args.len()) });
@@ -2279,7 +2318,12 @@ impl TypeChecker {
                     }
                     Ok(TypeNode::String)
                 } else if method_name == "split_once" {
-                    Ok(TypeNode::Tuple(vec![TypeNode::String, TypeNode::String]))
+                    // Nullable: without the separator there is no split. `("", "")` was both
+                    // the failure answer and what splitting "=" on "=" legitimately gives.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::Tuple(vec![
+                        TypeNode::String,
+                        TypeNode::String,
+                    ]))))
                 } else if method_name == "count_occurrences" {
                     Ok(TypeNode::Int)
                 // ===== Wave 5: Collection Methods =====
@@ -2439,10 +2483,14 @@ impl TypeChecker {
                     Ok(TypeNode::Bool)
                 } else if method_name == "json_merge" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json_str1, json_str2)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::String)
+                    // Fallible: a side that will not parse used to vanish, and the merge then
+                    // reported success having silently dropped it.
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "json_set" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (json_str, key, value)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::String)
+                    // Fallible: an unparseable document used to be replaced by an empty one, so
+                    // the write "succeeded" and everything else in the document was gone.
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 // ===== Wave 15: Test Framework — assert builtins =====
                 } else if method_name == "assert" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (condition, message)".to_string(), found: format!("{} arguments", args.len()) }); }
@@ -2495,7 +2543,8 @@ impl TypeChecker {
                     Ok(TypeNode::String)
                 } else if method_name == "path_parent" || method_name == "path_extension" || method_name == "path_stem" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (path)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::String)
+                    // Nullable: a root has no parent, a bare name has no extension.
+                    Ok(TypeNode::Nullable(Box::new(TypeNode::String)))
                 // ===== Wave 13: Stdlib Expansion — regex =====
                 } else if method_name == "regex_match" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (pattern, string)".to_string(), found: format!("{} arguments", args.len()) }); }
@@ -3020,7 +3069,9 @@ impl TypeChecker {
                     Ok(TypeNode::Int)
                 } else if method_name == "time_format" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (millis, pattern)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::String)
+                    // Fallible: chrono panics from its Display impl on an unknown specifier, so
+                    // this used to take the program down rather than return anything.
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "time_parse" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (string, pattern)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::String)))
@@ -3219,8 +3270,12 @@ impl TypeChecker {
                 } else if method_name == "trace_set_attr" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (tracer, key, value)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::Void)
-                } else if method_name == "agents_list" || method_name == "exe_path" {
+                } else if method_name == "agents_list" {
                     Ok(TypeNode::String)
+                } else if method_name == "exe_path" {
+                    // Fallible: reading the running executable's path can fail. It shared a
+                    // branch with `agents_list`, which really is infallible.
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "agents_count" || method_name == "agents_count_by_status" {
                     Ok(TypeNode::Int)
                 } else if method_name == "trace_span_count" {
@@ -4824,7 +4879,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ocap_file_read_violation() {
+    fn test_ocap_fs_read_violation() {
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
@@ -4846,7 +4901,7 @@ mod tests {
                     body: Some(Block { statements: vec![
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
-                                method_name: "file_read".to_string(),
+                                method_name: "fs_read".to_string(),
                                 args: vec![Expression::String("/etc/passwd".to_string())] })
                         ]
                     })
@@ -4857,11 +4912,11 @@ mod tests {
         let result = checker.check_program(&program);
         assert!(result.is_err());
         let msg = result.unwrap_err().into_iter().next().unwrap().message();
-        assert!(msg.contains("file_read") && msg.contains("FileAccess"));
+        assert!(msg.contains("fs_read") && msg.contains("FileAccess"));
     }
 
     #[test]
-    fn test_ocap_file_write_violation() {
+    fn test_ocap_fs_write_violation() {
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
@@ -4883,7 +4938,7 @@ mod tests {
                     body: Some(Block { statements: vec![
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
-                                method_name: "file_write".to_string(),
+                                method_name: "fs_write".to_string(),
                                 args: vec![
                                     Expression::String("/tmp/test".to_string()),
                                     Expression::String("data".to_string()),
@@ -4897,7 +4952,7 @@ mod tests {
         let result = checker.check_program(&program);
         assert!(result.is_err());
         let msg = result.unwrap_err().into_iter().next().unwrap().message();
-        assert!(msg.contains("file_write") && msg.contains("FileAccess"));
+        assert!(msg.contains("fs_write") && msg.contains("FileAccess"));
     }
 
     #[test]
@@ -4989,7 +5044,7 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_unsafe_file_read() {
+    fn test_valid_unsafe_fs_read() {
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
@@ -5013,7 +5068,7 @@ mod tests {
                                 statements: vec![
                                     Statement::Expr(Expression::MethodCall {
                                         caller: Box::new(Expression::Identifier("self".to_string())),
-                                        method_name: "file_read".to_string(),
+                                        method_name: "fs_read".to_string(),
                                         args: vec![Expression::String("/tmp/data".to_string())] })
                                 ]
                             })
@@ -5285,8 +5340,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ocap_capability_token_grants_file_read() {
-        // FileAccess token should grant file_read permission
+    fn test_ocap_capability_token_grants_fs_read() {
+        // FileAccess token should grant fs_read permission
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
@@ -5304,11 +5359,13 @@ mod tests {
                     type_params: vec![],
                     constraints: vec![],
                     args: vec![FieldDecl { name: "fs".to_string(), ty: TypeNode::Capability(CapabilityType::FileAccess), default_value: None }],
-                    return_ty: Some(TypeNode::String),
+                    // `fs_read` is fallible where the retired `file_read` pretended not to be,
+                    // so the method that returns its result is fallible too.
+                    return_ty: Some(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::String))),
                     body: Some(Block { statements: vec![
                             Statement::Return(Some(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
-                                method_name: "file_read".to_string(),
+                                method_name: "fs_read".to_string(),
                                 args: vec![Expression::String("config.json".to_string())] }))
                         ]
                     })
@@ -5316,7 +5373,8 @@ mod tests {
             })]
         };
         let mut checker = TypeChecker::new();
-        assert!(checker.check_program(&program).is_ok());
+        let result = checker.check_program(&program);
+        assert!(result.is_ok(), "{:?}", result);
     }
 
     #[test]
@@ -6270,7 +6328,7 @@ mod tests {
                             args: vec![Expression::String("url".to_string())] }),
                         Statement::Expr(Expression::MethodCall {
                             caller: Box::new(Expression::Identifier("self".to_string())),
-                            method_name: "file_read".to_string(),
+                            method_name: "fs_read".to_string(),
                             args: vec![Expression::String("path".to_string())],
                         }),
                         Statement::Expr(Expression::Query(SurrealQueryNode {
@@ -6308,7 +6366,7 @@ mod tests {
                                 args: vec![Expression::String("url".to_string())] }),
                             Statement::Expr(Expression::MethodCall {
                                 caller: Box::new(Expression::Identifier("self".to_string())),
-                                method_name: "file_read".to_string(),
+                                method_name: "fs_read".to_string(),
                                 args: vec![Expression::String("path".to_string())],
                             }),
                         ]}),
@@ -6323,10 +6381,10 @@ mod tests {
     fn test_missing_capability_error_message() {
         let err = TypeError::MissingCapability {
             capability: "FileAccess".to_string(),
-            operation: "file_write".to_string(),
+            operation: "fs_write".to_string(),
         };
         let msg = err.message();
-        assert!(msg.contains("file_write"));
+        assert!(msg.contains("fs_write"));
         assert!(msg.contains("FileAccess"));
         assert!(msg.contains("capability token"));
     }
@@ -9276,7 +9334,9 @@ mod tests {
     }
 
     #[test]
-    fn test_stdlib_path_parent_returns_string() {
+    /// A root has no parent, so the answer can be nothing. This asserted the plain string,
+    /// which is what kept `""` — the same answer a failure gave — looking intentional.
+    fn test_stdlib_path_parent_is_nullable() {
         let mut checker = TypeChecker::new();
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
@@ -9284,7 +9344,7 @@ mod tests {
             args: vec![Expression::String("/home/user/file.txt".to_string())],
         };
         let ty = checker.infer_expression_type(&expr).unwrap();
-        assert_eq!(ty, TypeNode::String);
+        assert_eq!(ty, TypeNode::Nullable(Box::new(TypeNode::String)));
     }
 
     #[test]

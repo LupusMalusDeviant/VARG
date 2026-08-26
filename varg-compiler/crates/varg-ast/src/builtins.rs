@@ -17,13 +17,13 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
     let t = match name {
         // ── String ────────────────────────────────────────────────────────────────
         "to_upper" | "to_lower" | "trim" | "trim_start" | "trim_end" | "ltrim" | "rtrim"
-        | "replace" | "substring" | "repeat" | "pad_left" | "pad_right" | "char_at"
-        | "json_stringify" | "json_stringify_pretty" | "json_set" | "json_merge"
+        | "replace" | "substring" | "repeat" | "pad_left" | "pad_right"
+        | "json_stringify" | "json_stringify_pretty"
         | "to_string" | "to_hex" | "to_binary" | "to_fixed" | "uuid"
         | "base64_encode" | "base64_decode" | "base64_encode_file"
-        | "path_join" | "path_parent" | "path_stem" | "path_extension"
-        | "time_format" | "timestamp" | "memory_get" | "workflow_status"
-        | "ansi_color" | "ansi_bold" | "ansi_reset" | "agents_list" | "exe_path"
+        | "path_join"
+        | "timestamp" | "memory_get" | "workflow_status"
+        | "ansi_color" | "ansi_bold" | "ansi_reset" | "agents_list"
         // fetch / http_download_base64 look fallible but their runtime fns return a bare String
         // (errors surface in the body), so their static type is String, not Result. Keeping them
         // here is what the runtime signatures actually guarantee — see net.rs / encoding.rs.
@@ -65,12 +65,28 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         "parse_float" => TypeNode::Result(Box::new(TypeNode::Float), Box::new(TypeNode::Error)),
         // Same reasoning for a whole document: unparseable input is an error, not an empty object.
         "json_parse" => TypeNode::Result(Box::new(TypeNode::JsonValue), Box::new(TypeNode::Error)),
+        // `time_format` panicked on an unknown specifier; the json writers replaced an
+        // unparseable document with an empty one and reported success.
+        "time_format" | "json_set" | "json_merge" | "exe_path" => {
+            TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error))
+        }
 
         // ── Nullable ("there may be nothing there") ────────────────────────
         // The JSON accessors answered a plain value with a default baked in, so `""`/`0`/`false`
         // meant five different things at once: absent key, wrong kind, JSON null, empty value,
         // unparseable document. Nullable separates "nothing there" from every value.
         "json_get" => TypeNode::Nullable(Box::new(TypeNode::String)),
+        // A position past the end, a root with no parent, a name with no extension: each is a
+        // legitimate "nothing there", and each used to answer with the empty string.
+        "char_at" | "path_parent" | "path_stem" | "path_extension" => {
+            TypeNode::Nullable(Box::new(TypeNode::String))
+        }
+        // Without the separator there is no split. `("", "")` was both the failure answer and
+        // what splitting "=" on "=" legitimately gives.
+        "split_once" => TypeNode::Nullable(Box::new(TypeNode::Tuple(vec![
+            TypeNode::String,
+            TypeNode::String,
+        ]))),
         "json_get_int" => TypeNode::Nullable(Box::new(TypeNode::Int)),
         "json_get_bool" => TypeNode::Nullable(Box::new(TypeNode::Bool)),
         "json_get_array" => {
@@ -92,13 +108,13 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "json_get", "json_get_int", "json_get_bool", "json_get_array",
         // String
         "to_upper", "to_lower", "trim", "trim_start", "trim_end", "ltrim", "rtrim",
-        "replace", "substring", "repeat", "pad_left", "pad_right", "char_at",
-        "json_stringify", "json_stringify_pretty", "json_set", "json_merge",
+        "replace", "substring", "repeat", "pad_left", "pad_right",
+        "json_stringify", "json_stringify_pretty",
         "to_string", "to_hex", "to_binary", "to_fixed", "uuid",
         "base64_encode", "base64_decode", "base64_encode_file",
-        "path_join", "path_parent", "path_stem", "path_extension",
-        "time_format", "timestamp", "memory_get", "workflow_status",
-        "ansi_color", "ansi_bold", "ansi_reset", "agents_list", "exe_path",
+        "path_join",
+        "timestamp", "memory_get", "workflow_status",
+        "ansi_color", "ansi_bold", "ansi_reset", "agents_list",
         "fetch", "http_download_base64",
         // Int
         "len", "length", "count", "count_occurrences", "sum",
@@ -122,6 +138,9 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         // return. The grouping comments are the only description of the table's shape, so
         // a name in the wrong group is a small lie about the builtin.
         "parse_int", "parse_float", "json_parse",
+        "time_format", "json_set", "json_merge", "exe_path",
+        // Nullable
+        "char_at", "path_parent", "path_stem", "path_extension", "split_once",
     ]
 }
 

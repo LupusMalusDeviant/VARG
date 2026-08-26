@@ -737,8 +737,19 @@ pub fn __varg_context_from(data: &str) -> Context {
 mod tests {
     use super::*;
 
+    /// Environment variables are process-global, so tests that set one cannot run beside each
+    /// other: a sibling's `remove_var` lands between this test's set and its assertion.
+    /// `test_provider_detect_claude_alias` passed alone and failed in the full run for exactly
+    /// that reason. Poisoning is ignored so one panic does not cascade.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn test_provider_detect_default() {
+        let _guard = env_lock();
         // Without env var, defaults to Ollama
         std::env::remove_var("VARG_LLM_PROVIDER");
         assert_eq!(LlmProvider::detect(), LlmProvider::Ollama);
@@ -746,6 +757,7 @@ mod tests {
 
     #[test]
     fn test_provider_detect_openai() {
+        let _guard = env_lock();
         std::env::set_var("VARG_LLM_PROVIDER", "openai");
         assert_eq!(LlmProvider::detect(), LlmProvider::OpenAI);
         std::env::remove_var("VARG_LLM_PROVIDER");
@@ -753,6 +765,7 @@ mod tests {
 
     #[test]
     fn test_provider_detect_anthropic() {
+        let _guard = env_lock();
         std::env::set_var("VARG_LLM_PROVIDER", "anthropic");
         assert_eq!(LlmProvider::detect(), LlmProvider::Anthropic);
         std::env::remove_var("VARG_LLM_PROVIDER");
@@ -760,6 +773,7 @@ mod tests {
 
     #[test]
     fn test_provider_detect_claude_alias() {
+        let _guard = env_lock();
         std::env::set_var("VARG_LLM_PROVIDER", "claude");
         assert_eq!(LlmProvider::detect(), LlmProvider::Anthropic);
         std::env::remove_var("VARG_LLM_PROVIDER");
@@ -767,6 +781,7 @@ mod tests {
 
     #[test]
     fn test_ollama_base_url() {
+        let _guard = env_lock();
         std::env::remove_var("VARG_LLM_URL");
         let p = LlmProvider::Ollama;
         assert_eq!(p.base_url(), "http://127.0.0.1:11434");
@@ -775,6 +790,7 @@ mod tests {
 
     #[test]
     fn test_openai_base_url() {
+        let _guard = env_lock();
         std::env::remove_var("VARG_LLM_URL");
         let p = LlmProvider::OpenAI;
         assert_eq!(p.base_url(), "https://api.openai.com");
@@ -783,6 +799,7 @@ mod tests {
 
     #[test]
     fn test_anthropic_base_url() {
+        let _guard = env_lock();
         std::env::remove_var("VARG_LLM_URL");
         let p = LlmProvider::Anthropic;
         assert_eq!(p.base_url(), "https://api.anthropic.com");
@@ -791,6 +808,7 @@ mod tests {
 
     #[test]
     fn test_url_override() {
+        let _guard = env_lock();
         std::env::set_var("VARG_LLM_URL", "http://custom:8080");
         let p = LlmProvider::OpenAI;
         assert_eq!(p.base_url(), "http://custom:8080");
@@ -855,6 +873,7 @@ mod tests {
 
     #[test]
     fn test_ollama_body_format() {
+        let _guard = env_lock();
         let p = LlmProvider::Ollama;
         std::env::remove_var("VARG_LLM_MODEL");
         let body = p.build_body("llama3", "[{\"role\":\"user\",\"content\":\"hi\"}]", false);
@@ -874,6 +893,7 @@ mod tests {
 
     #[test]
     fn test_openai_headers_with_key() {
+        let _guard = env_lock();
         std::env::set_var("OPENAI_API_KEY", "sk-test123");
         let p = LlmProvider::OpenAI;
         let headers = p.headers();
@@ -883,6 +903,7 @@ mod tests {
 
     #[test]
     fn test_anthropic_headers_with_key() {
+        let _guard = env_lock();
         std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
         let p = LlmProvider::Anthropic;
         let headers = p.headers();

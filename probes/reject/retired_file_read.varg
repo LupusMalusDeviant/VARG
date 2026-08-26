@@ -1,0 +1,4 @@
+// @probe reject: use `fs_read` instead
+// `file_read` returned the error message as the file's contents: a missing file read back as
+// text describing the failure. Undocumented, unused, and a duplicate of `fs_read`.
+agent Main { public void Run() { unsafe { print file_read("x.txt"); } } }

@@ -1,0 +1,3 @@
+// @probe reject: use `json_parse` instead
+// `from_json` turned an unparseable document into an empty map.
+agent Main { public void Run() { print from_json("not json"); } }

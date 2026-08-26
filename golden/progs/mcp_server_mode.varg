@@ -41,7 +41,7 @@ agent Main {
             var sys = SystemAccess {};
 
             // Spawn this same binary in server mode.
-            var conn = mcp_connect(exe_path(), ["--mcp-serve"])?;
+            var conn = mcp_connect(exe_path()?, ["--mcp-serve"])?;
 
             var tools = mcp_list_tools(conn)?;
             print check("tool_count", $"{tools.len()}", "4");
