@@ -1,0 +1,7 @@
+OK   tool_count
+OK   call_int_args
+OK   call_string_arg
+OK   struct_return_title
+OK   struct_return_score
+OK   unknown_tool_errors
+OK   usable_after_error

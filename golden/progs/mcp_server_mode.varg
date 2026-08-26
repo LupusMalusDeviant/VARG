@@ -1,0 +1,76 @@
+/// Wave 23: an agent exposed as an MCP tool provider, verified against Varg's own MCP client.
+///
+/// The program is both halves. Run with `--mcp-serve` it speaks JSON-RPC over stdio, dispatching
+/// to its `@[McpTool]` methods. Run normally it takes the client role, spawns *itself* in server
+/// mode and calls its own tools — so one golden program covers the whole round trip without
+/// needing a second binary or a network.
+struct Doc { string title; int score; }
+
+fn check(string name, string got, string want) -> string {
+    if got == want { return $"OK   {name}"; }
+    return $"FAIL {name}: got `{got}` want `{want}`";
+}
+fn yn(bool b) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
+agent Main {
+    @[McpTool("Add two numbers")]
+    public int add(int a, int b) {
+        return a + b;
+    }
+
+    @[McpTool("Search the document index")]
+    public string search_docs(string query, int top_k) {
+        return $"found {top_k} for {query}";
+    }
+
+    @[McpTool("Look up the best document")]
+    public Doc best(string query) {
+        return Doc { title: $"best: {query}", score: 99 };
+    }
+
+    public void Run() {
+        unsafe {
+            var sys = SystemAccess {};
+
+            // Spawn this same binary in server mode.
+            var conn = mcp_connect(exe_path(), ["--mcp-serve"])?;
+
+            var tools = mcp_list_tools(conn)?;
+            print check("tool_count", $"{tools.len()}", "3");
+
+            // Arguments arrive by name and are parsed into the declared parameter types, so an
+            // `int` parameter receives a number. They are written as JSON because a Varg map
+            // literal is homogeneous and most tool argument sets are not.
+            var sum = mcp_call_tool(conn, "add", "{\"a\": 17, \"b\": 25}") or "CALL-FAILED";
+            print check("call_int_args", sum.trim(), "42");
+
+            // Mixed argument types need the JSON form: a Varg map literal is homogeneous, so
+            // {"query": "...", "top_k": 3} cannot be written as one map. Quotes in an argument
+            // must still survive the round trip.
+            var args_json = "{\"query\": \"say \\\"hi\\\"\", \"top_k\": 3}";
+            var found = mcp_call_tool(conn, "search_docs", args_json) or "CALL-FAILED";
+            print check("call_string_arg", found.trim(), "found 3 for say \"hi\"");
+
+            // A struct return is serialised as JSON.
+            var doc = mcp_call_tool(conn, "best", {"query": "varg"}) or "CALL-FAILED";
+            print check("struct_return_title", json_get(doc, "/title"), "best: varg");
+            var score = json_get_int(doc, "/score");
+            print check("struct_return_score", $"{score}", "99");
+
+            // An unknown tool comes back as a JSON-RPC error, which the client surfaces as a
+            // failed Result rather than as text that happens to mention a problem — so `or`
+            // takes over and the connection stays usable.
+            var missing = mcp_call_tool(conn, "nope", {}) or "NO-SUCH-TOOL";
+            print check("unknown_tool_errors", missing, "NO-SUCH-TOOL");
+
+            // The connection survives that error: a following call still works.
+            var after = mcp_call_tool(conn, "add", "{\"a\": 1, \"b\": 2}") or "CALL-FAILED";
+            print check("usable_after_error", after.trim(), "3");
+
+            mcp_disconnect(conn);
+        }
+    }
+}
