@@ -23,7 +23,10 @@ for v in progs/*.varg; do
   # vargc emits the binary into the current directory as <name>.exe.
   exe="./${base}.exe"
   if [ ! -x "$exe" ] && [ -x "${exe%.exe}" ]; then exe="${exe%.exe}"; fi  # POSIX: no .exe
-  got="$("$exe" 2>/dev/null | norm)"
+  # stdin comes from /dev/null: the human-in-the-loop prompts read it, and inheriting a terminal
+  # or an open pipe would leave them waiting for input that never comes — a hung CI job rather
+  # than a failed one. Closing it is also the situation they are supposed to degrade in.
+  got="$("$exe" </dev/null 2>/dev/null | norm)"
   # PIPESTATUS[0], not $?: after a pipe $? belongs to `norm`, so the check would have passed
   # for every program no matter how it ended.
   code="${PIPESTATUS[0]}"
