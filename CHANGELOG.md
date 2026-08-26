@@ -46,6 +46,35 @@ comparing one against a real value are now compile errors naming `or`.
   about `check` underlined the word "checked" inside a doc comment. The search now skips
   comments and string literals and requires identifier boundaries.
 
+### Fixed — the web-facing surface
+
+- **`http_response` set no `content-type` at all**, leaving every browser to sniff. HTML survives
+  that; a stylesheet or a script served the same way does not. Two arguments now mean
+  `text/html; charset=utf-8` — not a guess: every `http_response` call in this repository serves
+  a page, and JSON has always had `http_response_json`. A third argument names any other type.
+- **`http_sse_route` could not be called from Varg.** It took `&mut VargHttpServer` while
+  `http_serve()` hands back a `VargHttpServerHandle`, so a program using it type-checked and then
+  failed in rustc. Server-sent events were unreachable from the language for as long as the
+  function existed.
+- **`http_response` had no arity check**, so `http_response()` and `http_response(1,2,3,4)` both
+  passed.
+
+`examples/web_server.varg` now exercises every route kind — page, stylesheet, JSON API with query
+parameters, POST body, SSE and WebSocket — and is built in CI, which is what would have caught an
+unreachable route function.
+
+### Fixed — documented signatures the compiler rejects
+
+Twelve calls in REFERENCE.md and VARG_AGENT_GUIDE.md did not compile. Among them: capability
+tokens shown as arguments (`fs_read("f", files)`) when having one in scope is what authorises the
+call; `pdf_add_section` and `duckdb_execute` missing an argument; `registry_search` and
+`rag_build_prompt` given one too many; `.sort()` ending an iterator chain when it mutates in place
+and returns nothing; a lambda stored in a variable presented as needing no parameter type.
+
+`docs-check/check.py` feeds every ```csharp block to `vargc check` and runs in CI. Four rounds of
+this session found this same class of defect and nothing caught it, because nothing had ever fed
+the documentation to the compiler.
+
 ### Changed — builtins that invented an answer now report one
 
 Eleven builtins handled failure by returning a plausible value. Each is either Nullable, where
