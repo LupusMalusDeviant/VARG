@@ -42,6 +42,16 @@ fn lookup<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
     }
 }
 
+/// Parse a JSON document, reporting what was wrong with it if it will not parse.
+///
+/// This used to lower to `from_str(..).unwrap_or(Value::Null)`, so a malformed document became
+/// an empty one and every later read answered as though the keys were simply missing. serde
+/// already knows the line and column; handing that back costs nothing and is the difference
+/// between "this key is absent" and "this is not JSON".
+pub fn __varg_json_parse(s: &str) -> Result<Value, String> {
+    serde_json::from_str::<Value>(s).map_err(|e| format!("invalid JSON: {}", e))
+}
+
 /// Render a value the way `json_get` reports it: a string is its own text (no quotes), any
 /// other kind is its JSON text. Rendering matters because the old accessor filtered with
 /// `as_str()`, so a number, a bool or a nested object all came back as `""` — the same answer

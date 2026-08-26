@@ -2337,11 +2337,10 @@ impl TypeChecker {
                 // ===== Wave 15: Typed JSON =====
                 } else if method_name == "json_parse" {
                     if args.len() != 1 { return Err(TypeError::TypeMismatch { expected: "1 argument (json_string)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    // Not a Result: codegen emits `from_str(..).unwrap_or(Value::Null)` so the
-                    // accessors work without an unwrap hop. The Result typing here never matched
-                    // what was generated, and `json_parse(x) or d` could not compile because of
-                    // it — the drift was invisible until an unhandled Result became an error.
-                    Ok(TypeNode::JsonValue)
+                    // Fallible, and typed that way now that `or` works on both shapes: a
+                    // document that will not parse is a different situation from one whose keys
+                    // are absent, and the old lowering (`unwrap_or(Value::Null)`) erased it.
+                    Ok(TypeNode::Result(Box::new(TypeNode::JsonValue), Box::new(TypeNode::Error)))
                 } else if method_name == "json_get" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (json, path)".to_string(), found: format!("{} arguments", args.len()) }); }
                     // Nullable: absence is not a value. See `builtins.rs`.
@@ -8884,10 +8883,15 @@ mod tests {
             args: vec![Expression::String("{\"key\": \"value\"}".to_string())],
         };
         let ty = checker.infer_expression_type(&expr).unwrap();
-        // Not a Result. Codegen emits `from_str(..).unwrap_or(Value::Null)`, so no Result ever
-        // exists at runtime; this test asserted a type the generated code never produced, which
-        // is what kept the drift invisible.
-        assert_eq!(ty, TypeNode::JsonValue);
+        // Fallible, and the codegen agrees now. Two rounds of this test recorded the state of
+        // that disagreement: it once claimed Result while codegen emitted
+        // `unwrap_or(Value::Null)` (so no Result ever existed), and was then corrected to the
+        // bare value — which pinned the silent default instead. The lowering is fallible now,
+        // so a document that will not parse is an error rather than an empty document.
+        assert_eq!(
+            ty,
+            TypeNode::Result(Box::new(TypeNode::JsonValue), Box::new(TypeNode::Error))
+        );
     }
 
     /// The accessors are Nullable, not plain values. Asserting the plain type here is what

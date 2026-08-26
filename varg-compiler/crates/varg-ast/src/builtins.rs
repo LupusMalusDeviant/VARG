@@ -63,6 +63,8 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         // number. Typing them as Result forces the caller to use `?` or `or`.
         "parse_int" => TypeNode::Result(Box::new(TypeNode::Int), Box::new(TypeNode::Error)),
         "parse_float" => TypeNode::Result(Box::new(TypeNode::Float), Box::new(TypeNode::Error)),
+        // Same reasoning for a whole document: unparseable input is an error, not an empty object.
+        "json_parse" => TypeNode::Result(Box::new(TypeNode::JsonValue), Box::new(TypeNode::Error)),
 
         // ── Nullable ("there may be nothing there") ────────────────────────
         // The JSON accessors answered a plain value with a default baked in, so `""`/`0`/`false`
@@ -99,7 +101,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "ansi_color", "ansi_bold", "ansi_reset", "agents_list", "exe_path",
         "fetch", "http_download_base64",
         // Int
-        "len", "length", "count", "count_occurrences", "parse_int", "sum",
+        "len", "length", "count", "count_occurrences", "sum",
         "time_millis", "time_add", "time_diff", "channel_len", "event_count",
         "vector_store_count", "estimate_tokens", "random_int",
         "proc_pid", "orchestrator_task_count", "orchestrator_completed_count",
@@ -107,7 +109,7 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "memory_episode_count", "trace_span_count",
         "agents_count", "agents_count_by_status",
         // Float
-        "sqrt", "floor", "ceil", "round", "pow", "parse_float", "random_float",
+        "sqrt", "floor", "ceil", "round", "pow", "random_float",
         "tensor_sum", "tensor_mean", "tensor_min", "tensor_max", "tensor_dot",
         // Bool
         "contains", "contains_key", "starts_with", "ends_with", "is_empty",
@@ -116,6 +118,10 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "registry_is_installed",
         // Result<String, Error>
         "fs_read", "exec", "env", "llm_infer", "llm_chat",
+        // Result<other, Error> — these sat under Int/Float above, which is not what they
+        // return. The grouping comments are the only description of the table's shape, so
+        // a name in the wrong group is a small lie about the builtin.
+        "parse_int", "parse_float", "json_parse",
     ]
 }
 

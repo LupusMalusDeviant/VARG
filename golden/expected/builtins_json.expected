@@ -1,3 +1,5 @@
+OK   json_parse_ok
+OK   json_parse_bad
 OK   json_get
 OK   json_get_int
 OK   json_get_bool

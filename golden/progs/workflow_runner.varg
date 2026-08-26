@@ -9,12 +9,11 @@ agent Pipeline {
             return "raw-data";
         });
         workflow_set_handler(wf, "transform", (inputs) => {
-            var j = json_parse(inputs);
-            return "transformed(" + json_get(j, "/extract") + ")";
+            // The accessors read a raw JSON string directly; no parse hop needed.
+            return "transformed(" + (json_get(inputs, "/extract") or "<none>") + ")";
         });
         workflow_set_handler(wf, "load", (inputs) => {
-            var j = json_parse(inputs);
-            return "loaded[" + json_get(j, "/transform") + "]";
+            return "loaded[" + (json_get(inputs, "/transform") or "<none>") + "]";
         });
 
         print(workflow_run(wf));

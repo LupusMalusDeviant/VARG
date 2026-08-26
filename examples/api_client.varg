@@ -25,9 +25,13 @@ agent ApiClient {
 
     /// Parse and display user info.
     public void DisplayUser(string json) {
-        var user = json_parse(json);
-        var name = json_get(user, "name");
-        var email = json_get(user, "email");
+        // Say so when the body is not JSON at all, instead of printing two blank fields.
+        if (json_parse(json).is_err()) {
+            print "  (response was not valid JSON)";
+            return;
+        }
+        var name = json_get(json, "name") or "<unknown>";
+        var email = json_get(json, "email") or "<unknown>";
         print $"  Name:  {name}";
         print $"  Email: {email}";
     }

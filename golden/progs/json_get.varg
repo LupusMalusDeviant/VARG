@@ -7,9 +7,26 @@
 ///
 /// They are Nullable now: `null` means "nothing there" and nothing else, every present value
 /// renders as text, and `or` supplies the fallback the caller actually wants.
+///
+/// `json_parse` is fallible for the same reason: a document that will not parse is not an empty
+/// one. It used to lower to `unwrap_or(Value::Null)`, so malformed input silently became a
+/// document whose keys were all merely absent. Reading through a parsed value therefore happens
+/// in a method that can propagate with `?` — the accessors take a raw JSON string too, which is
+/// why most of the reads below need no parse hop at all.
 agent A {
+  string first_of(string doc, string path) {
+    var j = json_parse(doc)?;
+    return json_get(j, path) or "<none>";
+  }
+
   public void Run() {
-    var j = json_parse("{\"name\": \"varg\", \"n\": 42, \"ok\": true, \"tags\": [1, 2], \"main\": {\"temp\": \"warm\"}, \"empty\": \"\", \"nil\": null}");
+    var j = "{\"name\": \"varg\", \"n\": 42, \"ok\": true, \"tags\": [1, 2], \"main\": {\"temp\": \"warm\"}, \"empty\": \"\", \"nil\": null}";
+
+    // Reading through an actually-parsed value, reached via `?`.
+    print self.first_of(j, "/name") or "<err>";
+    print self.first_of(j, "/main/temp") or "<err>";
+    // A document that will not parse propagates the failure instead of reporting absent keys.
+    print self.first_of("{not json", "/name") or "<err>";
 
     // Plain reads: bare key and JSON pointer, on a parsed value.
     print json_get(j, "/name") or "<none>";

@@ -3169,8 +3169,10 @@ impl RustGenerator {
                     format!("{{ let __cmd: String = {}; std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", __cmd.as_str()] }} else {{ vec![\"-c\", __cmd.as_str()] }}).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).map_err(|e| e.to_string()) }}", arg_strs[0])
                 // ===== Wave 15: Typed JSON =====
                 } else if method_name == "json_parse" {
-                    // Return Value directly (null on parse error) so json_get/pointer work without unwrap
-                    format!("serde_json::from_str::<serde_json::Value>(&{}).unwrap_or(serde_json::Value::Null)", arg_strs[0])
+                    // Fallible: it used to swallow the error and yield Value::Null, which made a
+                    // malformed document indistinguishable from an empty one — every later read
+                    // reported the keys as merely absent.
+                    format!("varg_runtime::json::__varg_json_parse(&{})", arg_strs[0])
                 // The json accessors take either an already-parsed value or a raw JSON string, so
                 // `json_get(s, "/a")` no longer needs a `json_parse` hop first. A leading '/' in the
                 // path selects a JSON pointer, otherwise it's a single object key.
@@ -8487,10 +8489,19 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("serde_json::from_str"), "json_parse should use serde_json::from_str: {}", code);
-        assert!(code.contains("serde_json::Value"), "json_parse should parse to serde_json::Value: {}", code);
-        // json_parse now returns Value directly (null on error) for easy chaining with json_get
-        assert!(code.contains("unwrap_or"), "json_parse should return Value with fallback: {}", code);
+        // This asserted `unwrap_or` — that is, it asserted the silent default: malformed input
+        // became Value::Null, and every later read then reported the keys as merely absent. The
+        // test was the reason that behaviour looked intentional. json_parse is fallible now.
+        assert!(
+            code.contains("__varg_json_parse"),
+            "json_parse should call the fallible runtime parser: {}",
+            code
+        );
+        assert!(
+            !code.contains("unwrap_or"),
+            "json_parse must not swallow the parse error: {}",
+            code
+        );
     }
 
     #[test]

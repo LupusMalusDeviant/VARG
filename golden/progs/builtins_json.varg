@@ -11,18 +11,21 @@ fn yn(bool b) -> string {
 agent Main {
     public void Run() {
         var raw = "{\"name\": \"ada\", \"age\": 36, \"active\": true, \"tags\": [\"x\", \"y\"]}";
-        var obj = json_parse(raw);
+        // `json_parse` is fallible now, and the accessors take a raw string anyway, so the
+        // parse hop is only worth making when the point is to find out whether it parses.
+        print check("json_parse_ok", yn(json_parse(raw).is_ok()), "true");
+        print check("json_parse_bad", yn(json_parse("{not json").is_err()), "true");
 
-        print check("json_get", (json_get(obj, "name") or "<missing>"), "ada");
-        var age = (json_get_int(obj, "age") or -1);
+        print check("json_get", (json_get(raw, "name") or "<missing>"), "ada");
+        var age = (json_get_int(raw, "age") or -1);
         print check("json_get_int", $"{age}", "36");
-        var act = (json_get_bool(obj, "active") or false);
+        var act = (json_get_bool(raw, "active") or false);
         print check("json_get_bool", yn(act), "true");
-        var tags = (json_get_array(obj, "tags") or ["<missing>"]);
+        var tags = (json_get_array(raw, "tags") or ["<missing>"]);
         print check("json_get_array", $"{tags.len()}", "2");
 
-        var has_name = json_has(obj, "name");
-        var has_zzz = json_has(obj, "zzz");
+        var has_name = json_has(raw, "name");
+        var has_zzz = json_has(raw, "zzz");
         print check("json_has_true", yn(has_name), "true");
         print check("json_has_false", yn(has_zzz), "false");
 
@@ -39,11 +42,22 @@ agent Main {
         print check("json_merge_add", (json_get(merged, "role") or "<missing>"), "admin");
         print check("json_merge_keeps", (json_get(merged, "name") or "<missing>"), "ada");
 
-        // Round-trip: stringify then read back.
-        var round = json_stringify(obj);
-        print check("json_stringify", (json_get(round, "name") or "<missing>"), "ada");
-        var pretty = json_stringify_pretty(obj);
-        var pretty_multiline = pretty.contains("\n");
-        print check("json_stringify_pretty", yn(pretty_multiline), "true");
+        // Round-trip: stringify then read back. The accessors read a raw JSON string, but
+        // `json_stringify` serialises whatever it is handed — hand it the raw text and it
+        // produces a JSON *string* containing that text, not the object again. So the
+        // round-trip goes through an actually-parsed value, which `json_parse` only yields to
+        // a caller that can propagate its failure.
+        print check("json_stringify", self.round_trip_name(raw) or "<err>", "ada");
+        print check("json_stringify_pretty", yn(self.pretty_is_multiline(raw) or false), "true");
+    }
+
+    string round_trip_name(string doc) {
+        var j = json_parse(doc)?;
+        return json_get(json_stringify(j), "name") or "<missing>";
+    }
+
+    bool pretty_is_multiline(string doc) {
+        var j = json_parse(doc)?;
+        return json_stringify_pretty(j).contains("\n");
     }
 }

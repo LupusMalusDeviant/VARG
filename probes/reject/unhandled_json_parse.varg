@@ -1,0 +1,4 @@
+// @probe reject: handle the Result with `?` or `or`
+// json_parse is fallible: it used to lower to `unwrap_or(Value::Null)`, so a malformed document
+// became an empty one and every later read reported the keys as merely absent.
+agent Main { public void Run() { var d = json_parse("{not json"); print json_get(d, "a") or "x"; } }

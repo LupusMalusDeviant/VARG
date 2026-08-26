@@ -176,6 +176,19 @@ mod tests {
 
     /// The registry is process-global, so tests share it. Each one works against the agents it
     /// registers itself rather than assuming an empty registry.
+    ///
+    /// That is enough for the per-record assertions, but not for the ones about
+    /// `agents_count_by_status`: a count is a property of the whole registry, so a test reading
+    /// it before and after its own transition can have another test's transition land in
+    /// between. `counts_by_status_track_transitions` failed exactly that way in the full run
+    /// while passing on its own. Tests that change a status take this lock.
+    static STATUS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take the status lock, ignoring poisoning: a panic in one test must not cascade into
+    /// unrelated failures in the rest of the module.
+    fn status_lock() -> std::sync::MutexGuard<'static, ()> {
+        STATUS.lock().unwrap_or_else(|e| e.into_inner())
+    }
     fn ids_in(json: &str) -> Vec<u64> {
         let v: serde_json::Value = serde_json::from_str(json).unwrap();
         v.as_array()
@@ -208,6 +221,7 @@ mod tests {
 
     #[test]
     fn handling_a_message_counts_it_and_returns_to_idle() {
+        let _guard = status_lock();
         let id = __varg_agent_register("counter");
         __varg_agent_set_status(id, "running");
         __varg_agent_handled(id, "process");
@@ -220,6 +234,7 @@ mod tests {
 
     #[test]
     fn a_failed_handler_is_recorded_without_losing_the_agent() {
+        let _guard = status_lock();
         let id = __varg_agent_register("fragile");
         __varg_agent_failed(id, "explode", "boom");
         let rec = record_for(&__varg_agents_list(), id);
@@ -232,6 +247,7 @@ mod tests {
     /// would take the agent down over a bookkeeping mistake.
     #[test]
     fn an_unknown_status_is_ignored() {
+        let _guard = status_lock();
         let id = __varg_agent_register("steady");
         __varg_agent_set_status(id, "not-a-status");
         assert_eq!(record_for(&__varg_agents_list(), id)["status"], "starting");
@@ -240,6 +256,7 @@ mod tests {
     /// Names and errors go through serde_json, so quotes and newlines cannot break the payload.
     #[test]
     fn awkward_text_stays_parseable() {
+        let _guard = status_lock();
         let id = __varg_agent_register("say \"hi\"\nnow");
         __varg_agent_failed(id, "m", "tab\there \\ backslash");
         let listing = __varg_agents_list();
@@ -250,6 +267,7 @@ mod tests {
 
     #[test]
     fn counts_by_status_track_transitions() {
+        let _guard = status_lock();
         let id = __varg_agent_register("mover");
         let running_before = __varg_agents_count_by_status("running");
         __varg_agent_set_status(id, "running");
