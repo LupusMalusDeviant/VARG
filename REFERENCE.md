@@ -1200,11 +1200,47 @@ public void Greet(string name) {
     print $"Hello, {name}!";
 }
 
-@[McpTool("search", "Search the database")]
+@[McpTool("Search the database")]
 public string Search(string query) {
-    return results; // auto-generates MCP JSON schema
+    return results; // the JSON schema comes from the signature
 }
 ```
+
+An `@[McpTool]` method is reachable three ways, all generated from the same annotation:
+
+```bash
+./prog Search "some query"     # as a CLI subcommand
+./prog --mcp-discover          # prints the tool schemas as JSON
+./prog --mcp-serve             # speaks MCP over stdio
+```
+
+`--mcp-serve` makes the program an MCP server: it answers `initialize`, `tools/list` and
+`tools/call` as JSON-RPC on stdin/stdout, dispatching to the annotated methods. Arguments arrive
+by name and are parsed into the declared parameter type, so an `int` parameter receives a number.
+A method returning a struct has its result serialised as JSON; a `void` method replies `ok`. An
+unknown tool is answered with a JSON-RPC error, and the connection stays usable.
+
+Input and output schemas are derived from the signature — parameter names and types become
+`inputSchema`, the return type becomes `outputSchema`. Nothing is written twice.
+
+Any MCP client can drive it, including Varg's own:
+
+```csharp
+unsafe {
+    var sys = SystemAccess {};
+    var conn = mcp_connect(exe_path(), ["--mcp-serve"])?;
+    var tools = mcp_list_tools(conn)?;
+    var sum = mcp_call_tool(conn, "add", "{\"a\": 17, \"b\": 25}") or "failed";
+    mcp_disconnect(conn);
+}
+```
+
+Tool arguments are written as a JSON string when they are of mixed types: a Varg map literal is
+homogeneous, so `{"query": "x", "top_k": 3}` cannot be one map. A map literal works when every
+value has the same type, and `{}` means "no arguments".
+
+`exe_path()` returns the running binary, which is what lets a program start itself in server
+mode — the pattern `golden/progs/mcp_server_mode.varg` uses to test both halves at once.
 
 ### Rate Limiting
 

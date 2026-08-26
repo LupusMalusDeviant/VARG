@@ -1,6 +1,6 @@
 # Varg — Optimierungen & Roadmap nach dem Bugfixing
 
-> Stand: 2026-08-26 · Version 1.0.0 · 1234 Compiler-Tests (default) / 1386 (`--features full`) · Golden 35/35 · Probes 52/52 · Builtin-Abdeckung 97,9 %
+> Stand: 2026-08-26 · Version 1.0.0 · 1241 Compiler-Tests (default) · Golden 36/36 · Probes 52/52 · Builtin-Abdeckung 97,9 %
 >
 > Dieses Dokument sammelt alles, was **über reines Bugfixing hinausgeht**: sinnvolle nächste
 > Schritte, sobald die kritischen Compiler-Bugs behoben sind (siehe Abschnitt „Erledigte
@@ -728,6 +728,53 @@ er trat nur ohne Ausdruck auf.
 
 ### Stand danach
 1234 Unit-Tests (default), 0 Failures · Golden 35/35 · Probes **52/52**.
+
+---
+
+## Wave 23 — Agent als MCP-Tool-Provider (Stufe 21)
+
+Vorher fehlte weniger, als der Entwurf vermuten ließ: `@[McpTool]` erzeugte **schon** ein
+vollständiges input- **und** outputSchema aus der Methodensignatur und einen CLI-Dispatch-Arm.
+Was fehlte, war das **Protokoll** — es gab keinen Weg, wie ein echter MCP-Client die Methoden
+aufruft.
+
+**Jetzt:** `./prog --mcp-serve` spricht JSON-RPC über stdio (`initialize`, `tools/list`,
+`tools/call`) und dispatcht auf die annotierten Methoden. Argumente kommen **namentlich** und
+werden in den deklarierten Parametertyp geparst; ein Struct-Rückgabewert wird als JSON
+serialisiert, `void` antwortet `ok`, ein unbekanntes Tool bekommt einen JSON-RPC-Fehler und die
+Verbindung bleibt nutzbar.
+
+### Aufteilung: Protokoll in die Runtime, Dispatch in den Codegen
+Die Envelopes und das Parsen liegen in `mcp_server.rs` (für jedes Programm gleich, dort direkt
+testbar — 7 Unittests). Der **Dispatch** muss generiert werden: er ruft eine Methode auf dem
+Entry-Agenten auf, und ein `Fn + Send + Sync`-Handler könnte kein `&mut` darauf halten. Die neuen
+Helfer nutzen `serde_json` statt der älteren Substring-Extraktion daneben — ein echter Client
+schickt verschachtelte Objekte und escapte Strings, an denen Substring-Suche scheitert.
+
+### `exe_path()` ergänzt
+`args()` überspringt bewusst argv[0], ein Programm konnte seine eigene Binary also nicht finden.
+Damit ließ sich das Muster „starte dich selbst im Servermodus" nicht schreiben — und genau das
+macht den Test möglich.
+
+### Der Test ist beide Hälften in einem Programm
+`golden/progs/mcp_server_mode.varg` ist Client **und** Server: normal gestartet spawnt es sich
+selbst mit `--mcp-serve` und ruft über Vargs eigenen MCP-Client seine eigenen Tools auf. Ein
+Golden-Programm deckt damit den vollen Rundlauf ab, ohne zweite Binary und ohne Netz — inklusive
+Int-Argumenten, Quotes im String-Argument, Struct-Rückgabe, unbekanntem Tool und der Prüfung, dass
+die Verbindung den Fehler übersteht.
+
+### Eine Erweiterung wieder zurückgenommen
+`ToToolArgs` sollte auch Maps mit Zahl-/Bool-Werten annehmen, damit `{"a": 17}` als
+Tool-Argument geht. Das machte aber `{}` — „dieses Tool nimmt keine Argumente", der häufigste
+Aufruf überhaupt — **mehrdeutig**, weil Rust den Wertetyp nicht mehr inferieren konnte. Der
+schmale Komfortgewinn wog die Regression nicht auf; zurückgenommen, mit der Begründung im Code.
+
+**Verbleibende Grenze, ehrlich benannt:** Varg-Map-Literale sind homogen, MCP-Argumente sind es
+meist nicht. Gemischte Argumente werden als JSON-String übergeben — dokumentiert, kein Workaround
+im Verborgenen. Ein heterogener Map-Typ wäre eine Sprachentscheidung, keine MCP-Frage.
+
+### Stand danach
+1241 Unit-Tests (default), 0 Failures · Golden **36/36** · Probes 52/52.
 
 ---
 
