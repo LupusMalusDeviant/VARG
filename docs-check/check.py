@@ -249,7 +249,7 @@ def main():
         return 1
 
     rc = coverage()
-    return rc or prose_matches_the_code(ROOT, VARGC, DOCS)
+    return rc or prose_matches_the_code(ROOT, VARGC, DOCS, UNRUNNABLE, ALL_BUILTINS)
 
 
 # ── Second gate: is every builtin mentioned at all? ──────────────────────────
@@ -264,6 +264,11 @@ RETIRED_ELSEWHERE = {
     "sse_send": "rejected in favour of sse_open/sse_push",
     "sse_close": "rejected in favour of sse_shutdown",
 }
+
+
+# Every builtin the compiler knows, filled in by coverage() and read by the prose gate so a
+# word in prose that merely looks like a builtin is not mistaken for a claim.
+ALL_BUILTINS = set()
 
 
 def coverage():
@@ -286,6 +291,7 @@ def coverage():
 
     names = {n for n in re.findall(r'method_name == "([a-z_0-9]+)"', body)
              if not n.startswith("__varg")}
+    ALL_BUILTINS.update(names)
 
     doctext = ""
     for d in DOCS:

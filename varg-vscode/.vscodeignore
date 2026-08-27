@@ -1,0 +1,11 @@
+# Sources and build configuration; the runtime dependency (vscode-languageclient) has to stay,
+# so node_modules is not excluded wholesale — vsce keeps production dependencies and prunes the
+# rest itself.
+.vscode/**
+src/**
+out/**/*.map
+tsconfig.json
+.gitignore
+**/tsconfig.json
+**/*.ts
+!out/extension.js

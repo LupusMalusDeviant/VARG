@@ -23,7 +23,7 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 | Tests | 1.264 (Standard) / 1.421 (`--features full`) |
 | Golden-Programme | 50, jedes in der CI gebaut **und ausgefuehrt**, Ausgabe verglichen |
 | Ablehnungsproben | 88 Programme, die abgelehnt werden muessen, je mit erwarteter Meldung |
-| Builtins | 407 dokumentiert, 366 von einem Golden-Programm ausgefuehrt |
+| Builtins | 407 dokumentiert, 366 von einem Golden-Programm ausgefuehrt — [die 33 anderen, mit Grund](REFERENCE.md#what-ci-proves-and-what-it-does-not) |
 | Crates | 10 Compiler-Crates |
 | Runtime-Module | 40 |
 | Sicherheit | 5 OCAP-Capability-Typen |

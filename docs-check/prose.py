@@ -117,9 +117,50 @@ def check_paths(root, docs):
     return out
 
 
-def prose_matches_the_code(root, vargc, code_docs=()):
+
+def check_unrun_table(root, unrunnable):
+    """The documented list of what CI never runs has to be that list.
+
+    Saying which builtins are unexercised is only worth something if the statement is kept in step
+    with the exemption table the gate actually uses. Written by hand it would drift the way every
+    other number in this documentation drifted.
+    """
+    path = os.path.join(root, "REFERENCE.md")
+    if not os.path.exists(path):
+        return []
+    text = io.open(path, encoding="utf-8", errors="replace").read()
+    start = text.find("## What CI Proves, and What It Does Not")
+    if start < 0:
+        return ["REFERENCE.md has no section saying what CI does not run"]
+    end = text.find("## Getting Started", start)
+    section = text[start:end if end > 0 else len(text)]
+
+    named = set(re.findall(r"`([a-z_][a-z_0-9]*)`", section))
+    named = {n for n in named if n in unrunnable or n in _ALL_MENTIONED}
+    want = set(unrunnable)
+    missing = sorted(want - named)
+    extra = sorted(n for n in named if n not in want and n in _ALL_MENTIONED)
+
+    out = []
+    for n in missing:
+        out.append("REFERENCE.md does not list `%s` among what CI never runs" % n)
+    for n in extra:
+        out.append("REFERENCE.md lists `%s` as never run, but a golden program runs it" % n)
+    return out
+
+
+# Filled by the caller: every builtin name the compiler knows, so a word in prose that merely
+# looks like one is not mistaken for a claim.
+_ALL_MENTIONED = set()
+
+
+def prose_matches_the_code(root, vargc, code_docs=(), unrunnable=None, all_builtins=()):
+    global _ALL_MENTIONED
+    _ALL_MENTIONED = set(all_builtins)
     docs = PROSE_DOCS + tuple(code_docs)
     problems = check_version(root, docs) + check_commands(root, docs, vargc) + check_paths(root, docs)
+    if unrunnable is not None:
+        problems += check_unrun_table(root, unrunnable)
     if problems:
         print("")
         print("--- documentation that does not match the code ---")

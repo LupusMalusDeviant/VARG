@@ -50,9 +50,11 @@ jobs:
           workspaces: varg-compiler
           key: release-${{ matrix.name }}
 
-      - name: Build the compiler
+      - name: Build the compiler and the language server
+        # The editor extension needs `varg-lsp`, and nothing shipped it: the extension looked for
+        # a binary no release contained, started a client against it, and reported success.
         working-directory: varg-compiler
-        run: cargo build -p vargc --release --locked
+        run: cargo build -p vargc -p varg-lsp --release --locked
 
       - name: It runs on this platform
         shell: bash
@@ -88,6 +90,8 @@ jobs:
           stage="varg-v${version}-${{ matrix.name }}"
           mkdir -p "$stage"
           cp "varg-compiler/target/release/${{ matrix.exe }}" "$stage/"
+          # The language server, beside the compiler: that is where the extension looks first.
+          cp "varg-compiler/target/release/varg-lsp${{ matrix.ext }}" "$stage/"
           # The runtime crates a generated program depends on. Without them the archive shipped a
           # compiler that could type-check a program and not build one: the manifest it wrote
           # pointed at a directory on the build machine. 552 KB of source, and the difference
@@ -128,6 +132,24 @@ jobs:
           cat "${asset}.sha256"
           ls -la "$stage".*
           echo "stage=${stage}" >> "$GITHUB_ENV"
+
+      - name: Package the editor extension
+        # One VSIX for every platform, built once. `vsce` prunes dev dependencies but keeps the
+        # language client, without which the extension cannot start.
+        if: matrix.name == 'linux-x64'
+        working-directory: varg-vscode
+        run: |
+          npm ci || npm install
+          npm run compile
+          npx --yes @vscode/vsce package --allow-missing-repository
+          ls -la *.vsix
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.name == 'linux-x64'
+        with:
+          name: varg-vscode
+          path: varg-vscode/*.vsix
+          if-no-files-found: error
 
       - name: The packaged release builds a program
         # The step above this one tested `vargc run` inside the checkout, where the runtime crates

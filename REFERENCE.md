@@ -1044,6 +1044,33 @@ Respond in JSON format.
 
 ---
 
+## What CI Proves, and What It Does Not
+
+Every builtin in this reference is documented, compiled, and — where it can be — **run** by a
+golden program that CI builds, executes and diffs against a recorded output. 366 of 399 are.
+
+The remaining 33 are never executed anywhere. They need something CI does not have, so what is
+known about them is that they compile and that their types are checked — not that they work
+against a real counterpart. Treat them accordingly.
+
+| Area | Builtins | Why not |
+|---|---|---|
+| LLM providers | `llm_chat`, `llm_chat_cached`, `llm_chat_opts`, `llm_embed_batch`, `llm_infer`, `llm_stream`, `llm_stream_to`, `llm_structured`, `llm_structured_schema`, `llm_vision` | needs a provider and a key |
+| WebSocket and SSE clients | `ws_connect`, `ws_send`, `ws_receive`, `ws_close`, `sse_client_connect`, `sse_client_next`, `sse_client_post`, `sse_client_close`, `sse_read` | needs a server on the other end |
+| Outbound HTTP | `fetch`, `http_request`, `http_download_base64`, `registry_download` | needs a network |
+| Interactive terminal | `readline_new`, `readline_read`, `readline_add_history`, `readline_load_history`, `readline_save_history`, `stdin_read`, `stdin_read_line` | needs someone typing |
+| Servers that block | `http_listen`, `mcp_server_run` | serve until killed |
+| Hybrid retrieval | `rag_hybrid_search` | combines a text index with an LLM embedding |
+
+Everything else — including SQLite, the knowledge graph, the vector store, agent memory, the HTTP
+*server* (through a request it makes to itself), MCP client and server, DuckDB, Polars dataframes,
+Tantivy full-text search, tensors and PDF generation — is exercised by a program that runs.
+
+The list above is checked against the compiler's own exemption table, so it cannot drift from what
+is actually skipped.
+
+---
+
 ## Getting Started
 
 Start from a program that runs, not from an empty file:

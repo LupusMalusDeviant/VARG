@@ -27,7 +27,7 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 | Tests | 1,264 (default features) / 1,421 (`--features full`) |
 | Golden programs | 50, each built **and run** in CI, output diffed |
 | Rejection probes | 88 programs that must be refused, each naming the message |
-| Builtins | 407 documented, 366 executed by a golden program |
+| Builtins | 407 documented, 366 executed by a golden program — [the 33 that are not, and why](REFERENCE.md#what-ci-proves-and-what-it-does-not) |
 | Crates | 10 compiler crates |
 | Runtime modules | 40 |
 | Security | 5 OCAP capability types |
