@@ -99,3 +99,7 @@ docs/gen_training*.py
 # Binaries built beside their source by `vargc build`
 tools/**/*.exe
 tools/**/.vargc_cache/
+
+#  writes the executable into the current directory
+/tutor.exe
+/tutor

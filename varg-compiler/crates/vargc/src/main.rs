@@ -580,7 +580,11 @@ fn cmd_mcp(args: &[String]) {
     }
 }
 
-/// Build the program if its binary is missing or older than the source.
+/// Build the program if its binary is missing or older than the source, and find it afterwards.
+///
+/// `vargc build` writes the executable into the *current directory*, not next to the source, so
+/// looking only beside the source found nothing whenever the two differed — which is every
+/// invocation from a project root.
 fn build_for_mcp(file: &str) -> PathBuf {
     let src = Path::new(file);
     if !src.exists() {
@@ -588,23 +592,36 @@ fn build_for_mcp(file: &str) -> PathBuf {
         exit(1);
     }
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
-    let mut exe = src.with_file_name(format!("{}{}", stem, std::env::consts::EXE_SUFFIX));
-    let fresh = match (fs::metadata(&exe), fs::metadata(src)) {
+    let named = format!("{}{}", stem, std::env::consts::EXE_SUFFIX);
+    let candidates = || {
+        vec![
+            PathBuf::from(&named),              // where `vargc build` puts it
+            src.with_file_name(&named),         // where one built from that directory would be
+        ]
+    };
+
+    let newer_than_source = |exe: &Path| match (fs::metadata(exe), fs::metadata(src)) {
         (Ok(a), Ok(b)) => match (a.modified(), b.modified()) {
             (Ok(x), Ok(y)) => x >= y,
             _ => false,
         },
         _ => false,
     };
-    if !fresh {
-        eprintln!("-> building {} ...", file);
-        compile_varg_file(file, false, false, None, false);
-        exe = src.with_file_name(format!("{}{}", stem, std::env::consts::EXE_SUFFIX));
-    }
-    if !exe.exists() {
-        eprintln!("Error: no binary at {} after building.", exe.display());
-        exit(1);
-    }
+    let fresh = candidates().into_iter().find(|c| c.exists() && newer_than_source(c));
+    let exe = match fresh {
+        Some(e) => e,
+        None => {
+            eprintln!("-> building {} ...", file);
+            compile_varg_file(file, false, false, None, false);
+            match candidates().into_iter().find(|c| c.exists()) {
+                Some(e) => e,
+                None => {
+                    eprintln!("Error: no binary named {} after building {}.", named, file);
+                    exit(1);
+                }
+            }
+        }
+    };
     // A bare name is looked up on PATH, not in this directory, so `notes.exe` next to the source
     // was reported as "program not found".
     fs::canonicalize(&exe).unwrap_or(exe)
