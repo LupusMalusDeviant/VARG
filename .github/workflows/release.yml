@@ -117,6 +117,25 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "signing $exe failed" }
           }
           Remove-Item $pfx -Force
+      # An SBOM beside the provenance attestation. Provenance says which workflow produced
+      # the archive; this says what is in it. When an advisory lands, "is this release affected"
+      # is a question about a build that already happened, and it cannot be reconstructed
+      # afterwards. Built from the lockfile with the same features the release is built with, so
+      # it describes this binary and not the crate's whole dependency surface.
+      - name: Software bill of materials
+        shell: bash
+        run: |
+          cargo install cargo-cyclonedx --locked --quiet || true
+          cd varg-compiler
+          cargo cyclonedx --format json --all --features full || {
+            echo "::warning::cargo-cyclonedx unavailable; the release ships without an SBOM"
+            exit 0
+          }
+          cd ..
+          mkdir -p sbom
+          find varg-compiler -name '*.cdx.json' -exec cp {} sbom/ \; 2>/dev/null || true
+          ls -la sbom || true
+
       - name: Package
         shell: bash
         run: |
@@ -139,6 +158,11 @@ jobs:
             cp -r "varg-compiler/crates/$c/src" "$stage/crates/$c/src"
           done
           cp README.md CHANGELOG.md REFERENCE.md VARG_AGENT_GUIDE.md LICENSE "$stage/"
+          # The SBOM travels with the archive it describes; separated they are two guesses.
+          if [ -d sbom ] && [ -n "$(ls -A sbom 2>/dev/null)" ]; then
+            mkdir -p "$stage/sbom"
+            cp sbom/*.json "$stage/sbom/"
+          fi
           # Only the Varg. `examples/` also holds the Rust each one transpiles to, which is
           # build output, not something anyone downloads a release to read.
           mkdir -p "$stage/examples" "$stage/tools/varg-tutor" "$stage/golden/progs"

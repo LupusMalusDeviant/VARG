@@ -24,6 +24,12 @@ git push origin v2.3.0
 gh attestation verify varg-v2.3.0-windows-x64.zip --repo LupusMalusDeviant/VARG
 ```
 
+- Each archive carries a CycloneDX SBOM under `sbom/`, one per crate, produced from the lockfile
+  with the same feature set the release is built with. Provenance says which workflow produced the
+  archive; the SBOM says what is inside it. When an advisory lands, whether a given release is
+  affected is a question about a build that already happened, and it cannot be reconstructed
+  afterwards.
+
 ## What is not verified, and what it would take
 
 ### The binaries are not signed

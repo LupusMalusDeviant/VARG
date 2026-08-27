@@ -216,13 +216,105 @@ def check_benchmark_table(root, docs):
     return out
 
 
+def _declared_versions(root):
+    """Every dependency version the workspace declares, by crate name."""
+    found = {}
+    for base, _dirs, files in os.walk(os.path.join(root, "varg-compiler")):
+        if "target" in base.split(os.sep):
+            continue
+        if "Cargo.toml" not in files:
+            continue
+        text = io.open(os.path.join(base, "Cargo.toml"), encoding="utf-8",
+                       errors="replace").read()
+        for line in text.split(chr(10)):
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            name = line.split("=", 1)[0].strip()
+            if not re.match(r"^[a-z][a-z0-9_-]*$", name):
+                continue
+            m = re.search(r'version\s*=\s*"([0-9][^"]*)"', line)
+            if not m:
+                m = re.match(r'^[a-z][a-z0-9_-]*\s*=\s*"([0-9][^"]*)"$', line)
+            if m:
+                found.setdefault(name, m.group(1))
+    return found
+
+
+def check_module_count(root, docs):
+    """The runtime-module count in prose has to be the number the crate declares.
+
+    README.md carried two of them — 40 in the statistics table, 35 in the section below it —
+    which is the same defect as the test counts that disagreed, in the same document.
+
+    Only the two shapes that state a count are read: the statistics row, and the sentence form.
+    A first attempt matched any number near the words and flagged a table cell listing a crate's
+    line count, which is how a gate earns the habit of being ignored.
+    """
+    lib = os.path.join(root, "varg-compiler", "crates", "varg-runtime", "src", "lib.rs")
+    if not os.path.exists(lib):
+        return []
+    text = io.open(lib, encoding="utf-8", errors="replace").read()
+    real = len(set(re.findall(r"pub mod ([a-z_0-9]+);", text)))
+
+    shapes = (
+        r"^\|\s*Runtime[- ][Mm]odule[ns]?\s*\|\s*([0-9]+)\s*\|",   # the statistics row
+        r"has ([0-9]+) runtime modules",                              # the sentence form
+        r"hat ([0-9]+) Runtime-Module",
+    )
+    out = []
+    for doc in docs:
+        path = os.path.join(root, doc)
+        if not os.path.exists(path):
+            continue
+        body = io.open(path, encoding="utf-8", errors="replace").read()
+        for shape in shapes:
+            for stated in re.findall(shape, body, re.M):
+                if int(stated) != real:
+                    out.append("%s says %s runtime modules; varg-runtime declares %d"
+                               % (doc, stated, real))
+    return sorted(set(out))
+
+
+def check_dependency_versions(root, docs):
+    """A crate version named in prose has to be the one the workspace actually builds against.
+
+    The runtime-module table names its backends with versions. Upgrading printpdf left the table
+    saying the old one, and nothing noticed — the same shape as the test counts that disagreed
+    with each other, and the same fix: compare it to the source of truth.
+    """
+    declared = _declared_versions(root)
+    if not declared:
+        return ["no Cargo.toml found under varg-compiler, so no version claim can be checked"]
+
+    out = []
+    for doc in docs:
+        path = os.path.join(root, doc)
+        if not os.path.exists(path):
+            continue
+        text = io.open(path, encoding="utf-8", errors="replace").read()
+        # "axum 0.7", "rusqlite 0.31 (bundled)", "printpdf 0.12"
+        for name, stated in re.findall(r"\b([a-z][a-z0-9_-]{2,})\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\b", text):
+            real = declared.get(name)
+            if real is None:
+                continue
+            # A doc may name fewer components than the manifest: "0.7" against "0.7.1" agrees.
+            parts = stated.split(".")
+            if real.split(".")[: len(parts)] != parts:
+                out.append("%s says %s %s; the workspace builds against %s"
+                           % (doc, name, stated, real))
+    return out
+
+
 def prose_matches_the_code(root, vargc, code_docs=(), unrunnable=None, all_builtins=()):
     global _ALL_MENTIONED
     _ALL_MENTIONED = set(all_builtins)
     docs = PROSE_DOCS + tuple(code_docs)
     problems = (check_version(root, docs) + check_commands(root, docs, vargc)
                 + check_paths(root, docs)
-                + check_benchmark_table(root, ("README.md", "README_DE.md")))
+                + check_benchmark_table(root, ("README.md", "README_DE.md"))
+                + check_dependency_versions(root, docs)
+                + check_module_count(root, ("README.md", "README_DE.md")))
     if unrunnable is not None:
         problems += check_unrun_table(root, unrunnable)
     if problems:
@@ -233,5 +325,5 @@ def prose_matches_the_code(root, vargc, code_docs=(), unrunnable=None, all_built
         print("")
         print("Fix the documentation. These are all claims with one mechanical answer.")
         return 1
-    print("prose: versions, commands, paths and performance figures match the code")
+    print("prose: versions, commands, paths, dependencies and performance figures match the code")
     return 0

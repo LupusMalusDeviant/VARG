@@ -122,3 +122,6 @@ tools/**/.vargc_cache/
 # Python bytecode, never a source file.
 __pycache__/
 *.pyc
+
+# CycloneDX SBOMs are generated at release time, not checked in.
+*.cdx.json

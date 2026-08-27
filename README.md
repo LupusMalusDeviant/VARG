@@ -390,7 +390,14 @@ See the [`examples/`](examples/) directory:
 
 ## Runtime Modules
 
-Varg includes 35 runtime modules, all with real implementations (no stubs):
+Varg has 40 runtime modules; the principal ones are below, backed by the libraries named. Two
+things in the runtime are
+not, and claiming "no stubs" while they exist was what an external audit asked to see removed:
+
+- `query "..."` lowers to a key-value store in a JSON file, with a note in the source about
+  becoming a real database one day. It appears in no documentation and in no program here.
+- `http_sse_route` collects every event and sends them in one response. That is what
+  [the reference](REFERENCE.md) says it does; `sse_open` / `sse_send` are the streaming path.
 
 | Module | Backend | Description |
 |--------|---------|-------------|
@@ -412,7 +419,7 @@ Varg includes 35 runtime modules, all with real implementations (no stubs):
 | Orchestration | Pure Rust (threads) | Fan-out/fan-in, parallel tasks |
 | Self-Improving | Pure Rust | Feedback loop + similarity recall |
 | Encoding (base64) | base64 0.22 | Encode/decode strings, files, binary downloads |
-| PDF Generation | printpdf 0.7 | Native PDF creation with sections, text, word-wrap |
+| PDF Generation | printpdf 0.12 | Native PDF creation with sections, text, word-wrap |
 | Crypto | Pure Rust | encrypt, decrypt |
 | LLM | reqwest | OpenAI, Anthropic, Ollama — chat, structured, stream, embed |
 | Binary I/O | std::fs | fs_read_bytes, fs_write_bytes, fs_append_bytes, fs_size |
