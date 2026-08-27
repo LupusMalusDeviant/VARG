@@ -2068,7 +2068,17 @@ fn {handler_name}(body: String) -> String {{
     // objects by bumping a pointer into a GC nursery, which the platform allocators here cannot
     // match. mimalloc closes that gap (6 ms and 14 ms) for about 130 KB of binary. Not on wasm32:
     // it builds C, and the WASI sandbox brings its own allocator.
-    let mimalloc_dep = if is_wasm {
+    // Only when building for the machine doing the building.
+    //
+    // mimalloc compiles C, so it needs a C toolchain for the target. Cross-compiling to Linux
+    // from Windows failed on it — "failed to find tool `x86_64-linux-musl-gcc`" — which broke the
+    // one thing a single native binary is for. A cross-built program uses the platform allocator
+    // and is a little slower on allocation-heavy work; a program that does not build is slower
+    // than that.
+    let cross_compiling = wasm_target.is_some()
+        || std::env::var("VARGC_TARGET_TRIPLE").is_ok()
+        || std::env::var("CARGO_BUILD_TARGET").is_ok();
+    let mimalloc_dep = if is_wasm || cross_compiling {
         ""
     } else {
         "mimalloc = { version = \"0.1\", default-features = false }\n"
@@ -2145,7 +2155,7 @@ serde_json = "1.0"
     let main_rs_path = src_dir.join("main.rs");
     // Plan 44: Prepend #![allow(...)] to suppress common Rust warnings
     let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
-    let allocator = if is_wasm {
+    let allocator = if is_wasm || cross_compiling {
         ""
     } else {
         "#[global_allocator]\nstatic __VARG_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;\n\n"
