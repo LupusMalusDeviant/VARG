@@ -123,6 +123,8 @@ jobs:
         # records a decision without its reason, so it outlives the reason. security/advisories.sh
         # states the precondition behind each skip and fails when it stops holding — rkyv leaving
         # the lockfile for the build graph, or the PDF writer gaining a reader.
+        # The workflow defaults every step into varg-compiler/; this one runs from the root.
+        working-directory: .
         run: |
           cargo install cargo-audit --locked --quiet || true
           bash security/advisories.sh
