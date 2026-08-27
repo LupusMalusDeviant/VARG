@@ -18,6 +18,13 @@ on:
 
 permissions:
   contents: write
+  # Build provenance: GitHub signs a statement saying which workflow, at which commit, produced
+  # each archive, and records it in a public transparency log. It needs no key of ours, and
+  # `gh attestation verify` checks it against the repository. This is not the same as signing the
+  # binary — an unsigned executable still warns on Windows and macOS — but it is the half that
+  # does not wait on a certificate.
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -82,6 +89,34 @@ jobs:
           "$V" build tools/varg-tutor/tutor.varg
           VARG_HOME="$PWD" VARGC="$V" "$V" mcp list tools/varg-tutor/tutor.varg | grep -q "check(source"
 
+      # Windows code signing. Dormant until a certificate exists: the `if` reads an env var
+      # set from the secret, so with no secret the step is skipped and the release is built
+      # exactly as it is today. An unsigned vargc.exe makes SmartScreen warn on first run,
+      # which is what the external audit flagged; the fix needs a certificate, and a
+      # certificate is not something CI can produce. To switch this on, add two repository
+      # secrets:
+      #   WINDOWS_CERT_PFX       base64 of the .pfx  (certutil -encode cert.pfx cert.txt)
+      #   WINDOWS_CERT_PASSWORD  its password
+      # Nothing else changes. See docs/RELEASING.md.
+      - name: Sign the Windows binaries
+        if: matrix.os == 'windows-latest' && env.HAS_WINDOWS_CERT == 'true'
+        env:
+          HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'code-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+          $signtool = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin' -Recurse -Filter signtool.exe |
+              Where-Object { $_.FullName -like '*x64*' } | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe not found on this runner' }
+          foreach ($exe in 'vargc.exe', 'varg-lsp.exe') {
+            $path = "varg-compiler/target/release/$exe"
+            & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $path
+            if ($LASTEXITCODE -ne 0) { throw "signing $exe failed" }
+          }
+          Remove-Item $pfx -Force
       - name: Package
         shell: bash
         run: |
@@ -184,6 +219,28 @@ jobs:
           path: assets
           merge-multiple: true
       - run: ls -la assets
+
+      # The tag itself. An external audit found the v2.2.0 tag unsigned, so nothing tied the
+      # release to a person. Signing happens on the machine that creates the tag, not here, so
+      # all CI can do is say whether it was done — and say it out loud rather than silently
+      # shipping an anonymous tag. Not fatal: it reports, and the release is a draft anyway.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Is the tag signed
+        run: |
+          if git verify-tag "${GITHUB_REF_NAME}" 2>/dev/null; then
+            echo "Tag ${GITHUB_REF_NAME} carries a valid signature."
+          else
+            echo "::warning::Tag ${GITHUB_REF_NAME} is not signed. Create it with"
+            echo "::warning::  git tag -s ${GITHUB_REF_NAME} -m 'Varg ${GITHUB_REF_NAME}'"
+            echo "::warning::after configuring user.signingkey and gpg.format."
+          fi
+
+      - name: Attest what built these archives
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'assets/*.zip,assets/*.tar.gz,assets/*.vsix'
       # A draft, not a publication: the artifacts are attached and someone decides to release
       # them. Publishing is an outward-facing act and does not belong to a push.
       - uses: softprops/action-gh-release@v2
