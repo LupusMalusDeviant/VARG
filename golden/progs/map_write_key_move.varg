@@ -1,0 +1,44 @@
+agent M {
+    // A map write emitted `get_mut` and then `insert(key.clone(), v)`: two lookups, and a copy of
+    // the key for every entry that is new — which is every entry in a counting pass over distinct
+    // words. When the key is the variable of the innermost enclosing `foreach` and this statement
+    // holds its last use, it can be moved into a single `insert` instead. The cases below are the
+    // ones that must NOT be moved: moving them would be rejected by rustc on the second turn, or
+    // would take a value still needed.
+    public void Run() {
+        // 1. key bound OUTSIDE the loop: must not be moved, or the second turn fails
+        var k = "fixed";
+        var a = {"seed": 0};
+        var i = 0;
+        while i < 3 {
+            a[k] = (a[k] or 0) + 1;
+            i += 1;
+        }
+        print $"outside = {a[k] or -1}";
+
+        // 2. loop variable used AFTER the write: must not be moved
+        var b = {"seed": 0};
+        foreach (w in ["x", "y", "x"]) {
+            b[w] = (b[w] or 0) + 1;
+            print $"saw {w}";
+        }
+        print $"after-use = {b["x"] or -1}";
+
+        // 3. the counting idiom: moved
+        var c = {"seed": 0};
+        foreach (w in ["p", "q", "p"]) {
+            c[w] = (c[w] or 0) + 1;
+        }
+        print $"moved = {c["p"] or -1}";
+
+        // 4. nested loops, inner variable
+        var d = {"seed": 0};
+        foreach (o in ["1", "2"]) {
+            foreach (n in ["a", "b"]) {
+                d[n] = (d[n] or 0) + 1;
+            }
+            print $"outer {o}";
+        }
+        print $"nested = {d["a"] or -1}";
+    }
+}

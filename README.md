@@ -111,14 +111,14 @@ Time the programs measured around their own work, median of 30 runs on one machi
 
 | Workload | Varg | C# | TypeScript | Python |
 |----------|-----:|---:|-----------:|-------:|
-| fib(35), recursive | **16 ms** | 53 ms | 53 ms | 700 ms |
+| fib(35), recursive | **15.5 ms** | 53 ms | 53 ms | 700 ms |
 | 100k list: build, filter, map, sum | **1 ms** | 12 ms | 4 ms | 9 ms |
-| 1000-record JSON: build, parse, re-serialise | 1 ms | 21 ms | **<1 ms** | 2 ms |
-| Word frequency, 200k distinct keys | 35 ms | 64 ms | 36 ms | **27 ms** |
+| 1000-record JSON: build, parse, re-serialise | 1 ms | 22 ms | **<1 ms** | 2 ms |
+| Word frequency, 200k distinct keys | 31 ms | 63 ms | 37 ms | **28 ms** |
 
 Faster than C# on all four. It loses word frequency to Python, and the reason is not what it
-looks like. Timed in phases, the counting loop is a tie — 26 ms against Python's 25 ms, so
-hashing and map lookups are not the gap. All of it is the final sort: 18 ms against 2 ms.
+looks like. Timed in phases, the counting loop is *faster* than Python's — 21 ms against 26 —
+so hashing and map lookups are not the gap. All of it is the final sort: 18 ms against 2 ms.
 
 Python's `dict` preserves insertion order, so `sorted()` receives the keys in the order they were
 counted, which is full of long ascending runs that Timsort merges almost for free. Rust's

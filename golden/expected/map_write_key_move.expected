@@ -1,0 +1,9 @@
+outside = 3
+saw x
+saw y
+saw x
+after-use = 2
+moved = 2
+outer 1
+outer 2
+nested = 2

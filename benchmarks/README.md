@@ -49,11 +49,11 @@ wrong. Timed in phases on this machine:
 
 | Phase | Varg / Rust | Python |
 |-------|------------:|-------:|
-| Counting loop | 26 ms | 25 ms |
-| Copying the keys out | 6 ms | — |
+| Counting loop | 21 ms | 26 ms |
+| Copying the keys out | 7 ms | — |
 | Sorting them | 18 ms | 2 ms |
 
-The counting loop is a tie, so hashing and map lookups are not the gap. Python's `dict` preserves
+The counting loop is the faster of the two, so hashing and map lookups are not the gap. Python's `dict` preserves
 insertion order, so `sorted()` gets the keys in counting order — long ascending runs that Timsort
 merges almost for free. Rust's `HashMap` yields hash order, which is effectively shuffled. Rust
 sorts the same keys in counting order in 2 ms too, and on genuinely shuffled input Python takes

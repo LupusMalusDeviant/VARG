@@ -153,6 +153,11 @@ pub struct RustGenerator {
     current_file: String,
     /// Wave 13: Last-use tracking — counts remaining uses of variables in current block
     usage_remaining: HashMap<String, usize>,
+
+    // The `foreach` variables enclosing the statement being generated, innermost last. A loop
+    // variable is rebound on every iteration, which is what makes it safe to move out of the
+    // body on its last textual use; a name bound outside the loop is not.
+    foreach_vars: Vec<String>,
     /// Wave 12: Known enum definitions for variant construction codegen
     known_enums: HashMap<String, Vec<EnumVariant>>,
     /// Reverse map: variant_name → enum_name, for qualified pattern generation
@@ -246,6 +251,7 @@ impl RustGenerator {
             emit_source_maps: false,
             current_file: String::new(),
             usage_remaining: HashMap::new(),
+            foreach_vars: Vec::new(),
             known_enums: HashMap::new(),
             variant_to_enum: HashMap::new(),
             in_result_function: false,
@@ -1800,10 +1806,44 @@ impl RustGenerator {
                         // `get_mut` allocates only for a key that is genuinely new.
                         let val_str = self.gen_expression(value);
                         let map = self.gen_expression(target);
-                        out.push_str(&format!(
-                            "{}{{ let __v = {}; match {}.get_mut(&{}) {{ Some(__slot) => *__slot = __v, None => {{ {}.insert({}.clone(), __v); }} }} }}\n",
-                            indent, val_str, map, idx_str, map, idx_str
-                        ));
+                        // A key that nothing else needs can be moved into a single `insert` instead: one lookup
+                        // and no allocation. Every key in a counting pass over distinct words is new, so the
+                        // branch above paid two lookups and a copy for each of them. `is_last_use` is the same
+                        // counter argument passing already uses; a loop variable is rebound each iteration, so
+                        // moving it out on its final textual use is sound.
+                        let key_is_movable = match index {
+                            // Only the variable of the innermost enclosing `foreach`, and only
+                            // when this statement holds every use it has left in the block. The
+                            // loop rebinds it each turn, so the move is sound; a name bound
+                            // outside the loop would be moved once and rejected by rustc on the
+                            // second iteration, which is a worse trade than the copy.
+                            Expression::Identifier(n)
+                                if self.foreach_vars.last().map(String::as_str) == Some(n.as_str()) =>
+                            {
+                                let mut here: HashMap<String, usize> = HashMap::new();
+                                self.count_usages_in_expr(index, &mut here);
+                                self.count_usages_in_expr(value, &mut here);
+                                self.count_usages_in_expr(target, &mut here);
+                                matches!(
+                                    (self.usage_remaining.get(n), here.get(n)),
+                                    (Some(left), Some(mine)) if left == mine
+                                )
+                            }
+                            // Built right here, so it belongs to nobody else.
+                            Expression::String(_) | Expression::InterpolatedString(_) => true,
+                            _ => false,
+                        };
+                        if key_is_movable {
+                            out.push_str(&format!(
+                                "{}{{ let __v = {}; {}.insert({}, __v); }}\n",
+                                indent, val_str, map, idx_str
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "{}{{ let __v = {}; match {}.get_mut(&{}) {{ Some(__slot) => *__slot = __v, None => {{ {}.insert({}.clone(), __v); }} }} }}\n",
+                                indent, val_str, map, idx_str, map, idx_str
+                            ));
+                        }
                     } else {
                         // Array index assign. Parenthesize index to keep `arr[len - 1]`
                         // from being parsed as `len - (1 as usize)`.
@@ -1964,7 +2004,9 @@ impl RustGenerator {
                     } else {
                         out.push_str(&format!("{}for mut {} in {} {{\n", indent, item_name, coll_code));
                     }
+                    self.foreach_vars.push(item_name.clone());
                     out.push_str(&self.gen_block(body, indent_level + 1));
+                    self.foreach_vars.pop();
                     out.push_str(&format!("{}}}\n", indent));
                 },
                 Statement::Stream(expr) => {

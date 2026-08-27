@@ -106,14 +106,14 @@ Von den Programmen um die eigene Arbeit gemessene Zeit, Median aus 30 Laeufen au
 
 | Workload | Varg | C# | TypeScript | Python |
 |----------|-----:|---:|-----------:|-------:|
-| fib(35), rekursiv | **16 ms** | 53 ms | 53 ms | 700 ms |
+| fib(35), rekursiv | **15.5 ms** | 53 ms | 53 ms | 700 ms |
 | 100k-Liste: bauen, filtern, mappen, summieren | **1 ms** | 12 ms | 4 ms | 9 ms |
-| JSON mit 1000 Records: bauen, parsen, neu serialisieren | 1 ms | 21 ms | **<1 ms** | 2 ms |
-| Wortfrequenz, 200k eigene Schluessel | 35 ms | 64 ms | 36 ms | **27 ms** |
+| JSON mit 1000 Records: bauen, parsen, neu serialisieren | 1 ms | 22 ms | **<1 ms** | 2 ms |
+| Wortfrequenz, 200k eigene Schluessel | 31 ms | 63 ms | 37 ms | **28 ms** |
 
 Schneller als C# in allen vier. Die Wortfrequenz verliert es gegen Python, und der Grund ist nicht
-der naheliegende. In Phasen gemessen ist die Zaehlschleife ein Gleichstand — 26 ms gegen Pythons
-25 ms, Hashing und Map-Zugriffe sind also nicht der Rueckstand. Er steckt vollstaendig im
+der naheliegende. In Phasen gemessen ist die Zaehlschleife sogar *schneller* als Pythons — 21 ms
+gegen 26 — Hashing und Map-Zugriffe sind also nicht der Rueckstand. Er steckt vollstaendig im
 abschliessenden Sortieren: 18 ms gegen 2 ms.
 
 Pythons `dict` bewahrt die Einfuegereihenfolge, `sorted()` bekommt die Schluessel also in der
