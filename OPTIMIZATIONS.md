@@ -1399,6 +1399,51 @@ Quellpositionen; eine Zahl, die wie eine Zeile aussieht und keine ist, wäre sch
 
 ---
 
+## Stand des Backlogs (nachgeprüft am 2026-08-27)
+
+Alles unterhalb dieser Zeile war eine Prioritätenliste aus der Zeit vor Stufe 22. Sie wurde am
+2026-08-27 Punkt für Punkt gegen den Code geprüft, nicht gegen die Erinnerung. Das Ergebnis: der
+größte Teil war längst erledigt und stand trotzdem als offen da — dieselbe Fehlerklasse wie ein
+README mit falscher Testzahl, nur dass für eine Roadmap kein Gate existiert.
+
+### Erledigt, verifiziert
+
+| Punkt | Beleg |
+|-------|-------|
+| **0.1 Golden-Output-Tests** | 55 Programme in `golden/progs`, jedes wird **gebaut, ausgeführt und die Ausgabe verglichen** |
+| **1.1 `fan_out` / `fan_in`** | verdrahtet, laufen in `golden/progs/documented_agents.varg` |
+| **1.2 SSE-Client** | `sse_client.rs` ist ein echter reqwest-Client, kein No-op |
+| **1.2 Package Registry** | es gibt keine — `vargc search`/`install` sagen das jetzt, `registry_search` ist zurückgezogen, `registry_download` prüft eine SHA-256 |
+| **1.2 `@[McpTool]` inputSchema** | `--mcp-discover` liefert `inputSchema` **und** `outputSchema` aus der Signatur; der tote Zweit-Erzeuger ohne Parameter ist entfernt |
+| **1.2 Workflow-DAG** | `workflow_run` führt den DAG aus; ein Zyklus erzeugt keine lauffähigen Schritte (Test) |
+| **1.2 Embeddings** | provider-agnostisch, mit lexikalischem Fallback |
+| **1.3 OCAP-Doku** | „What OCAP does and does not do" in REFERENCE.md, empirisch belegt |
+| **2 `db_open`** | gibt `Result` zurück |
+| **2 `llm_structured`** | fallibel; gab vorher `{}` zurück, wenn alle Versuche scheiterten |
+| **2 MCP-Wall-Clock-Timeout** | Leser-Thread + Deadline, `VARG_MCP_TIMEOUT_SECS` (Standard 30 s) |
+| **3.2 `vargc check`** | existiert |
+| **3.3 LSP-Ausbau** | Hover, Completion, Go-to-Definition, Diagnostics, Symbole |
+| **Aufräumen** | Versionschaos, falsche Builtin-Signaturen, `__varg_*` im Guide |
+
+### Offen
+
+| Punkt | Warum es steht |
+|-------|----------------|
+| **0.2 Durchgängiger Typkontext** | teilweise: der Codegen fragt an ~48 Stellen `resolve_type`/`var_types`, aber es gibt keine typannotierte AST. Die Heuristiken sind geschrumpft, nicht verschwunden |
+| **1.3 OCAP-Laufzeit-Sandbox** | Capabilities sind ein Compile-Zeit-Gate. Ein Token erlaubt den *Aufruf*, nie die *Argumente*. Eigenes Projekt |
+| **3.1 Echte Zeilennummern** | bräuchte Spans im AST. `Block` wird 300× als Literal gebaut; der Fehlermodus wäre eine *falsche* Zeile — schlechter als gar keine |
+| **Source-Level-Debugger** | nie begonnen |
+| **Vererbung, typisiertes `catch`, Generatoren, Reflection** | aus dem Sprachvergleich, Stufe 30 |
+| **Code-Signatur** | Windows-Schritt liegt bereit und wartet auf ein Zertifikat; macOS bräuchte zusätzlich Notarisierung. Siehe `docs/RELEASING.md` |
+| **Ein Aufruf, dessen Rumpf `?` nutzt, gilt im Typechecker als unfehlbar** | Der Codegen macht `fn f() -> Point` mit `?` im Rumpf zu `Result<Point, _>`; der Typechecker meldet weiter `Point`. Feldzugriff darauf wird jetzt abgelehnt, wo der Typ *wirklich* als Result bekannt ist — die Wurzel (Rückgabetyp aus dem Rumpf ableiten) ist eine eigene, breite Änderung |
+| **Nur lokal, nicht versioniert** | `release-staging/`, `varg-v0.12.0/0.13.0-*.zip`, leere `docs/Textdokument (neu).txt` — enthalten eingefrorene Doku-Kopien mit falschen Signaturen |
+
+---
+
+## Die alte Prioritätenliste (Stand vor Stufe 22 — zur Nachvollziehbarkeit belassen)
+
+> Der geprüfte Stand steht oben. Was hier als offen markiert ist, ist es überwiegend nicht mehr.
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests
