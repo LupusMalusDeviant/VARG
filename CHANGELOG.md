@@ -6,6 +6,74 @@ Varg uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.2.0] — 2026-08-27
+
+Writing the first realistic MCP server — a note store over SQLite, 38 lines — and then writing the
+tools to make that pleasant. Every defect below was hit on the first honest use.
+
+### Added — start from a program that runs
+
+`vargc new <kind> <name>` writes a working program: `mcp-server`, `agent` or `cli`. The first five
+minutes used to be an empty file and no way to know that `@[McpTool]` or `--mcp-serve` existed.
+Each template is a program that compiles, and a test type-checks all three so they cannot rot.
+
+### Added — try a tool without writing a client
+
+`vargc mcp list <file>` shows the tools with their parameter types; `vargc mcp call <file> <tool>
+'<json>'` calls one, building first if the binary is behind the source. The shortest way to see
+whether a tool worked used to be longer than writing the tool. A failing tool reports its error
+and exits non-zero; malformed JSON says so before anything is spawned.
+
+### Added — an MCP server, written in Varg, that teaches Varg
+
+`tools/varg-tutor` exposes `check(source)`, `example(topic)` and `builtins(query)`. The measured
+barrier to Varg is not that it is hard — it is that no model has seen it, and documentation alone
+does not fix that: guessing stays guessing until something answers. So the first tool is the
+compiler itself, in the loop, at about 36 ms a call; the others answer from the golden programs,
+which CI builds and runs, and from the reference, which the documentation gates check against the
+compiler. 90 lines, one 590 KB binary. A `writing-varg` skill points an agent at the loop.
+
+### Fixed — an MCP tool could not fail
+
+A tool that uses `?` is Result-shaped, and a tool touching a database, a file or the network
+always does — which is to say every useful one. Both generated dispatchers formatted the value
+regardless, so the first realistic MCP server type-checked and then failed in rustc with
+"`Result<String, String>` doesn't implement Display". Over MCP a failure now reaches the client as
+a JSON-RPC error and the connection stays usable; the same method as a CLI command reports on
+stderr and exits non-zero.
+
+### Fixed — `and`, `not` and `or`
+
+`and` and `not` are not operators here — `&&` and `!` are — and both lex as ordinary identifiers,
+so an expression simply ended at them and the parser complained about the *next* thing, at the top
+level, naming neither. It is the first mistake anyone trained on Python makes and the message
+pointed nowhere near it. Both now name the operator meant, at the word itself.
+
+`or` between two booleans type-checked and reached rustc as "no method named `unwrap_or_else` for
+bool". It supplies a fallback for a value that may be absent; between two booleans nothing can be.
+Refused now, naming `||` — and only for shapes that cannot be fallible, because a method whose
+body uses `?` can fail even though its declared return type does not say so.
+
+### Fixed — `exec`
+
+Inlined in the codegen and wrong twice over. On Windows the command went through Rust's argument
+escaping, which `cmd.exe` does not understand, so a command containing quotes — which any path
+with a space needs — arrived mangled. And only stdout was returned, so a command that failed came
+back as an empty string with no reason and no failure. It lives in the runtime now, passes the
+line through verbatim, and reports a non-zero exit with what the command said.
+
+### Fixed — colour went into every pipe
+
+`ColorChoice::Auto` only turns colour off for `TERM=dumb`; it does not ask whether the stream is a
+terminal. Escape codes reached CI logs, editors reading diagnostics, and any tool asking the
+compiler a question on someone's behalf.
+
+### Fixed — the allocator blocked a cross build
+
+mimalloc compiles C, so it needs a C toolchain for the target: cross-compiling to Linux from
+Windows failed on it, for every program rather than only those with a C dependency of their own.
+A cross build uses the platform allocator now. Host builds are unchanged.
+
 ## [2.1.0] — 2026-08-27
 
 Six things every language Varg is measured against could do and Varg could not. Each was found by
