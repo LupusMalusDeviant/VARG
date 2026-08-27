@@ -29,7 +29,13 @@ pub fn __varg_base64_encode_file(path: &str) -> String {
 
 /// Download a URL as binary and return base64-encoded content
 /// Accepts a URL and a headers map (key-value pairs)
-pub fn __varg_http_download_base64(url: &str, headers: &HashMap<String, String>) -> String {
+/// Same defect as `__varg_fetch`: a failure used to be handed back as
+/// `[http_download_base64 error: ...]` where base64 belongs, so decoding it yielded rubbish
+/// instead of reporting the download that never happened.
+pub fn __varg_http_download_base64(
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(180))
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -41,10 +47,10 @@ pub fn __varg_http_download_base64(url: &str, headers: &HashMap<String, String>)
     }
     match req.send() {
         Ok(resp) => match resp.bytes() {
-            Ok(bytes) => STANDARD.encode(&bytes),
-            Err(e) => format!("[http_download_base64 error: {}]", e),
+            Ok(bytes) => Ok(STANDARD.encode(&bytes)),
+            Err(e) => Err(format!("{}", e)),
         },
-        Err(e) => format!("[http_download_base64 error: {}]", e),
+        Err(e) => Err(format!("{}", e)),
     }
 }
 

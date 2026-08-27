@@ -1,0 +1,39 @@
+agent R {
+    int attempts;
+
+    // `retry` exists to repeat a fallible operation, and it never did. The generated attempt was
+    // `Ok(body)`, so a body that evaluated to a Result came back as `Ok(Err(..))` — read as
+    // success. The loop broke on the first try and the fallback was unreachable. The documented
+    // example, `retry(3) { fetch(url) } fallback { ... }`, therefore retried nothing; it stopped
+    // compiling altogether once `fetch` became fallible. Nothing here reaches the network, so the
+    // count can be asserted.
+    public void Run() {
+        self.attempts = 0;
+        var n = retry(3) {
+            self.attempts = self.attempts + 1;
+            parse_int("not a number")
+        } fallback {
+            -1
+        };
+        print $"exhausted = {n} after {self.attempts} attempts";
+
+        self.attempts = 0;
+        var m = retry(3) {
+            self.attempts = self.attempts + 1;
+            parse_int("42")
+        } fallback {
+            -1
+        };
+        print $"succeeded = {m} after {self.attempts} attempt";
+
+        // An infallible body still runs exactly once and never touches the fallback.
+        self.attempts = 0;
+        var k = retry(3) {
+            self.attempts = self.attempts + 1;
+            7 * 6
+        } fallback {
+            -1
+        };
+        print $"plain = {k} after {self.attempts} attempt";
+    }
+}

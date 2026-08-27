@@ -201,6 +201,22 @@ fn single_prompt_messages(prompt: &str) -> String {
     format!("[{{\"role\": \"user\", \"content\": \"{}\"}}]", safe)
 }
 
+/// `__varg_fetch` is fallible now. The call sites below return a bare `String` and so cannot
+/// propagate: for them a transport failure still arrives as the reply text, exactly as it did
+/// when `__varg_fetch` itself put the error in the response body. `llm_infer` and `llm_chat` are
+/// the fallible forms and do report it.
+fn fetch_or_error_text(
+    url: &str,
+    method: &str,
+    headers: HashMap<String, String>,
+    body: &str,
+) -> String {
+    match __varg_fetch(url, method, headers, body) {
+        Ok(text) => text,
+        Err(e) => e,
+    }
+}
+
 /// Fallible on purpose. This used to end in `parse_response(&res).unwrap_or(res)`: when the
 /// call failed, the error payload was returned *as the answer*, so an agent stored
 /// `{"error": "Network error: ..."}` in its memory and carried on as if the model had replied.
@@ -210,7 +226,7 @@ pub fn __varg_llm_infer(prompt: &str, model: &str) -> Result<String, String> {
     let provider = LlmProvider::detect();
     let messages_json = single_prompt_messages(prompt);
     let body = provider.build_body(model, &messages_json, false);
-    let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body);
+    let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body)?;
     provider.parse_response(&res).ok_or(res)
 }
 
@@ -222,7 +238,7 @@ pub fn __varg_llm_chat(ctx: &mut Context, prompt: &str, model: &str) -> Result<S
     ctx.push("user", prompt);
     let messages_json = serde_json::to_string(&ctx.messages).unwrap_or_else(|_| "[]".to_string());
     let body = provider.build_body(model, &messages_json, false);
-    let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body);
+    let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body)?;
     if let Some(content) = provider.parse_response(&res) {
         ctx.push("assistant", &content);
         Ok(content)
@@ -338,7 +354,17 @@ pub fn __varg_llm_structured(prompt: &str, schema_json: &str, retries: i64) -> S
     let body = provider.build_body(&provider.default_model(), &messages_json, false);
 
     for attempt in 0..retries.max(1) {
-        let raw = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body);
+        // A request that never reached the provider is not a candidate answer: retry it rather
+        // than feeding the transport error into the JSON extraction below.
+        let raw = match __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body) {
+            Ok(raw) => raw,
+            Err(_) => {
+                if attempt < retries - 1 {
+                    std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                }
+                continue;
+            }
+        };
         let content = provider.parse_response(&raw).unwrap_or(raw);
         // Accept if it parses as a JSON object
         if serde_json::from_str::<serde_json::Value>(&content).is_ok() {
@@ -487,7 +513,12 @@ pub fn __varg_llm_chat_cached(ctx: &mut Context, prompt: &str, model: &str) -> S
         let messages_json = serde_json::to_string(&ctx.messages)
             .unwrap_or_else(|_| "[]".to_string());
         let body = provider.build_body(model, &messages_json, false);
-        let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body);
+        // This one returns a bare String, so it cannot propagate; the error text still comes
+        // back as the reply, exactly as before. `llm_chat` is the fallible form of this call.
+        let res = match __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body) {
+            Ok(res) => res,
+            Err(e) => return e,
+        };
         if let Some(content) = provider.parse_response(&res) {
             ctx.push("assistant", &content);
             return content;
@@ -505,7 +536,11 @@ pub fn __varg_llm_chat_cached(ctx: &mut Context, prompt: &str, model: &str) -> S
         "prompt-caching-2024-07-31".to_string(),
     );
 
-    let res = __varg_fetch(&provider.chat_endpoint(), "POST", headers, &body_str);
+    // Bare String again: the transport error becomes the reply, as it did before.
+    let res = match __varg_fetch(&provider.chat_endpoint(), "POST", headers, &body_str) {
+        Ok(res) => res,
+        Err(e) => return e,
+    };
     if let Some(content) = provider.parse_response(&res) {
         ctx.push("assistant", &content);
         content
@@ -589,12 +624,15 @@ pub fn __varg_llm_structured_schema(
         };
         let body = build_openai_structured_request(&effective_model, schema_json, prompt);
         let body_str = serde_json::to_string(&body).unwrap_or_default();
-        let raw = __varg_fetch(
+        let raw = match __varg_fetch(
             &LlmProvider::OpenAI.chat_endpoint(),
             "POST",
             LlmProvider::OpenAI.headers(),
             &body_str,
-        );
+        ) {
+            Ok(raw) => raw,
+            Err(e) => return e,
+        };
         return LlmProvider::OpenAI
             .parse_response(&raw)
             .unwrap_or(raw);
@@ -608,7 +646,7 @@ pub fn __varg_llm_structured_schema(
         };
         let body = build_anthropic_structured_request(&effective_model, schema_json, prompt);
         let body_str = serde_json::to_string(&body).unwrap_or_default();
-        let raw = __varg_fetch(
+        let raw = fetch_or_error_text(
             &LlmProvider::Anthropic.chat_endpoint(),
             "POST",
             LlmProvider::Anthropic.headers(),
@@ -708,7 +746,7 @@ pub fn __varg_llm_chat_opts(
         .unwrap_or_else(|_| "[]".to_string());
     let body = build_chat_opts_body(&provider, &messages_json, model, temperature, max_tokens);
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    let res = __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body_str);
+    let res = fetch_or_error_text(&provider.chat_endpoint(), "POST", provider.headers(), &body_str);
     if let Some(content) = provider.parse_response(&res) {
         ctx.push("assistant", &content);
         content

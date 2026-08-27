@@ -23,11 +23,7 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
         | "base64_encode" | "base64_decode" | "base64_encode_file"
         | "path_join"
         | "timestamp" | "memory_get" | "workflow_status"
-        | "ansi_color" | "ansi_bold" | "ansi_reset" | "agents_list"
-        // fetch / http_download_base64 look fallible but their runtime fns return a bare String
-        // (errors surface in the body), so their static type is String, not Result. Keeping them
-        // here is what the runtime signatures actually guarantee — see net.rs / encoding.rs.
-        | "fetch" | "http_download_base64" => TypeNode::String,
+        | "ansi_color" | "ansi_bold" | "ansi_reset" | "agents_list" => TypeNode::String,
 
         // ── Int ───────────────────────────────────────────────────────────────────
         "len" | "length" | "count" | "count_occurrences" | "sum"
@@ -50,11 +46,15 @@ pub fn builtin_return_type(name: &str) -> Option<TypeNode> {
 
         // ── Result<String, Error> (fallible, string result) ───────────────────────
         // Only builtins whose codegen actually emits a Result (env→std::env::var,
-        // fs_read→read_to_string().map_err, exec→…map_err). fetch/http_download_base64 return a
-        // bare String (see the String group above) despite looking fallible.
+        // fs_read→read_to_string().map_err, exec→…map_err).
         // LLM calls reach the network and can fail. They used to hand the provider's error
         // payload back as the answer, so a failure was indistinguishable from a reply.
-        "fs_read" | "exec" | "env" | "llm_infer" | "llm_chat" =>
+        // `fetch` and `http_download_base64` did the same: this comment used to record that they
+        // "return a bare String despite looking fallible", which is the whole defect — a failed
+        // fetch arrived as `{"error": ...}` in the response body, and a failed download as an
+        // error message where base64 belonged. Every documented example already wrote `fetch(..)?`.
+        "fs_read" | "exec" | "env" | "llm_infer" | "llm_chat"
+        | "fetch" | "http_download_base64" =>
             TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)),
 
         // ── Result<Int/Float, Error> ─────────────────────────────────────────────
@@ -118,7 +118,6 @@ pub fn known_builtin_names() -> &'static [&'static str] {
         "path_join",
         "timestamp", "memory_get", "workflow_status",
         "ansi_color", "ansi_bold", "ansi_reset", "agents_list",
-        "fetch", "http_download_base64",
         // Int
         "len", "length", "count", "count_occurrences", "sum",
         "time_millis", "time_add", "time_diff", "channel_len", "event_count",

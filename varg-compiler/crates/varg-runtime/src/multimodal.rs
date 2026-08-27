@@ -113,7 +113,12 @@ pub fn __varg_llm_vision(img: &VargImage, prompt: &str, model: &str) -> String {
     }
     .to_string();
 
-    __varg_fetch(&url, "POST", headers, &body)
+    // Returns a bare String, so a transport failure arrives as the reply text — the shape
+    // `__varg_fetch` itself used to have. See `fetch_or_error_text` in llm.rs.
+    match __varg_fetch(&url, "POST", headers, &body) {
+        Ok(text) => text,
+        Err(e) => e,
+    }
 }
 
 #[cfg(test)]

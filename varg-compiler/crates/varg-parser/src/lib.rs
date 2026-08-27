@@ -94,6 +94,45 @@ impl Parser {
         }
     }
 
+    /// After a `?`, tell the try operator from the ternary.
+    ///
+    /// This used to be a fixed list of following tokens (`;`, `)`, `}`, `,`, `]`, end of input);
+    /// anything else was read as a ternary. So `var out = f()?` with no trailing semicolon tried
+    /// to parse the *next statement* as the true-branch and failed on a token that had nothing to
+    /// do with the mistake. Semicolons are optional everywhere else in Varg, which left the
+    /// documented `?` idiom depending on a character no document mentions.
+    ///
+    /// A ternary must have a colon. Look ahead for one at bracket depth zero: no colon, no
+    /// ternary. Nested ternaries claim their own colon through `pending`, so a later `c ? a : b`
+    /// further down the block cannot lend its colon to this `?`. An if- or match-expression in
+    /// the true-branch carries its own braces, so it needs no special case here.
+    fn question_mark_is_try(&self) -> bool {
+        let mut depth: i32 = 0;
+        let mut pending: u32 = 0;
+        for (tok, _) in &self.tokens[self.pos.min(self.tokens.len())..] {
+            match tok {
+                Token::LParen | Token::LBracket | Token::LBrace => depth += 1,
+                Token::RParen | Token::RBracket | Token::RBrace => {
+                    // A closer at depth zero ends whatever encloses this `?`.
+                    if depth == 0 {
+                        return true;
+                    }
+                    depth -= 1;
+                }
+                Token::QuestionMark if depth == 0 => pending += 1,
+                Token::Colon if depth == 0 => {
+                    if pending == 0 {
+                        return false; // this colon is ours: a ternary
+                    }
+                    pending -= 1;
+                }
+                Token::Semicolon | Token::Comma if depth == 0 => return true,
+                _ => {}
+            }
+        }
+        true // end of input
+    }
+
     /// Returns the byte span of the last consumed token
     /// Does the next token begin an expression? Used to tell `not x` from a variable happening
     /// to be called `not`.
@@ -2682,12 +2721,11 @@ impl Parser {
                 // Wave 19: Ternary / try-propagate — special-case for ?
                 if matches!(tok, Token::QuestionMark) {
                     self.advance(); // consume ?
-                    match self.peek() {
-                        Some(Token::Semicolon) | Some(Token::RParen) | Some(Token::RBrace) |
-                        Some(Token::Comma) | Some(Token::RBracket) | None => {
+                    match self.question_mark_is_try() {
+                        true => {
                             left = Expression::TryPropagate(Box::new(left));
                         }
-                        _ => {
+                        false => {
                             let true_expr = self.parse_expression()?;
                             self.consume(Token::Colon)?;
                             let false_expr = self.parse_expression()?;

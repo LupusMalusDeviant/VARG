@@ -67,6 +67,7 @@ pub enum TypeError {
     OrFallbackMismatch { expected: String, found: String },
     /// `or` used where nothing can be absent — almost always boolean or was meant.
     OrOnAValueAlwaysPresent { found: String },
+    TryOnAValueThatCannotFail { found: String },
     ReceiverBuiltinTakesNoArgs { method_name: String, found: usize },
     DivisionByZeroLiteral,
     FieldTypeMismatch { type_name: String, field_name: String, expected: String, found: String },
@@ -164,6 +165,9 @@ impl TypeError {
                 } else {
                     format!("`or` supplies a fallback for a value that may be absent, but `{}` always is. Drop the `or`, or make the value optional", found)
                 }
+            }
+            TypeError::TryOnAValueThatCannotFail { found } => {
+                format!("`?` propagates a failure, but `{}` cannot fail. Drop the `?`", found)
             }
             TypeError::OrFallbackMismatch { expected, found } => {
                 format!(
@@ -4262,7 +4266,17 @@ impl TypeChecker {
                     }
                     _ => TypeNode::Void,
                 }).unwrap_or(TypeNode::Void);
-                Ok(body_ty)
+                // A fallible body is what `retry` is for: each attempt unwraps it, and exhausting
+                // the attempts hands over to the fallback, so the whole expression yields the
+                // plain value. Reporting the Result here made the result of the documented
+                // `retry { fetch(..) } fallback { .. }` unusable without a second `or`, against a
+                // failure the fallback had already handled.
+                match (body_ty, fallback) {
+                    (TypeNode::Result(ok, e), Some(_)) => Ok(*ok),
+                    // With no fallback the failure has nowhere to go, so it stays a Result.
+                    (TypeNode::Result(ok, e), None) => Ok(TypeNode::Result(ok, e)),
+                    (other, _) => Ok(other),
+                }
             },
             // Plan 16: spawn returns an AgentHandle type
             Expression::Spawn { agent_name, args } => {
@@ -4276,11 +4290,45 @@ impl TypeChecker {
                 let inner_ty = self.infer_expression_type(expr)?;
                 // If the expression is Result<T, E>, the ? unwraps to T
                 if let TypeNode::Result(ok_ty, _) = inner_ty {
-                    Ok(*ok_ty)
-                } else {
-                    // Allow ? on any expression (runtime will handle)
-                    Ok(inner_ty)
+                    return Ok(*ok_ty);
                 }
+                // The comment here used to read "allow ? on any expression (runtime will handle)".
+                // The runtime does not handle it: codegen emits the `?` verbatim and rustc answers
+                // "the `?` operator can only be applied to values that implement `Try`", pointing
+                // into generated Rust. `var t = s?` on a string type-checked and failed to build.
+                //
+                // Narrow on purpose, and for the same reason as the `or` check below: a function
+                // declared `-> string` whose body uses `?` really is fallible, so a *user* call
+                // must still pass. Two shapes definitely cannot fail: a literal or a name with a
+                // primitive type, and a builtin whose signature the compiler already knows.
+                let definitely_not_fallible = match &**expr {
+                    Expression::Int(_)
+                    | Expression::Float(_)
+                    | Expression::Bool(_)
+                    | Expression::String(_)
+                    | Expression::Identifier(_)
+                    | Expression::BinaryOp { .. }
+                    | Expression::UnaryOp { .. } => Self::is_definite_primitive(&inner_ty),
+                    // A bare `name(args)` call parses as a MethodCall on `self`.
+                    Expression::MethodCall { caller, method_name, .. }
+                        if matches!(&**caller, Expression::Identifier(n) if n == "self") =>
+                    {
+                        // Only a builtin, and only from the table codegen emits from, so a
+                        // disagreement is a drift-lock failure rather than something shipped.
+                        !self.known_functions.contains_key(method_name)
+                            && matches!(
+                                varg_ast::builtins::builtin_return_type(method_name),
+                                Some(t) if !matches!(t, TypeNode::Result(_, _))
+                            )
+                    }
+                    _ => false,
+                };
+                if definitely_not_fallible {
+                    return Err(TypeError::TryOnAValueThatCannotFail {
+                        found: format!("{:?}", inner_ty),
+                    });
+                }
+                Ok(inner_ty)
             },
             // Plan 24: expr or default — returns inner type
             Expression::OrDefault { expr, default } => {
@@ -4752,6 +4800,7 @@ impl TypeChecker {
                 // program would go back to failing in rustc.
                 | TypeError::OrFallbackMismatch { .. }
                 | TypeError::OrOnAValueAlwaysPresent { .. }
+                | TypeError::TryOnAValueThatCannotFail { .. }
         ) {
             return true;
         }
@@ -6940,6 +6989,50 @@ mod tests {
                         Statement::Let {
                             name: "data".to_string(),
                             ty: Some(TypeNode::String),
+                            // This used to be `Expression::String("hello")` — a literal, which
+                            // is not a Result at all. The test named itself after unwrapping a
+                            // Result and asserted that `?` on a plain string was accepted, which
+                            // is the defect: codegen emitted the `?` and rustc rejected it.
+                            value: Expression::TryPropagate(
+                                Box::new(Expression::MethodCall {
+                                    caller: Box::new(Expression::Identifier("self".to_string())),
+                                    method_name: "exe_path".to_string(),
+                                    args: vec![],
+                                })
+                            ) },
+                        Statement::Return(Some(Expression::Identifier("data".to_string()))),
+                    ]}),
+                }],
+            })],
+        };
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn try_propagate_on_a_value_that_cannot_fail_is_rejected() {
+        // The other half of the test above: `?` says "propagate the failure", and a string
+        // literal has none to propagate. Accepting it produced Rust that would not compile.
+        let mut checker = TypeChecker::new();
+        let program = Program {
+            no_std: false, docs: std::collections::HashMap::new(),
+            items: vec![Item::Agent(AgentDef {
+                name: "Test".to_string(),
+                is_system: false, is_public: false,
+                target_annotation: None, annotations: vec![],
+                    implements: vec![],
+                fields: vec![],
+                methods: vec![MethodDecl {
+                    name: "Run".to_string(),
+                    is_public: true, is_async: false,
+                    annotations: vec![],
+                    type_params: vec![],
+                    constraints: vec![],
+                    args: vec![],
+                    return_ty: Some(TypeNode::String),
+                    body: Some(Block { statements: vec![
+                        Statement::Let {
+                            name: "data".to_string(),
+                            ty: Some(TypeNode::String),
                             value: Expression::TryPropagate(
                                 Box::new(Expression::String("hello".to_string()))
                             ) },
@@ -6948,7 +7041,11 @@ mod tests {
                 }],
             })],
         };
-        assert!(checker.check_program(&program).is_ok());
+        let errs = checker.check_program(&program).unwrap_err();
+        assert!(
+            format!("{:?}", errs).contains("TryOnAValueThatCannotFail"),
+            "expected the `?`-on-an-infallible-value error, got: {:?}", errs
+        );
     }
 
     // ===== F41-5: Result Method Type Inference =====

@@ -1317,6 +1317,15 @@ impl RustGenerator {
         }
     }
 
+    /// The expression a block evaluates to, if it ends in one.
+    fn block_tail_expr(block: &Block) -> Option<&Expression> {
+        match block.statements.last() {
+            Some(Statement::Expr(e)) => Some(e),
+            Some(Statement::Return(Some(e))) => Some(e),
+            _ => None,
+        }
+    }
+
     fn is_string_expr(&self, expr: &Expression) -> bool {
         // T2: type-accurate — any expression the type environment resolves to String.
         if self.resolve_type(expr) == Some(TypeNode::String) { return true; }
@@ -4355,7 +4364,25 @@ impl RustGenerator {
                 } else {
                     "{ panic!(\"retry: all attempts failed\") }".to_string()
                 };
-                format!("{{\n    let mut __retry_result = None;\n    for __retry_i in 0..{} {{\n        match (|| -> std::result::Result<_, String> {{\n            Ok({})\n        }})() {{\n            Ok(val) => {{ __retry_result = Some(val); break; }}\n            Err(_) => {{}}\n        }}\n    }}\n    __retry_result.unwrap_or_else(|| {})\n}}", attempts_str, body_expr_str.trim(), fallback_str)
+                // A body that is itself fallible has to be unwrapped inside the attempt, or a failed
+                // attempt arrives as `Ok(Err(..))` — counted as success, so the loop breaks on the first
+                // try and the fallback is never reached. `retry(3) { fetch(url) }`, the documented
+                // example, therefore never retried anything; it also stopped compiling the moment
+                // `fetch` became fallible, because the fallback supplies a value while the loop was
+                // collecting Results.
+                let body_is_fallible = Self::block_tail_expr(body)
+                    .and_then(|e| self.resolve_type(e))
+                    .map(|t| matches!(t, TypeNode::Result(_, _)))
+                    .unwrap_or(false);
+                // The rendered body is a statement sequence, not an expression, so it needs
+                // braces: `Ok(a = 1; b)` is not Rust. A retry body of more than one statement
+                // never compiled, whether or not it was fallible.
+                let attempt = if body_is_fallible {
+                    format!("Ok(({{ {} }})?)", body_expr_str.trim())
+                } else {
+                    format!("Ok({{ {} }})", body_expr_str.trim())
+                };
+                format!("{{\n    let mut __retry_result = None;\n    for __retry_i in 0..{} {{\n        match (|| -> std::result::Result<_, String> {{\n            {}\n        }})() {{\n            Ok(val) => {{ __retry_result = Some(val); break; }}\n            Err(_) => {{}}\n        }}\n    }}\n    __retry_result.unwrap_or_else(|| {})\n}}", attempts_str, attempt, fallback_str)
             },
             // Plan 16: spawn Agent(args) — creates worker thread with message dispatch
             Expression::Spawn { agent_name, args } => {

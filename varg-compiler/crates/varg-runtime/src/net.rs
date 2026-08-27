@@ -59,11 +59,18 @@ fn execute_request(
 }
 
 /// Perform an HTTP request and return the response body as a string.
-pub fn __varg_fetch(url: &str, method: &str, headers: HashMap<String, String>, body: &str) -> String {
-    match execute_request(url, method, &headers, body) {
-        Ok((_, body_text, _)) => body_text,
-        Err(e) => format!("{{ \"error\": \"{}\" }}", e),
-    }
+/// A failed request used to come back as `{ "error": "..." }` *in the response body*, so a DNS
+/// failure was indistinguishable from a server that legitimately answers with that shape — and
+/// every documented example already writes `fetch(url, "GET")?`, which the checker accepted and
+/// rustc then refused. `__varg_http_request` directly below always did this properly.
+pub fn __varg_fetch(
+    url: &str,
+    method: &str,
+    headers: HashMap<String, String>,
+    body: &str,
+) -> Result<String, String> {
+    let (_, body_text, _) = execute_request(url, method, &headers, body)?;
+    Ok(body_text)
 }
 
 /// Perform an HTTP request and return JSON with status, headers, and body.
@@ -129,16 +136,19 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_error_returns_string() {
-        // An invalid URL should return an error string, never panic.
+    fn fetch_reports_a_failure_as_an_error() {
+        // This test used to be called `test_fetch_error_returns_string` and asserted that a
+        // failed request came back as a non-empty *string* — which is precisely the defect: the
+        // caller received `{ "error": ... }` where a response body belongs and could not tell it
+        // from a server that answers with that shape.
         let result = __varg_fetch(
             "http://this.domain.does.not.exist.varg.invalid/test",
             "GET",
             HashMap::new(),
             "",
         );
-        // Must be a non-empty string and must NOT panic
-        assert!(!result.is_empty(), "fetch error should return a non-empty error string");
+        assert!(result.is_err(), "an unresolvable host must be an error, not a body");
+        assert!(!result.unwrap_err().is_empty(), "the error must say something");
     }
 
     #[test]
