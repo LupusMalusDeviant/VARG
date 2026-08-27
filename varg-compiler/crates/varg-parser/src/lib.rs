@@ -1008,6 +1008,11 @@ impl Parser {
             }
             return Ok(array_type);
         }
+        // A trailing parameter that collects the rest: `int... ns`.
+        if self.peek() == Some(&Token::Ellipsis) {
+            self.advance();
+            return Ok(TypeNode::Variadic(Box::new(base_type)));
+        }
         // Check for nullable suffix: string? → Nullable(String)
         if self.peek() == Some(&Token::QuestionMark) {
             self.advance();

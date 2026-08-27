@@ -647,6 +647,7 @@ impl VargFormatter {
 
     fn format_type(&self, ty: &TypeNode) -> String {
         match ty {
+            TypeNode::Variadic(inner) => format!("{}...", self.format_type(inner)),
             TypeNode::Int => "int".to_string(),
             TypeNode::Float => "float".to_string(),
             TypeNode::String => "string".to_string(),

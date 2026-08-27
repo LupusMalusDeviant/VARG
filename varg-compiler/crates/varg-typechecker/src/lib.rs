@@ -4562,10 +4562,18 @@ impl TypeChecker {
         type_params: &[String],
         args: &[Expression],
     ) -> Result<(), TypeError> {
+        // A trailing `T...` collects however many arguments follow, including none.
+        let variadic = params
+            .last()
+            .map(|p| matches!(p.ty, TypeNode::Variadic(_)))
+            .unwrap_or(false);
         // Parameters carrying a default value may be omitted at the call site.
-        let required = params.iter().filter(|p| p.default_value.is_none()).count();
+        let required = params
+            .iter()
+            .filter(|p| p.default_value.is_none() && !matches!(p.ty, TypeNode::Variadic(_)))
+            .count();
         let total = params.len();
-        if args.len() < required || args.len() > total {
+        if args.len() < required || (!variadic && args.len() > total) {
             let expected = if required == total {
                 total.to_string()
             } else {
@@ -4579,6 +4587,23 @@ impl TypeChecker {
         }
 
         for (idx, (param, arg)) in params.iter().zip(args.iter()).enumerate() {
+            // Everything from the variadic parameter on is checked against what it collects.
+            if let TypeNode::Variadic(inner) = &param.ty {
+                for rest in args.iter().skip(idx) {
+                    let Ok(actual) = self.infer_expression_type(rest) else { continue };
+                    if !self.arg_type_is_unconstrained(&actual) && !self.types_match(inner, &actual)
+                    {
+                        return Err(TypeError::ArgumentTypeMismatch {
+                            callee: callee.to_string(),
+                            position: idx + 1,
+                            param_name: param.name.clone(),
+                            expected: format!("{:?}", inner),
+                            found: format!("{:?}", actual),
+                        });
+                    }
+                }
+                break;
+            }
             if self.param_type_is_unconstrained(&param.ty, type_params) {
                 continue;
             }

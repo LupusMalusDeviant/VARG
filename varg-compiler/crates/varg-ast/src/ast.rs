@@ -448,6 +448,12 @@ pub enum TypeNode {
 
     // Plan 06: Function/Closure types
     Func(Vec<TypeNode>, Box<TypeNode>), // (params) => return
+    /// `int... ns` — a trailing parameter that collects however many arguments follow.
+    ///
+    /// Carried in the type rather than as a flag on the declaration: a parameter list is
+    /// built in hundreds of places, and an enum variant only has to be handled where a type
+    /// is matched exhaustively. Inside the body the parameter is an array of the inner type.
+    Variadic(Box<TypeNode>),
 
     // Plan 16: Agent messaging handle
     AgentHandle(String), // AgentHandle("Worker") — handle to spawned agent

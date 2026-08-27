@@ -1042,6 +1042,33 @@ Respond in JSON format.
 
 ---
 
+## Variadic Parameters
+
+A trailing `T...` collects however many arguments follow, including none. Inside the body it is an
+array of `T`.
+
+```csharp
+fn total(int... ns) -> int {
+    var sum = 0;
+    foreach (n in ns) { sum = sum + n; }
+    return sum;
+}
+
+fn labelled(string prefix, int... ns) -> string {
+    return prefix + ns.len().to_string();
+}
+
+agent Main {
+    public void Run() {
+        print $"{total(1, 2, 3)}";            // 6
+        print $"{total()}";                    // 0
+        print labelled("count=", 5, 6);       // count=2
+    }
+}
+```
+
+---
+
 ## Methods on Builtin Types
 
 `impl` works on `string`, `int`, `float` and `bool` as well as on your own types, so domain

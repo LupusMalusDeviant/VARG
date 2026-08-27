@@ -14,3 +14,6 @@ OK   operands_survive
 OK   method_on_a_literal
 OK   method_on_a_variable
 OK   method_on_a_number
+OK   variadic_several
+OK   variadic_none
+OK   variadic_after_a_fixed_one

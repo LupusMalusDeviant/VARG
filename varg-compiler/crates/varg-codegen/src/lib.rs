@@ -1382,6 +1382,8 @@ impl RustGenerator {
                     CapabilityType::SystemAccess => "SystemAccess".to_string(),
                 }
             },
+            // Inside the body it is simply an array of what it collects.
+            TypeNode::Variadic(inner) => format!("Vec<{}>", self.gen_type(inner)),
             TypeNode::Func(params, ret) => {
                 let param_strs: Vec<String> = params.iter().map(|p| self.gen_type(p)).collect();
                 format!("Box<dyn Fn({}) -> {}>", param_strs.join(", "), self.gen_type(ret))
@@ -2916,6 +2918,31 @@ impl RustGenerator {
                 }
             },
             Expression::MethodCall { caller, method_name, args } => {
+                // A call to a function whose last parameter collects the rest: everything from
+                // that position on becomes the array the body sees.
+                if matches!(&**caller, Expression::Identifier(n) if n == "self") {
+                    if let Some(params) =
+                        self.known_function_params.get(method_name.as_str()).cloned()
+                    {
+                        if let Some(at) = params
+                            .iter()
+                            .position(|p| matches!(p.ty, TypeNode::Variadic(_)))
+                        {
+                            let mut rendered: Vec<String> = args
+                                .iter()
+                                .take(at)
+                                .map(|a| self.gen_cloned_arg(a))
+                                .collect();
+                            let rest: Vec<String> = args
+                                .iter()
+                                .skip(at)
+                                .map(|a| self.gen_cloned_arg(a))
+                                .collect();
+                            rendered.push(format!("vec![{}]", rest.join(", ")));
+                            return format!("{}({})", esc_ident(method_name), rendered.join(", "));
+                        }
+                    }
+                }
                 // Calling a value that holds a function — a parameter, a local, or a field.
                 //
                 // The name went to method dispatch, which prefixed it with the receiver:

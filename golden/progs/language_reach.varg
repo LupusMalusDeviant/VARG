@@ -29,6 +29,15 @@ fn check(string name, string got, string want) -> string {
     return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
 }
 
+// A trailing parameter that collects however many arguments follow.
+fn total(int... ns) -> int {
+    var sum = 0;
+    foreach (n in ns) { sum = sum + n; }
+    return sum;
+}
+
+fn labelled(string prefix, int... ns) -> string { return prefix + ns.len().to_string(); }
+
 // A function as a parameter.
 fn apply(int v, (int) => int f) -> int { return f(v); }
 
@@ -69,5 +78,10 @@ agent Main {
         var w = "world";
         print check("method_on_a_variable", w.shout(), "WORLD!");
         print check("method_on_a_number", $"{21.doubled()}", "42");
+
+        // ── However many arguments follow ────────────────────────────
+        print check("variadic_several", $"{total(1, 2, 3)}", "6");
+        print check("variadic_none", $"{total()}", "0");
+        print check("variadic_after_a_fixed_one", labelled("count=", 5, 6), "count=2");
     }
 }

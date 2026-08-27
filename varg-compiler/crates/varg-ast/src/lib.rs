@@ -219,6 +219,7 @@ pub enum Token {
 
     // ---- Plan 37: Range Expressions ----
     #[token("..=")] DotDotEquals,
+    #[token("...")] Ellipsis,
     #[token("..")] DotDot,
 
     // ---- Wave 6: LLM-Native Features ----
