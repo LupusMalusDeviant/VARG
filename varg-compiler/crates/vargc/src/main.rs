@@ -325,61 +325,181 @@ fn cmd_upgrade() {
     };
 
     let download_url = asset["browser_download_url"].as_str().unwrap_or("");
+    let asset_name = asset["name"].as_str().unwrap_or("varg-release");
     println!("Downloading varg {}...", tag);
 
-    if cfg!(target_os = "windows") {
-        // On Windows we can't replace a running exe; download and tell the user.
-        let temp_path = std::env::temp_dir().join("vargc_new.exe");
-        let temp_str = temp_path.to_string_lossy();
-
-        let status = Command::new("curl")
-            .args(["-sL", download_url, "-o", temp_str.as_ref()])
-            .status()
-            .unwrap_or_else(|e| { eprintln!("curl error: {}", e); exit(1); });
-
-        if !status.success() {
-            eprintln!("Download failed.");
-            exit(1);
-        }
-
-        println!("Download complete.");
-        println!(
-            "Replace your vargc.exe with the downloaded file at:\n  {}",
-            temp_path.display()
-        );
-    } else {
-        // On Unix: download, make executable, replace current binary in-place.
-        let temp_path = std::path::PathBuf::from("/tmp/vargc_new");
-        let temp_str = temp_path.to_string_lossy();
-
-        let status = Command::new("curl")
-            .args(["-sL", download_url, "-o", temp_str.as_ref()])
-            .status()
-            .unwrap_or_else(|e| { eprintln!("curl error: {}", e); exit(1); });
-
-        if !status.success() {
-            eprintln!("Download failed.");
-            exit(1);
-        }
-
-        // chmod +x
-        let _ = Command::new("chmod").args(["+x", temp_str.as_ref()]).status();
-
-        // Replace the running binary
-        let current_exe = std::env::current_exe().unwrap_or_else(|_| {
-            eprintln!("Error: could not determine path of current vargc binary.");
-            exit(1);
-        });
-
-        if let Err(e) = std::fs::rename(&temp_path, &current_exe) {
-            eprintln!("Error: could not replace binary at {}: {}", current_exe.display(), e);
-            eprintln!("Try: sudo cp {} {}", temp_path.display(), current_exe.display());
-            exit(1);
-        }
-
-        println!("vargc upgraded to {} at {}", tag, current_exe.display());
-        println!("Run: vargc --version");
+    let work = std::env::temp_dir().join(format!("varg-upgrade-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&work);
+    if let Err(e) = fs::create_dir_all(&work) {
+        eprintln!("Error: could not make a working directory at {}: {}", work.display(), e);
+        exit(1);
     }
+    let archive = work.join(asset_name);
+
+    if !fetch(download_url, &archive) {
+        eprintln!("Error: could not download {}", download_url);
+        exit(1);
+    }
+
+    // What was published, against what arrived. Neither the installer nor this checked anything
+    // before, so a corrupted or substituted download was indistinguishable from a good one.
+    let sums = work.join("expected.sha256");
+    if fetch(&format!("{}.sha256", download_url), &sums) {
+        let want = fs::read_to_string(&sums)
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let got = sha256_of(&archive);
+        match (want.is_empty(), got) {
+            (false, Some(got)) if got == want => println!("Checksum matches."),
+            (false, Some(got)) => {
+                eprintln!("Error: the download does not match its published checksum.");
+                eprintln!("  expected {}", want);
+                eprintln!("  got      {}", got);
+                eprintln!("Nothing was installed.");
+                exit(1);
+            }
+            _ => {
+                eprintln!("Error: could not check the download against its checksum.");
+                eprintln!("Nothing was installed.");
+                exit(1);
+            }
+        }
+    } else {
+        eprintln!("Error: release {} publishes no checksum for {}.", tag, asset_name);
+        eprintln!("Nothing was installed. Download it yourself if you mean to skip the check.");
+        exit(1);
+    }
+
+    let unpacked = work.join("unpacked");
+    if let Err(e) = fs::create_dir_all(&unpacked) {
+        eprintln!("Error: {}", e);
+        exit(1);
+    }
+    if !unpack(&archive, &unpacked) {
+        eprintln!("Error: could not unpack {}", archive.display());
+        exit(1);
+    }
+
+    // The archive holds one directory; the installation is what is inside it.
+    let payload = match fs::read_dir(&unpacked)
+        .ok()
+        .and_then(|mut it| it.next().and_then(|e| e.ok()))
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+    {
+        Some(p) => p,
+        None => {
+            eprintln!("Error: {} did not contain a release directory.", archive.display());
+            exit(1);
+        }
+    };
+
+    let exe_name = format!("vargc{}", std::env::consts::EXE_SUFFIX);
+    if !payload.join(&exe_name).exists() {
+        eprintln!("Error: the downloaded archive has no {}.", exe_name);
+        exit(1);
+    }
+
+    let current = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error: could not find the running vargc: {}", e);
+            exit(1);
+        }
+    };
+    let install_dir = current.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+
+    // The compiler and the crates it builds against move together. Replacing only the binary
+    // leaves a new compiler beside an old runtime, which is how a half-finished upgrade breaks a
+    // working installation.
+    let stale = install_dir.join(format!("{}.old", exe_name));
+    let _ = fs::remove_file(&stale);
+    if let Err(e) = fs::rename(&current, &stale) {
+        eprintln!("Error: could not move the running vargc aside: {}", e);
+        eprintln!("  {}", current.display());
+        exit(1);
+    }
+    if let Err(e) = fs::copy(payload.join(&exe_name), &current) {
+        eprintln!("Error: could not install the new vargc: {}", e);
+        let _ = fs::rename(&stale, &current);
+        eprintln!("The previous version has been put back.");
+        exit(1);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&current, fs::Permissions::from_mode(0o755));
+    }
+
+    if payload.join("crates").is_dir() {
+        let target = install_dir.join("crates");
+        let _ = fs::remove_dir_all(&target);
+        if let Err(e) = copy_tree(&payload.join("crates"), &target) {
+            eprintln!("Warning: the runtime crates were not replaced: {}", e);
+            eprintln!("  `vargc build` may fail until {} is refreshed.", target.display());
+        }
+    }
+
+    let _ = fs::remove_file(&stale);
+    let _ = fs::remove_dir_all(&work);
+    println!("vargc upgraded to {} at {}", tag, current.display());
+    println!("Run: vargc --version");
+}
+
+/// Fetch a URL to a file. Returns false when the server did not give us one.
+fn fetch(url: &str, to: &Path) -> bool {
+    let status = Command::new("curl")
+        .args(["-fsSL", url, "-o"])
+        .arg(to)
+        .status();
+    matches!(status, Ok(s) if s.success()) && to.exists()
+}
+
+/// SHA-256 of a file, as lowercase hex.
+fn sha256_of(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = fs::read(path).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// Unpack a .zip or .tar.gz using what the platform already has, the way install.sh does.
+fn unpack(archive: &Path, into: &Path) -> bool {
+    let name = archive.to_string_lossy().to_lowercase();
+    let status = if name.ends_with(".zip") {
+        if cfg!(windows) {
+            Command::new("powershell")
+                .args(["-NoProfile", "-Command", "Expand-Archive", "-Force", "-LiteralPath"])
+                .arg(archive)
+                .arg("-DestinationPath")
+                .arg(into)
+                .status()
+        } else {
+            Command::new("unzip").arg("-q").arg(archive).arg("-d").arg(into).status()
+        }
+    } else {
+        Command::new("tar").arg("xzf").arg(archive).arg("-C").arg(into).status()
+    };
+    matches!(status, Ok(s) if s.success())
+}
+
+/// Copy a directory tree. Used for the runtime crates, which are small and plain.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 // ── Wave 35: Global shared target directory ────────────────────────────────────
@@ -951,6 +1071,13 @@ fn run_cli() {
     // Wave 42: Self-upgrade — no file argument needed
     if command == "upgrade" {
         cmd_upgrade();
+        return;
+    }
+
+    // Asking for help is not an error. `--help` and `help` printed the usage and exited 1, so a
+    // script checking the status of `vargc --help` concluded the tool was broken.
+    if command == "help" || command == "--help" || command == "-h" {
+        print_usage();
         return;
     }
 
@@ -3026,6 +3153,49 @@ serde_json = "1.0"
         if !status.success() {
             exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+
+    /// The self-updater used to install the *archive* as the binary: a tar.gz was chmod'd and
+    /// renamed over the running compiler. Nothing was checked against anything. These cover the
+    /// pieces that make the new one safe.
+    #[test]
+    fn a_checksum_is_of_the_file_it_names() {
+        let dir = std::env::temp_dir().join(format!("varg-sha-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let f = dir.join("payload");
+        fs::write(&f, b"varg").unwrap();
+        assert_eq!(sha256_of(&f).unwrap(), "cf89bd024bd879ba3c1f096f348832939d9b5daad85d52a035e7de9b2838bcc5");
+
+        // One byte different, one answer different: a substituted download cannot pass.
+        fs::write(&f, b"vargc").unwrap();
+        assert_ne!(sha256_of(&f).unwrap(), "cf89bd024bd879ba3c1f096f348832939d9b5daad85d52a035e7de9b2838bcc5");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_file_has_no_checksum() {
+        assert!(sha256_of(Path::new("no-such-file-anywhere")).is_none());
+    }
+
+    #[test]
+    fn a_tree_is_copied_whole() {
+        // The runtime crates move with the binary; half an upgrade is a broken installation.
+        let root = std::env::temp_dir().join(format!("varg-tree-{}", std::process::id()));
+        let from = root.join("from");
+        let _ = fs::create_dir_all(from.join("varg-runtime").join("src"));
+        fs::write(from.join("varg-runtime").join("Cargo.toml"), "[package]").unwrap();
+        fs::write(from.join("varg-runtime").join("src").join("lib.rs"), "// x").unwrap();
+
+        let to = root.join("to");
+        copy_tree(&from, &to).unwrap();
+        assert!(to.join("varg-runtime").join("Cargo.toml").exists());
+        assert!(to.join("varg-runtime").join("src").join("lib.rs").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

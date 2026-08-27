@@ -117,6 +117,15 @@ jobs:
             varg-progs-${{ runner.os }}-
       - name: Build vargc (release)
         run: cargo build -p vargc --release --locked
+      - name: Known vulnerabilities in the dependency tree
+        # An external audit found nine, four of them in the TLS crate the compiler itself links.
+        # Nothing had ever looked. Two remain, both in optional features that no default build
+        # pulls in, and both are listed by name so a *new* one fails the job rather than joining
+        # a number nobody reads.
+        working-directory: varg-compiler
+        run: |
+          cargo install cargo-audit --locked --quiet || true
+          cargo audit --ignore RUSTSEC-2026-0187 --ignore RUSTSEC-2026-0235
       - name: Documentation compiles, covers the builtins, and its prose holds
         # Four rounds found the same defect: a signature in REFERENCE.md or VARG_AGENT_GUIDE.md
         # that the compiler rejects. Nothing caught it because nothing fed the docs to the

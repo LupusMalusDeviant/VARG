@@ -116,6 +116,16 @@ jobs:
             tar czf "${stage}.tar.gz" "$stage"
             echo "asset=${stage}.tar.gz" >> "$GITHUB_ENV"
           fi
+          # A checksum beside each archive, so an installer or the self-updater can tell whether
+          # what it downloaded is what was built. Nothing published one before, and neither the
+          # installer nor `vargc upgrade` checked anything.
+          asset="$(ls "${stage}".{zip,tar.gz} 2>/dev/null | head -1)"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$asset" | awk '{print $1}' > "${asset}.sha256"
+          else
+            shasum -a 256 "$asset" | awk '{print $1}' > "${asset}.sha256"
+          fi
+          cat "${asset}.sha256"
           ls -la "$stage".*
           echo "stage=${stage}" >> "$GITHUB_ENV"
 
@@ -136,7 +146,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: varg-${{ matrix.name }}
-          path: ${{ env.asset }}
+          path: |
+            ${{ env.asset }}
+            ${{ env.asset }}.sha256
           if-no-files-found: error
 
   release:

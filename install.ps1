@@ -79,6 +79,28 @@ try {
     exit 1
 }
 
+# What was published, against what arrived. This downloaded over the network and ran the result
+# without comparing it to anything — and the instructions pipe this script straight into a shell.
+$sumUrl = "$downloadUrl.sha256"
+try {
+    $expected = (Invoke-WebRequest -Uri $sumUrl -UseBasicParsing).Content.Trim().Split()[0]
+} catch {
+    Write-Host "Error: this release publishes no checksum for the asset." -ForegroundColor Red
+    Write-Host "Nothing was installed."
+    Remove-Item $tempZip -ErrorAction SilentlyContinue
+    exit 1
+}
+$actual = (Get-FileHash -Path $tempZip -Algorithm SHA256).Hash.ToLower()
+if ($actual -ne $expected.ToLower()) {
+    Write-Host "Error: the download does not match its published checksum." -ForegroundColor Red
+    Write-Host "  expected $expected"
+    Write-Host "  got      $actual"
+    Write-Host "Nothing was installed."
+    Remove-Item $tempZip -ErrorAction SilentlyContinue
+    exit 1
+}
+Write-Host "Checksum matches."
+
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 Expand-Archive -Path $tempZip -DestinationPath $tempDir -Force
 Remove-Item $tempZip -ErrorAction SilentlyContinue
@@ -94,6 +116,23 @@ if (-not $vargcExe) {
 
 $destExe = Join-Path $installDir "vargc.exe"
 Copy-Item -Path $vargcExe.FullName -Destination $destExe -Force
+
+# The runtime crates go with it. `vargc` builds a program against them, and installing the binary
+# alone produces a compiler that reports its version, type-checks a program and cannot build one —
+# which is exactly what v2.2.0 shipped.
+$cratesSrc = Join-Path $vargcExe.Directory.FullName "crates"
+if (Test-Path $cratesSrc) {
+    $cratesDest = Join-Path $installDir "crates"
+    if (Test-Path $cratesDest) { Remove-Item $cratesDest -Recurse -Force }
+    Copy-Item -Path $cratesSrc -Destination $cratesDest -Recurse -Force
+} else {
+    Write-Host "Error: the archive has no crates/ beside vargc.exe." -ForegroundColor Red
+    Write-Host "Without them vargc cannot build a program. Nothing was installed."
+    Remove-Item $destExe -ErrorAction SilentlyContinue
+    Remove-Item $tempDir -Recurse -ErrorAction SilentlyContinue
+    exit 1
+}
+
 Remove-Item $tempDir -Recurse -ErrorAction SilentlyContinue
 
 # ── Step 6: Add to user PATH ──────────────────────────────────────────────────

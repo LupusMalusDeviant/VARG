@@ -87,16 +87,40 @@ TEMP_DIR="$(mktemp -d)"
 # Linux one has always been a .tar.gz — so this installer could never have worked on Linux, which
 # is the only platform it runs on.
 case "$DOWNLOAD_URL" in
-    *.tar.gz|*.tgz)
-        ARCHIVE="$TEMP_DIR/varg.tar.gz"
-        curl -sL "$DOWNLOAD_URL" -o "$ARCHIVE"
-        tar xzf "$ARCHIVE" -C "$TEMP_DIR"
-        ;;
-    *)
-        ARCHIVE="$TEMP_DIR/varg.zip"
-        curl -sL "$DOWNLOAD_URL" -o "$ARCHIVE"
-        (cd "$TEMP_DIR" && unzip -q "$ARCHIVE")
-        ;;
+    *.tar.gz|*.tgz) ARCHIVE="$TEMP_DIR/varg.tar.gz" ;;
+    *)              ARCHIVE="$TEMP_DIR/varg.zip" ;;
+esac
+curl -sL "$DOWNLOAD_URL" -o "$ARCHIVE"
+
+# What was published, against what arrived. This downloaded over the network and ran the result
+# without comparing it to anything — and the instructions pipe this script straight into a shell.
+if curl -fsSL "${DOWNLOAD_URL}.sha256" -o "$TEMP_DIR/expected.sha256" 2>/dev/null; then
+    EXPECTED="$(cut -d' ' -f1 < "$TEMP_DIR/expected.sha256")"
+    if command -v sha256sum >/dev/null 2>&1; then
+        ACTUAL="$(sha256sum "$ARCHIVE" | cut -d' ' -f1)"
+    elif command -v shasum >/dev/null 2>&1; then
+        ACTUAL="$(shasum -a 256 "$ARCHIVE" | cut -d' ' -f1)"
+    else
+        echo "Error: no sha256sum or shasum to check the download with."
+        rm -rf "$TEMP_DIR"; exit 1
+    fi
+    if [ "$EXPECTED" != "$ACTUAL" ]; then
+        echo "Error: the download does not match its published checksum."
+        echo "  expected $EXPECTED"
+        echo "  got      $ACTUAL"
+        echo "Nothing was installed."
+        rm -rf "$TEMP_DIR"; exit 1
+    fi
+    echo "Checksum matches."
+else
+    echo "Error: release $TAG_NAME publishes no checksum for this asset."
+    echo "Nothing was installed."
+    rm -rf "$TEMP_DIR"; exit 1
+fi
+
+case "$ARCHIVE" in
+    *.tar.gz) tar xzf "$ARCHIVE" -C "$TEMP_DIR" ;;
+    *)        (cd "$TEMP_DIR" && unzip -q "$ARCHIVE") ;;
 esac
 cd "$TEMP_DIR"
 
@@ -114,9 +138,25 @@ fi
 mkdir -p "$INSTALL_DIR"
 cp "$VARGC_BIN" "$INSTALL_DIR/vargc"
 chmod +x "$INSTALL_DIR/vargc"
+
+# The runtime crates go with it. `vargc` builds a program against them, and installing the binary
+# alone produces a compiler that reports its version, type-checks a program and cannot build one —
+# which is exactly what v2.2.0 shipped.
+CRATES_SRC="$(dirname "$VARGC_BIN")/crates"
+if [ -d "$CRATES_SRC" ]; then
+    rm -rf "$INSTALL_DIR/crates"
+    cp -r "$CRATES_SRC" "$INSTALL_DIR/crates"
+else
+    echo "Error: the archive has no crates/ beside vargc."
+    echo "Without them vargc cannot build a program. Nothing was installed."
+    rm -rf "$INSTALL_DIR/vargc" "$TEMP_DIR"
+    exit 1
+fi
+
 rm -rf "$TEMP_DIR"
 
 echo "Installed vargc to $INSTALL_DIR/vargc"
+echo "Runtime crates in $INSTALL_DIR/crates — keep them beside the binary."
 
 # ── Step 7: Add to PATH in shell config files ─────────────────────────────────
 

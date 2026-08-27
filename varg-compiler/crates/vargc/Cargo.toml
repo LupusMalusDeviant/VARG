@@ -13,3 +13,5 @@ codespan-reporting.workspace = true
 serde_json.workspace = true
 ureq = { version = "2.9", features = ["tls"] }
 dirs = "5.0"
+# The self-updater checks a download against its published checksum.
+sha2 = "0.10"
