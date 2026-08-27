@@ -483,6 +483,341 @@ fn append_line_map(main_rs_path: &Path) {
     let _ = fs::write(main_rs_path, format!("{}{}", src, table));
 }
 
+/// `vargc mcp list <file>` and `vargc mcp call <file> <tool> '<json>'`.
+///
+/// Trying one tool used to mean writing a JSON-RPC client first ~ so the shortest way to see
+/// whether a tool worked was longer than writing the tool. The server is the program itself, run
+/// in `--mcp-serve` mode and spoken to over its stdin.
+fn cmd_mcp(args: &[String]) {
+    if args.len() < 2 {
+        eprintln!("Usage: vargc mcp list <file.varg>");
+        eprintln!("       vargc mcp call <file.varg> <tool> ['<json arguments>']");
+        exit(1);
+    }
+    let (sub, file) = (args[0].as_str(), args[1].as_str());
+    if sub != "list" && sub != "call" {
+        eprintln!("Error: unknown `vargc mcp {}` ~ expected `list` or `call`.", sub);
+        exit(1);
+    }
+    if sub == "call" && args.len() < 3 {
+        eprintln!("Usage: vargc mcp call <file.varg> <tool> ['<json arguments>']");
+        exit(1);
+    }
+
+    // Build it the ordinary way, so what is exercised is what a client would spawn.
+    let exe = build_for_mcp(file);
+
+    let mut requests = vec![serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                   "clientInfo": {"name": "vargc", "version": env!("CARGO_PKG_VERSION")}}
+    })];
+    if sub == "list" {
+        requests.push(serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}));
+    } else {
+        let raw = args.get(3).map(|s| s.as_str()).unwrap_or("{}");
+        let arguments: serde_json::Value = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Error: the arguments are not valid JSON: {}", e);
+                eprintln!("  got: {}", raw);
+                exit(1);
+            }
+        };
+        requests.push(serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": args[2], "arguments": arguments}
+        }));
+    }
+
+    let replies = speak_jsonrpc(&exe, &requests);
+    let Some(answer) = replies.iter().find(|r| r["id"] == serde_json::json!(2)) else {
+        eprintln!("Error: the server did not answer.");
+        exit(1);
+    };
+    if let Some(err) = answer.get("error") {
+        eprintln!(
+            "Tool error: {}",
+            err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+        );
+        exit(1);
+    }
+    if sub == "list" {
+        let empty = vec![];
+        let tools = answer["result"]["tools"].as_array().unwrap_or(&empty);
+        if tools.is_empty() {
+            println!("No tools. Mark a method with @[McpTool(\"...\")] to expose one.");
+            return;
+        }
+        for t in tools {
+            let name = t["name"].as_str().unwrap_or("?");
+            let desc = t["description"].as_str().unwrap_or("");
+            let params: Vec<String> = t["inputSchema"]["properties"]
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, v)| {
+                            format!("{}: {}", k, v["type"].as_str().unwrap_or("?"))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            println!("{}({})", name, params.join(", "));
+            if !desc.is_empty() {
+                println!("    {}", desc);
+            }
+        }
+        return;
+    }
+    // A tool answers with content blocks; print the text, which is what a client shows.
+    match answer["result"]["content"].as_array() {
+        Some(blocks) => {
+            for b in blocks {
+                println!("{}", b["text"].as_str().unwrap_or(""));
+            }
+        }
+        None => println!("{}", answer["result"]),
+    }
+}
+
+/// Build the program if its binary is missing or older than the source.
+fn build_for_mcp(file: &str) -> PathBuf {
+    let src = Path::new(file);
+    if !src.exists() {
+        eprintln!("Error: {} not found.", file);
+        exit(1);
+    }
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let mut exe = src.with_file_name(format!("{}{}", stem, std::env::consts::EXE_SUFFIX));
+    let fresh = match (fs::metadata(&exe), fs::metadata(src)) {
+        (Ok(a), Ok(b)) => match (a.modified(), b.modified()) {
+            (Ok(x), Ok(y)) => x >= y,
+            _ => false,
+        },
+        _ => false,
+    };
+    if !fresh {
+        eprintln!("-> building {} ...", file);
+        compile_varg_file(file, false, false, None, false);
+        exe = src.with_file_name(format!("{}{}", stem, std::env::consts::EXE_SUFFIX));
+    }
+    if !exe.exists() {
+        eprintln!("Error: no binary at {} after building.", exe.display());
+        exit(1);
+    }
+    // A bare name is looked up on PATH, not in this directory, so `notes.exe` next to the source
+    // was reported as "program not found".
+    fs::canonicalize(&exe).unwrap_or(exe)
+}
+
+/// Send each request on its own line and collect whatever JSON comes back.
+fn speak_jsonrpc(exe: &Path, requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    use std::io::Write;
+    let mut child = match Command::new(exe)
+        .arg("--mcp-serve")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: could not start {}: {}", exe.display(), e);
+            exit(1);
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        for r in requests {
+            let _ = writeln!(stdin, "{}", r);
+        }
+    }
+    let out = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Error: {} did not finish: {}", exe.display(), e);
+            exit(1);
+        }
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .collect()
+}
+
+/// `vargc new <kind> <name>` — a program that already runs.
+///
+/// The first five minutes were the worst part of writing anything in Varg: an empty file, and no
+/// way to know that `@[McpTool]` or `--mcp-serve` existed. Each template is a working program,
+/// not a sketch with holes to fill.
+fn cmd_new(args: &[String]) {
+    const KINDS: &[&str] = &["mcp-server", "agent", "cli"];
+    if args.len() < 2 {
+        eprintln!("Usage: vargc new <kind> <name>");
+        eprintln!("  kinds: {}", KINDS.join(", "));
+        exit(1);
+    }
+    let (kind, name) = (args[0].as_str(), args[1].as_str());
+    if !KINDS.contains(&kind) {
+        eprintln!("Error: unknown kind `{}`.", kind);
+        eprintln!("  kinds: {}", KINDS.join(", "));
+        exit(1);
+    }
+    // A name becomes an agent name, so it has to be one.
+    let agent: String = {
+        let mut out = String::new();
+        let mut upper = true;
+        for c in name.chars() {
+            if c == '-' || c == '_' || c == ' ' {
+                upper = true;
+            } else if upper {
+                out.extend(c.to_uppercase());
+                upper = false;
+            } else {
+                out.push(c);
+            }
+        }
+        if out.is_empty() { "Main".to_string() } else { out }
+    };
+
+    let path = PathBuf::from(format!("{}.varg", name));
+    if path.exists() {
+        eprintln!("Error: {} already exists — not overwriting it.", path.display());
+        exit(1);
+    }
+
+    let source = match kind {
+        "mcp-server" => template_mcp_server(&agent),
+        "agent" => template_agent(&agent),
+        _ => template_cli(&agent),
+    };
+    if let Err(e) = fs::write(&path, source) {
+        eprintln!("Error writing {}: {}", path.display(), e);
+        exit(1);
+    }
+    println!("Created {}", path.display());
+    println!();
+    match kind {
+        "mcp-server" => {
+            println!("  vargc run {}                       # what it says about itself", name);
+            println!("  vargc mcp list {}.varg                # the tools it exposes", name);
+            println!("  vargc mcp call {}.varg greet '{{\"name\": \"world\"}}'", name);
+            println!();
+            println!("  Point an MCP client at:  {}.exe --mcp-serve", name);
+        }
+        "agent" => println!("  vargc run {}", name),
+        _ => {
+            println!("  vargc run {}", name);
+            println!("  ./{}.exe --help", name);
+        }
+    }
+}
+
+fn template_mcp_server(agent: &str) -> String {
+    format!(
+        r####"/// An MCP server. Each `@[McpTool]` method is reachable three ways from this one
+/// annotation: as an MCP tool, as a CLI command, and as an ordinary method.
+///
+///   vargc run {a}.varg                  what it says about itself
+///   vargc mcp list {a}.varg             the tools it exposes
+///   vargc mcp call {a}.varg greet '{{"name": "world"}}'
+///
+/// A client spawns it as:  {a}.exe --mcp-serve
+agent {agent} {{
+    @[McpTool("Greet somebody by name")]
+    public string greet(string name) {{
+        return "hello " + name;
+    }}
+
+    /// A tool that can fail says so with `?`. The failure reaches the client as a JSON-RPC
+    /// error rather than as text that happens to mention a problem.
+    @[McpTool("Read a text file")]
+    public string read_file(string path) {{
+        unsafe {{
+            var files = FileAccess {{}};
+            return fs_read(path)?;
+        }}
+    }}
+
+    public void Run() {{
+        print "{agent}: an MCP server. Run it with --mcp-serve, or try:";
+        print "  vargc mcp call <this file> greet '{{\"name\": \"world\"}}'";
+    }}
+}}
+"####,
+        a = agent.to_lowercase(),
+        agent = agent
+    )
+}
+
+fn template_agent(agent: &str) -> String {
+    format!(
+        r####"/// An agent that receives messages instead of calls.
+contract IGreeter {{
+    string greet(string name);
+}}
+
+agent Polite implements IGreeter {{
+    public string greet(string name) {{ return "hello " + name; }}
+}}
+
+agent Worker {{
+    IGreeter greeter;
+    int handled;
+
+    public Worker(IGreeter greeter) {{
+        self.greeter = greeter;
+    }}
+
+    public void on_message(string method, string[] args) {{
+        self.handled = self.handled + 1;
+        match method {{
+            "greet" => {{ print self.greeter.greet(args[0]); }}
+            _ => {{ print "unknown message: " + method; }}
+        }}
+    }}
+
+    public int handled_count() {{ return self.handled; }}
+}}
+
+agent {agent} {{
+    public void Run() {{
+        var w = spawn Worker(Polite {{}});
+        w.send("greet", ["world"]);
+        w.send("greet", ["again"]);
+    }}
+}}
+"####,
+        agent = agent
+    )
+}
+
+fn template_cli(agent: &str) -> String {
+    format!(
+        r####"/// A command-line tool. Each `@[CliCommand]` method becomes a subcommand.
+agent {agent} {{
+    @[CliCommand("Greet somebody by name")]
+    public string greet(string name) {{
+        return "hello " + name;
+    }}
+
+    @[CliCommand("Count the lines in a file")]
+    public int lines(string path) {{
+        unsafe {{
+            var files = FileAccess {{}};
+            var text = fs_read(path)?;
+            return text.split("\n").len();
+        }}
+    }}
+
+    public void Run() {{
+        print "try: --help";
+    }}
+}}
+"####,
+        agent = agent
+    )
+}
+
 fn detect_runtime_features(rust_src: &str) -> String {
     let mut features: Vec<&str> = vec![];
     for (pattern, feature) in FEATURE_MAP {
@@ -549,6 +884,18 @@ fn run_cli() {
     // Wave 42: Self-upgrade — no file argument needed
     if command == "upgrade" {
         cmd_upgrade();
+        return;
+    }
+
+    // Start from something that runs, rather than from an empty file.
+    if command == "new" {
+        cmd_new(&args[2..]);
+        return;
+    }
+
+    // Call a tool without writing a client first.
+    if command == "mcp" {
+        cmd_mcp(&args[2..]);
         return;
     }
 
@@ -695,6 +1042,11 @@ fn print_usage() {
     // updated and the other was not — the REPL announced v0.12.0 while this line said v1.0.0.
     println!("Varg Compiler (vargc) v{}", env!("CARGO_PKG_VERSION"));
     println!("Usage:");
+    println!("  vargc new <kind> <name>                       Start from a program that runs");
+    println!("                                                  kinds: mcp-server, agent, cli");
+    println!("  vargc mcp list <file.varg>                    Tools this program exposes");
+    println!("  vargc mcp call <file.varg> <tool> '<json>'    Call one, without writing a client");
+    println!();
     println!("  vargc check <file.varg>                       Parse + typecheck only (fast, no build)");
     println!("  vargc build [--target <triple>] <file.varg>   Build to a native (or WASM) executable");
     println!("  vargc run   [--target <triple>] <file.varg>   Build and immediately execute");
@@ -2598,6 +2950,68 @@ serde_json = "1.0"
 
         if !status.success() {
             exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    /// Every template has to be a program that compiles ~ it is the first Varg anyone reads, and
+    /// a starting point that does not build teaches the wrong thing about the language.
+    fn accepts(label: &str, source: &str) {
+        let mut parser = Parser::new(source);
+        let program = match parser.parse_program() {
+            Ok(p) => p,
+            Err(e) => panic!("{} does not parse: {:?}", label, e),
+        };
+        if let Err(errors) = varg_typechecker::TypeChecker::new().check_program(&program) {
+            panic!("{} does not type-check: {}", label, errors[0].message());
+        }
+    }
+
+    #[test]
+    fn the_mcp_server_template_compiles() {
+        accepts("mcp-server", &template_mcp_server("Notes"));
+    }
+
+    #[test]
+    fn the_agent_template_compiles() {
+        accepts("agent", &template_agent("Main"));
+    }
+
+    #[test]
+    fn the_cli_template_compiles() {
+        accepts("cli", &template_cli("Tool"));
+    }
+
+    #[test]
+    fn a_name_with_separators_becomes_one_agent_name() {
+        // `vargc new mcp-server my-notes` has to produce a valid agent name, not `my-notes`.
+        for (given, want) in [("my-notes", "MyNotes"), ("todo_list", "TodoList"), ("x", "X")] {
+            let source = template_mcp_server(&{
+                let mut out = String::new();
+                let mut upper = true;
+                for c in given.chars() {
+                    if c == '-' || c == '_' || c == ' ' {
+                        upper = true;
+                    } else if upper {
+                        out.extend(c.to_uppercase());
+                        upper = false;
+                    } else {
+                        out.push(c);
+                    }
+                }
+                out
+            });
+            assert!(
+                source.contains(&format!("agent {} {{", want)),
+                "expected `agent {}` for `{}`",
+                want,
+                given
+            );
+            accepts(given, &source);
         }
     }
 }

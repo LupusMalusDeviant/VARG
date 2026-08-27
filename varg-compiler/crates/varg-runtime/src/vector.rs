@@ -15,8 +15,10 @@ use rusqlite::Connection;
 /// An uninhabited stand-in keeps every `Option<Connection>` field, every construction site and
 /// every `is_some()` unchanged; only the write-through paths are compiled out. That is what lets
 /// the runtime build for `wasm32-*`, where a bundled C SQLite cannot link.
+// Not public: it is only ever the type of a private field, and two public stand-ins of
+// the same name collided when the modules were glob-re-exported.
 #[cfg(not(feature = "sqlite"))]
-pub enum Connection {}
+enum Connection {}
 
 use varg_os_types::Tensor;
 

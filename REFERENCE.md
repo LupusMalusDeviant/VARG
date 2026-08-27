@@ -1042,6 +1042,42 @@ Respond in JSON format.
 
 ---
 
+## Getting Started
+
+Start from a program that runs, not from an empty file:
+
+```text
+vargc new mcp-server notes      # an MCP server with two tools
+vargc new agent worker          # an agent that receives messages
+vargc new cli tool              # a command-line tool
+```
+
+Then try a tool without writing a client:
+
+```text
+vargc mcp list notes.varg
+  greet(name: string)
+      Greet somebody by name
+  read_file(path: string)
+      Read a text file
+
+vargc mcp call notes.varg greet '{"name": "world"}'
+  hello world
+```
+
+A tool that fails reports it, and `vargc` exits non-zero:
+
+```text
+vargc mcp call notes.varg read_file '{"path": "nope.txt"}'
+  Tool error: The system cannot find the file specified. (os error 2)
+```
+
+Point a real MCP client at `notes.exe --mcp-serve`. The same methods are also CLI subcommands, and
+the JSON schema a client sees is derived from the method signature — there is nothing to keep in
+step by hand.
+
+---
+
 ## Variadic Parameters
 
 A trailing `T...` collects however many arguments follow, including none. Inside the body it is an
