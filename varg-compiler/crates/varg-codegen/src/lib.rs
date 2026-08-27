@@ -1136,6 +1136,29 @@ impl RustGenerator {
                 UnaryOperator::Negate => self.resolve_type(operand),
             },
             Expression::Cast { target_type, .. } => Some(target_type.clone()),
+            // Reading a map hands back the absence with the value; reading a list does not.
+            // Codegen resolves types separately from the checker, and without this arm a map read
+            // looked like an unknown type ~ so `m[k] or d` emitted the Result-shaped fallback and
+            // failed with rustc's "closure is expected to take 0 arguments".
+            Expression::IndexAccess { caller, index } => {
+                let looks_like_map = matches!(&**index, Expression::String(_))
+                    || matches!(&**caller, Expression::Identifier(n) if self.map_vars.contains(n));
+                match self.resolve_type(caller) {
+                    Some(TypeNode::Map(_, val)) => Some(TypeNode::Nullable(val)),
+                    Some(TypeNode::Array(inner)) | Some(TypeNode::List(inner)) => Some(*inner),
+                    _ if looks_like_map => Some(TypeNode::Nullable(Box::new(TypeNode::Custom(
+                        "Dynamic".to_string(),
+                    )))),
+                    _ => None,
+                }
+            }
+            Expression::MapLiteral(entries) => {
+                let val = entries
+                    .first()
+                    .and_then(|(_, v)| self.resolve_type(v))
+                    .unwrap_or(TypeNode::Custom("Dynamic".to_string()));
+                Some(TypeNode::Map(Box::new(TypeNode::String), Box::new(val)))
+            }
             // T-stage3: builtin call results, via the shared signature table — unless the name
             // is a user-defined method (those shadow builtins and have their own return type).
             Expression::MethodCall { method_name, caller, .. } => {
@@ -3905,7 +3928,9 @@ impl RustGenerator {
                 let is_map = matches!(**index, Expression::String(_))
                     || if let Expression::Identifier(name) = &**caller { self.map_vars.contains(name) } else { false };
                 if is_map {
-                    format!("{}.get(&{}).unwrap().clone()", self.gen_receiver(caller), idx_str)
+                    // `.cloned()`, not `.unwrap().clone()`: a missing key is an expected outcome
+                    // and is handed back as the absent value, not as a panic.
+                    format!("{}.get(&{}).cloned()", self.gen_receiver(caller), idx_str)
                 } else {
                     // .clone() ensures String elements from Vec<String> are properly copied.
                     // Wave 29: parenthesize the index expression so binary ops like

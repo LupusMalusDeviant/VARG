@@ -7,13 +7,18 @@ description = "Runtime helpers for compiled Varg programs (networking, DB, LLM, 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 # vargc scans the generated Rust source and enables only the features that are
 # actually used, so unused modules and their heavy deps are never compiled.
-# Note: rusqlite is always-on because graph.rs and vector.rs use it internally
+# Note: rusqlite is behind the `sqlite` feature; without it the graph and the vector store
+# still work, in memory only.
 # for their SQLite-backed persistence (user-facing db builtins are gated by "db").
 [features]
 default   = []
 net       = ["dep:reqwest"]
 server    = ["dep:axum", "dep:tokio", "dep:futures"]
-db        = []          # gates db_sqlite + checkpoint modules (rusqlite always present)
+db        = ["sqlite"]  # gates db_sqlite + checkpoint modules
+# SQLite-backed persistence for the graph, the vector store and the database builtins.
+# rusqlite was an unconditional dependency, so `wasm-safe` pulled in libsqlite3-sys and its
+# C build — which is why no WASM build could ever link, whatever the comment below claimed.
+sqlite    = ["dep:rusqlite"]
 llm       = ["dep:reqwest", "net", "dep:base64"]   # llm.rs uses crate::net; multimodal uses base64
 ws        = ["dep:tungstenite"]
 pdf       = ["dep:printpdf", "dep:base64"]   # pdf_to_base64 uses base64
@@ -28,7 +33,7 @@ fts         = ["dep:tantivy"]
 # works and searches exactly (brute force) — correct, just linear.
 ann         = ["dep:instant-distance"]
 # Wave 35: full = all features — used to pre-compile the runtime .rlib once.
-full        = ["net", "server", "db", "llm", "ws", "pdf", "readline",
+full        = ["net", "server", "db", "sqlite", "llm", "ws", "pdf", "readline",
                "crypto", "encoding", "tensor", "dataframe", "duckdb", "fts", "ann"]
 # WASM-safe subset: only pure-Rust modules (serde, serde_json, rand).
 # Heavy deps (rusqlite, axum, reqwest, tungstenite) are excluded.
@@ -42,7 +47,7 @@ serde_json    = "1.0"
 rand          = "0.8.5"
 regex         = "1.10"
 dirs          = "5.0"
-rusqlite      = { version = "0.31", features = ["bundled"] }
+rusqlite      = { version = "0.31", features = ["bundled"], optional = true }
 
 # ── Optional heavy deps ────────────────────────────────────────────────────────
 axum        = { version = "0.7", features = ["ws"],                              optional = true }

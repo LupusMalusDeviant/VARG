@@ -664,8 +664,10 @@ print names.join(",");        // "a,b"
 var config = {"host": "localhost", "port": "8080"};
 var scores = {"alice": 95, "bob": 87};
 
-// Access
-var host = config["host"];
+// Access. A key may or may not be there, so a read is nullable (`string?`) and needs a
+// fallback before it can be used as a plain value. A list index stays plain: a position out
+// of range is a mistake, a missing key is not.
+var host = config["host"] or "localhost";
 
 // Methods
 var keys = config.keys();

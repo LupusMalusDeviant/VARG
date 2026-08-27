@@ -131,3 +131,17 @@ jobs:
       - name: Golden output
         working-directory: .
         run: VARGC="$PWD/varg-compiler/target/release/vargc" bash golden/run.sh
+      - name: WebAssembly target still builds
+        # `vargc build --target wasm32-wasip1` is in `vargc --help` and could never work: the
+        # manifest declared a cdylib while only src/main.rs was written, and rusqlite was an
+        # unconditional dependency so libsqlite3-sys tried to build its bundled C for wasm32.
+        # Nothing ran it, which is why nobody noticed. Now something does.
+        working-directory: .
+        run: |
+          rustup target add wasm32-wasip1
+          cd "$(mktemp -d)"
+          printf 'agent Main { public void Run() { print "hi from wasm"; } }
+' > hello.varg
+          "$GITHUB_WORKSPACE/varg-compiler/target/release/vargc" build --target wasm32-wasip1 hello.varg
+          test -s hello.wasm
+          head -c 4 hello.wasm | od -c | grep -q 'a   s   m'

@@ -59,7 +59,10 @@ agent Main {
         var xs = [10, 20, 30];
         var m = {"a": "1"};
         print check("index_list", $"{xs[1]}", "20");
-        print check("index_map", m["a"], "1");
+        print check("index_map", m["a"] or "<absent>", "1");
+        // A key that is not there reads as the absent value rather than taking the program
+        // down: absence is an expected outcome for a map, unlike a list position.
+        print check("index_map_missing", m["nope"] or "<absent>", "<absent>");
 
         // break and continue inside a loop.
         var total = 0;

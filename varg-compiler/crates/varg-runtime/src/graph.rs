@@ -7,7 +7,17 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "sqlite")]
 use rusqlite::Connection;
+
+/// Without the `sqlite` feature there is no connection type, and the data lives in memory only.
+///
+/// An uninhabited stand-in keeps every `Option<Connection>` field, every construction site and
+/// every `is_some()` unchanged; only the write-through paths are compiled out. That is what lets
+/// the runtime build for `wasm32-*`, where a bundled C SQLite cannot link.
+#[cfg(not(feature = "sqlite"))]
+pub enum Connection {}
+
 
 #[derive(Debug, Clone)]
 pub struct GraphNode {
@@ -52,6 +62,7 @@ impl std::fmt::Debug for GraphDb {
 pub type GraphHandle = Arc<Mutex<GraphDb>>;
 
 /// Initialize SQLite schema for graph persistence
+#[cfg(feature = "sqlite")]
 fn init_graph_schema(conn: &Connection) {
     if let Err(e) = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS graph_nodes (
@@ -77,6 +88,7 @@ fn init_graph_schema(conn: &Connection) {
 /// R4: previously every DB read used `unwrap()`, so a corrupt or partially-written database
 /// aborted the whole process. Now a failed query returns empty (fresh graph) and individual
 /// malformed rows are skipped rather than crashing.
+#[cfg(feature = "sqlite")]
 fn load_graph_from_db(conn: &Connection) -> (Vec<GraphNode>, Vec<GraphEdge>, u64) {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -135,6 +147,17 @@ pub fn __varg_graph_open(name: &str) -> GraphHandle {
         }));
     }
 
+    #[cfg(not(feature = "sqlite"))]
+    return Arc::new(Mutex::new(GraphDb {
+        name: name.to_string(),
+        nodes: Vec::new(),
+        edges: Vec::new(),
+        next_id: 1,
+        db: None,
+    }));
+
+    #[cfg(feature = "sqlite")]
+    {
     let db_path = format!("{}.graph.db", name);
     // R4: fall back to an in-memory graph instead of aborting if the file can't be opened.
     let conn = match Connection::open(&db_path) {
@@ -156,6 +179,7 @@ pub fn __varg_graph_open(name: &str) -> GraphHandle {
         next_id: max_id + 1, // R1: per-instance counter starts above all loaded IDs
         db: Some(conn),
     }))
+    }
 }
 
 /// Add a node with a label and properties, returns node ID
@@ -176,6 +200,7 @@ pub fn __varg_graph_add_node(
     };
 
     // Write-through to SQLite if persisted
+    #[cfg(feature = "sqlite")]
     if let Some(ref conn) = g.db {
         let props_json = serde_json::to_string(props).unwrap_or_else(|_| "{}".to_string());
         // B10: surface write-through failures instead of silently dropping them (`.ok()`),
@@ -211,6 +236,7 @@ pub fn __varg_graph_add_edge(
     let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
 
     // Write-through to SQLite if persisted
+    #[cfg(feature = "sqlite")]
     if let Some(ref conn) = g.db {
         let props_json = serde_json::to_string(props).unwrap_or_else(|_| "{}".to_string());
         // B10: surface write-through failures instead of silently dropping them.
@@ -540,6 +566,10 @@ mod tests {
     }
 
     #[test]
+    // Persistence only exists with the `sqlite` feature; without it the store is in memory
+    // only, by design (that is what lets the runtime build for wasm32-*). CI covers this
+    // path in the `--features full` and per-feature jobs.
+    #[cfg(feature = "sqlite")]
     fn test_graph_persistence_roundtrip() {
         let db_name = format!("test_graph_persist_{}", std::process::id());
         let db_path = format!("{}.graph.db", db_name);

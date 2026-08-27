@@ -7,6 +7,7 @@ OK   mixed_arith
 OK   string_concat
 OK   index_list
 OK   index_map
+OK   index_map_missing
 OK   loop_control
 OK   block_inner
 OK   block_outer

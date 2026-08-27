@@ -56,8 +56,8 @@ agent Main {
             print check("si_recalls", yn(lessons.len() > 0), "true");
             // stats is a map<string, string>, not a JSON string.
             var stats = self_improver_stats(si);
-            print check("si_stats_failures", stats["failures"], "1");
-            print check("si_stats_successes", stats["successes"], "2");
+            print check("si_stats_failures", stats["failures"] or "<absent>", "1");
+            print check("si_stats_successes", stats["successes"] or "<absent>", "2");
 
             // ── Multimodal ──────────────────────────────────────────────────
             fs_write("infra_probe.png", "pretend-png-bytes")?;

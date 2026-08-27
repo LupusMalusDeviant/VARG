@@ -3977,7 +3977,14 @@ impl TypeChecker {
                                 found: format!("{:?}", index_ty),
                             });
                         }
-                        Ok(*val)
+                        // A key may or may not be there — that is the whole point of a map — so
+                        // the read carries the absence. It used to hand back the value type and
+                        // unwrap at runtime, which took the program down with a raw Rust panic
+                        // for something as ordinary as a key that is not present. C# throws here
+                        // too; putting it in the type is what makes this safer rather than merely
+                        // equivalent. Indexing a list stays plain: a position out of range is a
+                        // mistake, not an expected outcome.
+                        Ok(TypeNode::Nullable(Box::new(*val)))
                     }
                     TypeNode::Custom(_) => Ok(TypeNode::Custom("Dynamic".to_string())),
                     _ => Err(TypeError::TypeMismatch { expected: "List or Map".to_string(), found: format!("{:?}", caller_ty) })
@@ -11648,6 +11655,56 @@ mod tests {
                     var t = "[" + name + "]";
                     self.logger = logger;
                     self.tag = t;
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn reading_a_map_gives_a_nullable() {
+        // A key may or may not be there ~ that is what a map is for. The read handed back the
+        // value type regardless and unwrapped at runtime, so a missing key took the program down
+        // with a raw Rust panic. C# throws here too; carrying the absence in the type is what
+        // makes this safer rather than merely equivalent.
+        assert_accepted(
+            r#"
+            agent Main {
+                public void Run() {
+                    var counts = {"a": 1};
+                    var n = counts["b"] or 0;
+                    print $"{n + 1}";
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn a_map_read_cannot_be_used_as_a_plain_value() {
+        assert_rejected(
+            r#"
+            agent Main {
+                public void Run() {
+                    var counts = {"a": 1};
+                    print $"{counts["b"] + 1}";
+                }
+            }
+            "#,
+            "supply a fallback with",
+        );
+    }
+
+    #[test]
+    fn indexing_a_list_stays_plain() {
+        // Absence is expected for a map key and a mistake for a list position, so only the map
+        // read carries it in the type.
+        assert_accepted(
+            r#"
+            agent Main {
+                public void Run() {
+                    var xs = [1, 2, 3];
+                    print $"{xs[0] + 1}";
                 }
             }
             "#,

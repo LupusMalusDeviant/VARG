@@ -267,6 +267,10 @@ mod tests {
     }
 
     #[test]
+    // Persistence only exists with the `sqlite` feature; without it the store is in memory
+    // only, by design (that is what lets the runtime build for wasm32-*). CI covers this
+    // path in the `--features full` and per-feature jobs.
+    #[cfg(feature = "sqlite")]
     fn test_memory_persistence_roundtrip() {
         let mem_name = format!("test_mem_persist_{}", std::process::id());
         let ep_path = format!("{}_episodic.vector.db", mem_name);

@@ -402,6 +402,16 @@ const FEATURE_MAP: &[(&str, &str)] = &[
     ("varg_runtime::server::",     "server"),
     ("varg_runtime::db_sqlite::",  "db"),
     ("varg_runtime::checkpoint::", "db"),
+    // The graph, the vector store, the agent memory built on both, and RAG all persist through
+    // SQLite. rusqlite used to be an unconditional dependency, so they got persistence whether a
+    // program asked for it or not ~ and so did every WASM build, which is why none of them could
+    // link. Now it is a feature, and a program that opens one of these pulls it in. Without these
+    // lines the store would quietly become in-memory-only: same API, same output, nothing on disk.
+    ("varg_runtime::graph::",      "sqlite"),
+    ("varg_runtime::vector::",     "sqlite"),
+    ("varg_runtime::memory::",     "sqlite"),
+    ("varg_runtime::rag::",        "sqlite"),
+    ("varg_runtime::self_improve::", "sqlite"),
     ("varg_runtime::llm::",        "llm"),
     ("varg_runtime::multimodal::", "llm"),
     ("varg_runtime::websocket::",  "ws"),
@@ -1966,12 +1976,14 @@ fn {handler_name}(body: String) -> String {{
     // For WASM we also skip tokio (it doesn't compile to wasm32).
     let tokio_dep_str = if is_wasm { "" } else { tokio_dep };
 
-    // For WASM targets inject the wasm32 crate type so cargo outputs a .wasm file.
-    let lib_section = if is_wasm {
-        "\n[lib]\ncrate-type = [\"cdylib\"]\n"
-    } else {
-        ""
-    };
+    // No `[lib]` section for WASM.
+    //
+    // It used to declare `crate-type = ["cdylib"]` while only `src/main.rs` was ever written, so
+    // cargo refused the manifest with "can't find library `<name>`" — every `--target wasm32-*`
+    // build failed, for every program, and the command is in `vargc --help`. A WASI module is a
+    // command, which is exactly what a bin crate produces: `cargo build --target wasm32-wasip1`
+    // emits `<name>.wasm` from `src/main.rs` with nothing extra declared.
+    let lib_section = "";
 
     // Auto-inject chrono if timestamp()/time_format()/time_parse() builtins are used
     // `uuid()`/`random_int()`/`random_float()` emit `use rand::Rng;`. Without the crate in
@@ -2048,7 +2060,21 @@ serde_json = "1.0"
         .or_else(|| std::env::var("VARGC_TARGET_TRIPLE").ok());
 
     if is_wasm {
-        println!("-> Compiling to WebAssembly (target: {})...", effective_triple.as_deref().unwrap_or("wasm32-wasip1"));
+        let triple = effective_triple.as_deref().unwrap_or("wasm32-wasip1");
+        // Say which target is missing and how to add it. Without the target installed, cargo
+        // reports it against the generated crate, which reads as a compiler bug rather than as a
+        // one-line toolchain step.
+        let installed = Command::new("rustup")
+            .args(["target", "list", "--installed"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == triple))
+            .unwrap_or(true);
+        if !installed {
+            eprintln!("Error: the Rust target `{}` is not installed.", triple);
+            eprintln!("   Add it with:  rustup target add {}", triple);
+            exit(1);
+        }
+        println!("-> Compiling to WebAssembly (target: {})...", triple);
     } else {
         println!("-> Compiling native binary using rustc...");
     }

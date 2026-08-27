@@ -7,7 +7,17 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "sqlite")]
 use rusqlite::Connection;
+
+/// Without the `sqlite` feature there is no connection type, and the data lives in memory only.
+///
+/// An uninhabited stand-in keeps every `Option<Connection>` field, every construction site and
+/// every `is_some()` unchanged; only the write-through paths are compiled out. That is what lets
+/// the runtime build for `wasm32-*`, where a bundled C SQLite cannot link.
+#[cfg(not(feature = "sqlite"))]
+pub enum Connection {}
+
 use varg_os_types::Tensor;
 
 /// Compute cosine similarity between two tensors
@@ -68,6 +78,7 @@ impl std::fmt::Debug for VectorStore {
 pub type VectorStoreHandle = Arc<Mutex<VectorStore>>;
 
 /// Initialize SQLite schema for vector persistence
+#[cfg(feature = "sqlite")]
 fn init_vector_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS vector_entries (
@@ -80,6 +91,7 @@ fn init_vector_schema(conn: &Connection) -> Result<(), String> {
 }
 
 /// Load existing vectors from SQLite into memory
+#[cfg(feature = "sqlite")]
 fn load_vectors_from_db(conn: &Connection) -> Result<Vec<VectorEntry>, String> {
     let mut entries = Vec::new();
     let mut stmt = conn
@@ -120,6 +132,17 @@ pub fn __varg_vector_store_open(name: &str) -> Result<VectorStoreHandle, String>
     // Opening a store used to panic when the file could not be opened or the database held
     // something unreadable — an unreachable path or a corrupt file took the whole program
     // down instead of being reported to the agent that asked for the store.
+    #[cfg(not(feature = "sqlite"))]
+    return Ok(Arc::new(Mutex::new(VectorStore {
+        name: name.to_string(),
+        entries: Vec::new(),
+        db: None,
+        #[cfg(feature = "ann")]
+        ann: None,
+    })));
+
+    #[cfg(feature = "sqlite")]
+    {
     let db_path = format!("{}.vector.db", name);
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("vector_store_open: could not open '{}': {}", db_path, e))?;
@@ -133,6 +156,7 @@ pub fn __varg_vector_store_open(name: &str) -> Result<VectorStoreHandle, String>
         #[cfg(feature = "ann")]
         ann: None,
     })))
+    }
 }
 
 /// Accepts an embedding as either `f32` (what `embed()` returns) or `f64` (what a Varg float array
@@ -173,6 +197,7 @@ pub fn __varg_vector_store_upsert<E: ToF32Vec + ?Sized>(
     let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
 
     // Write-through to SQLite if persisted
+    #[cfg(feature = "sqlite")]
     if let Some(ref conn) = s.db {
         let emb_json = serde_json::to_string(&embedding.to_vec()).unwrap_or_else(|_| "[]".to_string());
         let meta_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
@@ -229,6 +254,7 @@ pub fn __varg_vector_store_delete(store: &VectorStoreHandle, id: &str) -> bool {
     let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
 
     // Write-through to SQLite if persisted
+    #[cfg(feature = "sqlite")]
     if let Some(ref conn) = s.db {
         conn.execute("DELETE FROM vector_entries WHERE id = ?1", rusqlite::params![id]).ok();
     }
@@ -676,6 +702,10 @@ mod tests {
     }
 
     #[test]
+    // Persistence only exists with the `sqlite` feature; without it the store is in memory
+    // only, by design (that is what lets the runtime build for wasm32-*). CI covers this
+    // path in the `--features full` and per-feature jobs.
+    #[cfg(feature = "sqlite")]
     fn test_vector_persistence_roundtrip() {
         let store_name = format!("test_vec_persist_{}", std::process::id());
         let db_path = format!("{}.vector.db", store_name);
@@ -706,6 +736,10 @@ mod tests {
     }
 
     #[test]
+    // Persistence only exists with the `sqlite` feature; without it the store is in memory
+    // only, by design (that is what lets the runtime build for wasm32-*). CI covers this
+    // path in the `--features full` and per-feature jobs.
+    #[cfg(feature = "sqlite")]
     fn test_vector_persistence_delete() {
         let store_name = format!("test_vec_del_{}", std::process::id());
         let db_path = format!("{}.vector.db", store_name);
