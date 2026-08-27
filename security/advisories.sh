@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Run cargo audit, and check that every advisory we skip is still one we may skip.
+# Run cargo audit, and check that the one advisory we skip is still one we may skip.
 #
 # CI used to carry `cargo audit --ignore RUSTSEC-... --ignore RUSTSEC-...` and nothing else. An
 # ignore flag records a decision without its reason, so it survives the reason: the day a crate
-# moves into the build graph, or a writer gains a parser, the flag keeps quiet. Each entry below
-# names the precondition that makes it safe, and a command that fails when the precondition stops
-# holding.
+# moves into the build graph, the flag keeps quiet. The entry below names the precondition that
+# makes it safe, and a command that fails when the precondition stops holding.
+#
+# RUSTSEC-2026-0187, a stack overflow in lopdf's parser, used to be the second entry. printpdf is
+# on 0.12 now and brings lopdf 0.44, which is past the fix, so the exception is gone rather than
+# left standing on a reason that has expired.
 set -uo pipefail
 cd "$(dirname "$0")/.."/varg-compiler || exit 1
 
@@ -22,21 +25,8 @@ else
     echo "ok   rkyv is not compiled (RUSTSEC-2026-0235 unreachable)"
 fi
 
-# ── RUSTSEC-2026-0187 — stack overflow in lopdf on deeply nested PDF objects ─────────────────
-# lopdf *is* compiled, through printpdf, under the `pdf` feature. The advisory is in the parser.
-# Varg's PDF surface only writes: pdf_create, pdf_add_section, pdf_add_text, pdf_save,
-# pdf_to_base64. Nothing hands a PDF to the library to read, so the parser is never entered on
-# input from anywhere. printpdf 0.12 carries a fixed lopdf but rewrites its whole page API; that
-# upgrade is open work, not a one-line bump.
-if grep -nE "load_from|load_mem|Document::load|from_reader" crates/varg-runtime/src/pdf.rs >/dev/null 2>&1; then
-    echo "FAIL: pdf.rs now reads PDFs; RUSTSEC-2026-0187 can no longer be ignored."
-    fail=1
-else
-    echo "ok   pdf.rs only writes PDFs (RUSTSEC-2026-0187 unreachable)"
-fi
-
 # ── Everything else has to be clean ──────────────────────────────────────────────────────────
 echo
-cargo audit --ignore RUSTSEC-2026-0235 --ignore RUSTSEC-2026-0187 || fail=1
+cargo audit --ignore RUSTSEC-2026-0235 || fail=1
 
 exit $fail

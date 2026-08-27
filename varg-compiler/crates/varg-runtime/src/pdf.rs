@@ -96,84 +96,77 @@ fn word_wrap(text: &str, max_chars: usize) -> Vec<String> {
     lines
 }
 
-/// Render the PDF to bytes
+/// Render the PDF to bytes.
+///
+/// printpdf 0.7 built a document of layers and drew through `layer.use_text(...)`. 0.12 has no
+/// layers in that sense: a page is a list of operations and the document is a list of pages. The
+/// layout is unchanged — same margins, line heights, word wrap and page breaks — only the way a
+/// line reaches the page differs.
 fn render_pdf(handle: &PdfHandle) -> Vec<u8> {
-    let (doc, page1, layer1) = PdfDocument::new(
-        &handle.title,
-        Mm(PAGE_WIDTH_MM),
-        Mm(PAGE_HEIGHT_MM),
-        "Layer 1",
-    );
+    let heading_font = PdfFontHandle::Builtin(BuiltinFont::HelveticaBold);
+    let body_font = PdfFontHandle::Builtin(BuiltinFont::Helvetica);
 
-    // Cannot fail: the built-in fonts are compiled into printpdf, not loaded from disk.
-    let font = doc.add_builtin_font(BuiltinFont::Helvetica).unwrap();
-    let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold).unwrap();
-
-    let usable_width = PAGE_WIDTH_MM - MARGIN_LEFT_MM - MARGIN_RIGHT_MM;
-    let _ = usable_width; // used conceptually for word wrap via CHARS_PER_LINE
-
-    let mut current_layer = doc.get_page(page1).get_layer(layer1);
+    let mut pages: Vec<PdfPage> = Vec::new();
+    let mut ops: Vec<Op> = Vec::new();
     let mut y_pos = PAGE_HEIGHT_MM - MARGIN_TOP_MM;
+
+    // One line of text at the current cursor. A text section per line, as the old code emitted
+    // one `use_text` per line: the positions are absolute, so nothing depends on line-height
+    // state carried between them.
+    fn draw(ops: &mut Vec<Op>, text: &str, size: f32, y_mm: f32, font: &PdfFontHandle) {
+        ops.push(Op::StartTextSection);
+        ops.push(Op::SetFont { font: font.clone(), size: Pt(size) });
+        ops.push(Op::SetTextCursor {
+            pos: Point { x: Mm(MARGIN_LEFT_MM).into(), y: Mm(y_mm).into() },
+        });
+        ops.push(Op::ShowText { items: vec![TextItem::Text(text.to_string())] });
+        ops.push(Op::EndTextSection);
+    }
 
     for content in &handle.contents {
         match &content.kind {
             ContentKind::Section { heading } => {
-                // Check if we need a new page for heading + at least a few lines
+                // Enough room for the heading and a few lines under it, or start a new page.
                 if y_pos < MARGIN_BOTTOM_MM + LINE_HEIGHT_HEADING + LINE_HEIGHT_BODY * 3.0 {
-                    let (new_page, new_layer) = doc.add_page(
-                        Mm(PAGE_WIDTH_MM),
-                        Mm(PAGE_HEIGHT_MM),
-                        "Layer 1",
-                    );
-                    current_layer = doc.get_page(new_page).get_layer(new_layer);
+                    pages.push(PdfPage::new(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), std::mem::take(&mut ops)));
                     y_pos = PAGE_HEIGHT_MM - MARGIN_TOP_MM;
                 }
 
-                // Add spacing before section
                 y_pos -= SECTION_SPACING;
-
-                // Draw heading
-                current_layer.use_text(heading, HEADING_SIZE, Mm(MARGIN_LEFT_MM), Mm(y_pos), &font_bold);
+                draw(&mut ops, heading, HEADING_SIZE, y_pos, &heading_font);
                 y_pos -= LINE_HEIGHT_HEADING;
 
-                // Draw body lines
-                let lines = word_wrap(&content.text, CHARS_PER_LINE);
-                for line in &lines {
+                for line in &word_wrap(&content.text, CHARS_PER_LINE) {
                     if y_pos < MARGIN_BOTTOM_MM {
-                        let (new_page, new_layer) = doc.add_page(
-                            Mm(PAGE_WIDTH_MM),
-                            Mm(PAGE_HEIGHT_MM),
-                            "Layer 1",
-                        );
-                        current_layer = doc.get_page(new_page).get_layer(new_layer);
+                        pages.push(PdfPage::new(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), std::mem::take(&mut ops)));
                         y_pos = PAGE_HEIGHT_MM - MARGIN_TOP_MM;
                     }
-                    current_layer.use_text(line, BODY_SIZE, Mm(MARGIN_LEFT_MM), Mm(y_pos), &font);
+                    draw(&mut ops, line, BODY_SIZE, y_pos, &body_font);
                     y_pos -= LINE_HEIGHT_BODY;
                 }
             }
             ContentKind::Text => {
-                let lines = word_wrap(&content.text, CHARS_PER_LINE);
-                for line in &lines {
+                for line in &word_wrap(&content.text, CHARS_PER_LINE) {
                     if y_pos < MARGIN_BOTTOM_MM {
-                        let (new_page, new_layer) = doc.add_page(
-                            Mm(PAGE_WIDTH_MM),
-                            Mm(PAGE_HEIGHT_MM),
-                            "Layer 1",
-                        );
-                        current_layer = doc.get_page(new_page).get_layer(new_layer);
+                        pages.push(PdfPage::new(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), std::mem::take(&mut ops)));
                         y_pos = PAGE_HEIGHT_MM - MARGIN_TOP_MM;
                     }
-                    current_layer.use_text(line, BODY_SIZE, Mm(MARGIN_LEFT_MM), Mm(y_pos), &font);
+                    draw(&mut ops, line, BODY_SIZE, y_pos, &body_font);
                     y_pos -= LINE_HEIGHT_BODY;
                 }
             }
         }
     }
 
-    let mut buf = BufWriter::new(Vec::new());
-    doc.save(&mut buf).unwrap();
-    buf.into_inner().unwrap()
+    // Whatever is left, and at least one page: a document with no pages is not a document.
+    if !ops.is_empty() || pages.is_empty() {
+        pages.push(PdfPage::new(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), ops));
+    }
+
+    let mut doc = PdfDocument::new(&handle.title);
+    doc.with_pages(pages);
+    let mut warnings = Vec::new();
+    doc.save(&PdfSaveOptions::default(), &mut warnings)
 }
 
 /// Save the PDF document to a file
@@ -223,8 +216,10 @@ mod tests {
             .count();
         assert!(page_markers >= 1, "no page object in the output");
 
-        // Every stream in the file, inflated where it inflates, concatenated.
-        let mut recovered = Vec::new();
+        // The file's own bytes, plus the inflation of every stream that inflates. Which of the
+        // two holds the text depends on the library's compression settings, and that is not what
+        // this test is about.
+        let mut recovered = bytes.clone();
         let mut at = 0usize;
         while let Some(s) = find(&bytes[at..], b"stream") {
             let body_start = at + s + b"stream".len();
@@ -232,17 +227,11 @@ mod tests {
             let Some(e) = find(&bytes[body_start..], b"endstream") else { break };
             let body = &bytes[body_start..body_start + e];
             let mut out = Vec::new();
-            // Keep what came out even when the decoder stops early, and the raw bytes
-            // only when nothing came out at all: an uncompressed stream is still content.
             let _ = ZlibDecoder::new(body).read_to_end(&mut out);
-            if out.is_empty() {
-                recovered.extend_from_slice(body);
-            } else {
-                recovered.extend_from_slice(&out);
-            }
+            recovered.extend_from_slice(&out);
             at = body_start + e + b"endstream".len();
         }
-        let text = hex_strings(&recovered);
+        let text = show_text_operands(&recovered);
         for want in ["First Section", "Body text alpha bravo.", "A paragraph, delta echo."] {
             assert!(
                 text.contains(want),
@@ -267,30 +256,48 @@ mod tests {
         i
     }
 
-    /// The `<48656C6C6F>` operands of the text operators, decoded.
-    fn hex_strings(content: &[u8]) -> String {
+    /// The operands of the text-showing operators: `(literal)` and `<48656C6C6F>` alike.
+    fn show_text_operands(content: &[u8]) -> String {
         let mut out = String::new();
         let mut i = 0;
         while i < content.len() {
-            if content[i] == b'<' {
-                if let Some(end) = find(&content[i..], b">") {
-                    let hex = &content[i + 1..i + end];
-                    let mut byte = 0u8;
-                    let mut half = false;
-                    for c in hex {
-                        let Some(v) = (*c as char).to_digit(16) else { continue };
-                        if half {
-                            out.push((byte << 4 | v as u8) as char);
-                            half = false;
-                        } else {
-                            byte = v as u8;
-                            half = true;
+            match content[i] {
+                b'<' => {
+                    if let Some(end) = find(&content[i..], b">") {
+                        let hex = &content[i + 1..i + end];
+                        let mut byte = 0u8;
+                        let mut half = false;
+                        for c in hex {
+                            let Some(v) = (*c as char).to_digit(16) else { continue };
+                            if half {
+                                out.push((byte << 4 | v as u8) as char);
+                                half = false;
+                            } else {
+                                byte = v as u8;
+                                half = true;
+                            }
                         }
+                        out.push(' ');
+                        i += end + 1;
+                        continue;
+                    }
+                }
+                b'(' => {
+                    // A literal string. Backslash escapes the next byte, including a closing
+                    // parenthesis, so it cannot simply be scanned for `)`.
+                    let mut j = i + 1;
+                    while j < content.len() && content[j] != b')' {
+                        if content[j] == b'\\' {
+                            j += 1;
+                        }
+                        out.push(content[j.min(content.len() - 1)] as char);
+                        j += 1;
                     }
                     out.push(' ');
-                    i += end + 1;
+                    i = j + 1;
                     continue;
                 }
+                _ => {}
             }
             i += 1;
         }

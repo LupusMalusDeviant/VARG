@@ -82,7 +82,8 @@ of the install script is one of those three.
 - `cargo test --workspace --features full`
 - `bash golden/run.sh` and `bash probes/run.sh`
 - `python docs-check/check.py` — the version in the docs comes from `Cargo.toml`, so bump that first
-- `bash security/advisories.sh`
+- `bash security/advisories.sh` — one advisory is skipped, and the script checks the reason
+  behind the skip still holds rather than trusting a flag
 - `python benchmarks/run_all.py` if anything touched code that the performance tables quote; the
   doc gate compares the READMEs against `benchmarks/results.json`
 - Update `CHANGELOG.md`
