@@ -1382,6 +1382,20 @@ impl TypeChecker {
                     }
                     let expected_ty = self.env.get(name).cloned().ok_or_else(|| self.undeclared_variable_error(name))?;
                     let val_type = self.infer_expression_type(value)?;
+                    // Same rule as a declaration: a `{...}` literal has no container of its own
+                    // and becomes whichever kind the target already is. Only a literal; a plain
+                    // map variable assigned to an ordered one stays an error.
+                    let val_type = match (&expected_ty, value) {
+                        (TypeNode::OrderedMap(k, v), Expression::MapLiteral(_))
+                            if self.types_match(
+                                &TypeNode::Map(k.clone(), v.clone()),
+                                &val_type,
+                            ) =>
+                        {
+                            TypeNode::OrderedMap(k.clone(), v.clone())
+                        }
+                        _ => val_type,
+                    };
                     if !self.types_match(&expected_ty, &val_type) {
                         return Err(TypeError::TypeMismatch {
                             expected: format!("{:?}", expected_ty),

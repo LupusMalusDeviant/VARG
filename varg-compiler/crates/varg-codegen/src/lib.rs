@@ -124,6 +124,9 @@ fn expr_contains_try_propagate(expr: &Expression) -> bool {
 pub struct RustGenerator {
     /// Plan 19: Agent field names for self-prefix resolution in methods
     agent_field_names: HashSet<String>,
+    // Only the names were kept. Assigning a `{...}` literal to a field has to know the
+    // field's declared type to build the right container.
+    agent_field_types: HashMap<String, TypeNode>,
     /// Names bound by a parameter or a local, innermost scope last. A bare identifier inside an
     /// agent method was rewritten to `self.<name>` whenever the agent had a field of that name,
     /// with nothing consulted about what else was in scope.
@@ -244,6 +247,7 @@ impl RustGenerator {
     pub fn new() -> Self {
         Self {
             agent_field_names: HashSet::new(),
+            agent_field_types: HashMap::new(),
             local_scopes: Vec::new(),
             known_agents: HashMap::new(),
             use_async: false,
@@ -610,6 +614,8 @@ impl RustGenerator {
                 // An Agent translates to a struct with state, and an impl block
                 // Plan 19: Track agent field names for self-prefix resolution
                 self.agent_field_names = a.fields.iter().map(|f| f.name.clone()).collect();
+                self.agent_field_types =
+                    a.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect();
                 // Track string-typed fields for correct += codegen
                 for field in &a.fields {
                     if matches!(field.ty, TypeNode::String) {
@@ -954,6 +960,7 @@ impl RustGenerator {
                 }
 
                 self.agent_field_names.clear();
+                self.agent_field_types.clear();
                 out
             }
             // Wave 13: impl blocks for structs
@@ -1628,6 +1635,16 @@ impl RustGenerator {
                     format!("{}.clone()", base)
                 }
             },
+            // `f(self.name)` written out. Only the bare `f(name)` form was handled, so the
+            // spelling used throughout the documentation reached rustc as "cannot move out of
+            // `self.name` which is behind a mutable reference" — for a string field, an array
+            // field, a map field, anything not Copy. An agent with state calling a helper
+            // function is an ordinary thing to write and it did not build.
+            Expression::PropertyAccess { caller, property_name }
+                if matches!(&**caller, Expression::Identifier(n) if n == "self") =>
+            {
+                format!("self.{}.clone()", esc_ident(property_name))
+            }
             _ => self.gen_expression(expr),
         }
     }
@@ -1649,6 +1666,15 @@ impl RustGenerator {
     /// field was ignored in favour of the field: `greet(string name)` on an agent with a `name`
     /// field printed the field and dropped the argument — no error, no warning, the wrong value.
     /// A nearer binding wins, as it does in every language that has both.
+    /// The Rust container a `{...}` literal should build for this declared type.
+    fn container_for(ty: Option<&TypeNode>) -> Option<&'static str> {
+        match ty {
+            Some(TypeNode::OrderedMap(_, _)) => Some("varg_runtime::IndexMap"),
+            Some(TypeNode::Map(_, _)) => Some("std::collections::HashMap"),
+            _ => None,
+        }
+    }
+
     fn is_agent_field(&self, name: &str) -> bool {
         self.agent_field_names.contains(name)
             && !self.local_scopes.iter().any(|scope| scope.contains(name))
@@ -1774,6 +1800,12 @@ impl RustGenerator {
                     } else {
                         esc_ident(name)  // B3
                     };
+                    // A `{...}` literal on the right takes the container the target already is.
+                    self.map_literal_container = Self::container_for(
+                        self.var_types
+                            .get(name)
+                            .or_else(|| self.agent_field_types.get(name)),
+                    );
                     // Optimization: detect `name = name op expr` → compound assignment
                     if let Expression::BinaryOp { left, operator, right } = value {
                         if let Expression::Identifier(ref lhs_name) = **left {
@@ -1804,7 +1836,11 @@ impl RustGenerator {
                             }
                         }
                     }
-                    out.push_str(&format!("{}{} = {};\n", indent, &resolved_name, self.gen_expression(value)));
+                    let rhs = self.gen_expression(value);
+                    // Cleared here, not left standing: a later literal in another statement must not
+                    // inherit the container this assignment happened to want.
+                    self.map_literal_container = None;
+                    out.push_str(&format!("{}{} = {};\n", indent, &resolved_name, rhs));
                     // Wave 48: @[Trace] — log assignment
                     if self.trace_method {
                         out.push_str(&format!(
@@ -1875,7 +1911,11 @@ impl RustGenerator {
                     }
                 },
                 Statement::PropertyAssign { target, property, value } => {
-                    out.push_str(&format!("{}{}.{} = {};\n", indent, self.gen_expression(target), property, self.gen_expression(value)));
+                    self.map_literal_container =
+                        Self::container_for(self.agent_field_types.get(property.as_str()));
+                    let rhs = self.gen_expression(value);
+                    self.map_literal_container = None;
+                    out.push_str(&format!("{}{}.{} = {};\n", indent, self.gen_expression(target), property, rhs));
                 },
                 Statement::Return(Some(expr)) => {
                     let ret_expr = self.gen_expression(expr);

@@ -36,6 +36,11 @@ agent OM {
         ordered_map<string, string> lit = {"one": "1", "two": "2", "three": "3"};
         print $"literal:    {lit.keys().join(",")}";
 
+        // Reassigning a literal keeps the container: the target decides, not the literal.
+        ordered_map<string, int> again = {"x": 1};
+        again = {"z": 26, "y": 25};
+        print $"reassigned: {again.keys().join(",")}";
+
         // A plain map still works, and its keys are only checkable when sorted.
         map<string, int> plain = {"c": 3, "a": 1, "b": 2};
         var ks = plain.keys();

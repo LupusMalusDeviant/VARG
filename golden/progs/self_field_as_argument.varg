@@ -1,0 +1,41 @@
+fn shout(string s) -> string {
+    return s.to_upper();
+}
+
+fn total(int[] xs) -> int {
+    var t = 0;
+    foreach (x in xs) {
+        t += x;
+    }
+    return t;
+}
+
+fn first_key(ordered_map<string, int> m) -> string {
+    return m.keys().join(">");
+}
+
+agent F {
+    // Passing an agent's own field to a standalone function did not build. The bare `f(name)`
+    // form was handled; `f(self.name)` — the spelling used throughout REFERENCE.md and the
+    // agent guide — fell through to a plain move, and rustc answered "cannot move out of
+    // `self.name` which is behind a mutable reference". True of every field that is not Copy:
+    // strings, arrays, maps. An agent with state calling a helper is an ordinary thing to write.
+    string name;
+    int[] nums;
+    ordered_map<string, int> store;
+
+    public void Run() {
+        self.name = "varg";
+        self.nums = [1, 2, 3];
+        self.store = {};
+        self.store["a"] = 1;
+        self.store["b"] = 2;
+
+        print shout(self.name);
+        print total(self.nums);
+        print first_key(self.store);
+
+        // The field is still the agent's afterwards: it was copied, not handed over.
+        print $"kept: {self.name} / {self.nums.len()} / {self.store.len()}";
+    }
+}

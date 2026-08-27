@@ -6,4 +6,5 @@ removed:    zulu,mike,bravo
 appended:   zulu,mike,bravo,yankee
 pairs:      zulu=1 mike=1 bravo=1 yankee=9
 literal:    one,two,three
+reassigned: z,y
 plain:      a,b,c
