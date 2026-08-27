@@ -4351,16 +4351,38 @@ impl RustGenerator {
                 format!("{{\n    let mut __retry_result = None;\n    for __retry_i in 0..{} {{\n        match (|| -> std::result::Result<_, String> {{\n            Ok({})\n        }})() {{\n            Ok(val) => {{ __retry_result = Some(val); break; }}\n            Err(_) => {{}}\n        }}\n    }}\n    __retry_result.unwrap_or_else(|| {})\n}}", attempts_str, body_expr_str.trim(), fallback_str)
             },
             // Plan 16: spawn Agent(args) — creates worker thread with message dispatch
-            Expression::Spawn { agent_name, args: _ } => {
+            Expression::Spawn { agent_name, args } => {
                 // Determine agent construction
-                let agent_init = if let Some(agent_def) = self.known_agents.get(agent_name) {
-                    if agent_def.fields.is_empty() {
-                        format!("{} {{}}", agent_name)
-                    } else {
-                        format!("{}::new()", agent_name)
+                // `spawn Worker(store)` has to reach the agent's own constructor, and the
+                // arguments have to arrive. It called `Worker::new()` for any agent with fields,
+                // whether or not one existed and whatever was written in the parentheses — so the
+                // documented way to spawn an agent that is handed its dependency type-checked and
+                // then failed in rustc with "no function or associated item named `new`".
+                let agent_init = match self.known_agents.get(agent_name).cloned() {
+                    Some(agent_def) => {
+                        let ctor = agent_def.methods.iter().find(|m| m.name == *agent_name);
+                        match ctor {
+                            Some(c) => {
+                                let params: Vec<TypeNode> =
+                                    c.args.iter().map(|a| a.ty.clone()).collect();
+                                let rendered: Vec<String> = args
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, a)| {
+                                        let code = self.gen_cloned_arg(a);
+                                        match params.get(i) {
+                                            Some(t) => self.adapt_arg_to_param(t, a, code),
+                                            None => code,
+                                        }
+                                    })
+                                    .collect();
+                                format!("{}::{}({})", agent_name, agent_name, rendered.join(", "))
+                            }
+                            None if agent_def.fields.is_empty() => format!("{} {{}}", agent_name),
+                            None => format!("{}::new()", agent_name),
+                        }
                     }
-                } else {
-                    format!("{} {{}}", agent_name)
+                    None => format!("{} {{}}", agent_name),
                 };
 
                 // Generate method dispatch match arms from the agent's public methods.
@@ -4402,8 +4424,12 @@ impl RustGenerator {
 
                 let dispatch = if let Some(agent_def) = self.known_agents.get(agent_name).cloned() {
                     let is_lifecycle = |n: &str| n == "on_start" || n == "on_stop" || n == "on_message";
+                    // The constructor is not a message. It shares the agent's name, so it was
+                    // turned into a dispatch arm calling `__agent.Worker(..)` — an associated
+                    // function invoked as a method, which rustc refuses.
                     let arms: Vec<String> = agent_def.methods.iter()
-                        .filter(|m| m.is_public && m.name != "Init" && m.name != "Destroy" && !is_lifecycle(&m.name))
+                        .filter(|m| m.is_public && m.name != "Init" && m.name != "Destroy"
+                            && m.name != *agent_name && !is_lifecycle(&m.name))
                         .map(|m| {
                             let arg_bindings = __bind_args(&m.args, None);
                             let call = if arg_bindings.is_empty() {

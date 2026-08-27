@@ -835,6 +835,56 @@ agent {agent} {{
     )
 }
 
+/// Where the runtime crates a generated program depends on actually are.
+///
+/// This used to guess: three directories above the executable, on the assumption that it sat in
+/// `target/release/`. In a release archive it sits at the root, so the guess produced a path on
+/// whoever built it — and nothing checked. v2.2.0 could report its version and type-check a
+/// program, then fail to build one, because the manifest it wrote pointed at a directory on the
+/// build machine. Every candidate is checked now, and if none of them has the crates, that is
+/// said plainly instead of handed to cargo as a path from somebody else's disk.
+fn find_runtime_crates(current_dir: &Path) -> PathBuf {
+    let exe = env::current_exe().ok();
+    let exe_dir = exe.as_ref().and_then(|e| e.parent()).map(|p| p.to_path_buf());
+
+    let mut tried: Vec<PathBuf> = vec![
+        current_dir.join("crates"),
+        current_dir.join("varg-compiler").join("crates"),
+    ];
+    if let Some(dir) = exe_dir {
+        // Beside the binary, which is how a release is laid out; then up the tree, which is how a
+        // cargo target directory is.
+        tried.push(dir.join("crates"));
+        let mut up = dir.as_path();
+        for _ in 0..4 {
+            match up.parent() {
+                Some(p) => {
+                    tried.push(p.join("crates"));
+                    up = p;
+                }
+                None => break,
+            }
+        }
+    }
+
+    for candidate in &tried {
+        if candidate.join("varg-os-types").join("Cargo.toml").exists()
+            && candidate.join("varg-runtime").join("Cargo.toml").exists()
+        {
+            return candidate.clone();
+        }
+    }
+
+    eprintln!("Error: the Varg runtime crates are missing.");
+    eprintln!("  `vargc` needs `varg-os-types` and `varg-runtime` to build a program.");
+    eprintln!("  Looked in:");
+    for candidate in &tried {
+        eprintln!("    {}", candidate.display());
+    }
+    eprintln!("  A release archive carries them in `crates/` beside the binary; keep them together.");
+    exit(1);
+}
+
 fn detect_runtime_features(rust_src: &str) -> String {
     let mut features: Vec<&str> = vec![];
     for (pattern, feature) in FEATURE_MAP {
@@ -2403,15 +2453,7 @@ fn {handler_name}(body: String) -> String {{
 
     // Determine absolute paths to varg crates so the generated cargo project can find them
     let current_dir = env::current_dir().unwrap();
-    let crates_dir = if current_dir.join("crates").join("varg-os-types").exists() {
-        current_dir.join("crates")
-    } else if current_dir.join("varg-compiler").join("crates").join("varg-os-types").exists() {
-        current_dir.join("varg-compiler").join("crates")
-    } else {
-        // Fallback: derive from executable location (e.g. target/release/vargc -> crates/)
-        let exe = env::current_exe().unwrap();
-        exe.parent().unwrap().parent().unwrap().parent().unwrap().join("crates")
-    };
+    let crates_dir = find_runtime_crates(&current_dir);
     let varg_os_types_path = crates_dir.join("varg-os-types");
     let varg_runtime_path = crates_dir.join("varg-runtime");
 
@@ -2887,14 +2929,7 @@ fn test_varg_file(input_path: &str, debug_mode: bool, coverage: bool) {
     }
 
     let current_dir = env::current_dir().unwrap();
-    let crates_dir = if current_dir.join("crates").join("varg-os-types").exists() {
-        current_dir.join("crates")
-    } else if current_dir.join("varg-compiler").join("crates").join("varg-os-types").exists() {
-        current_dir.join("varg-compiler").join("crates")
-    } else {
-        let exe = env::current_exe().unwrap();
-        exe.parent().unwrap().parent().unwrap().parent().unwrap().join("crates")
-    };
+    let crates_dir = find_runtime_crates(&current_dir);
     let varg_os_types_path = crates_dir.join("varg-os-types");
     let varg_runtime_path = crates_dir.join("varg-runtime");
 

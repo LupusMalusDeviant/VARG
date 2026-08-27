@@ -88,6 +88,17 @@ jobs:
           stage="varg-v${version}-${{ matrix.name }}"
           mkdir -p "$stage"
           cp "varg-compiler/target/release/${{ matrix.exe }}" "$stage/"
+          # The runtime crates a generated program depends on. Without them the archive shipped a
+          # compiler that could type-check a program and not build one: the manifest it wrote
+          # pointed at a directory on the build machine. 552 KB of source, and the difference
+          # between a release and a demonstration.
+          # Only what cargo needs: a manifest and the sources. Copying the directories whole
+          # would carry along whatever a test run happened to leave beside them.
+          for c in varg-os-types varg-runtime; do
+            mkdir -p "$stage/crates/$c"
+            cp "varg-compiler/crates/$c/Cargo.toml" "$stage/crates/$c/"
+            cp -r "varg-compiler/crates/$c/src" "$stage/crates/$c/src"
+          done
           cp README.md CHANGELOG.md REFERENCE.md VARG_AGENT_GUIDE.md LICENSE "$stage/"
           # Only the Varg. `examples/` also holds the Rust each one transpiles to, which is
           # build output, not something anyone downloads a release to read.
@@ -106,6 +117,21 @@ jobs:
             echo "asset=${stage}.tar.gz" >> "$GITHUB_ENV"
           fi
           ls -la "$stage".*
+          echo "stage=${stage}" >> "$GITHUB_ENV"
+
+      - name: The packaged release builds a program
+        # The step above this one tested `vargc run` inside the checkout, where the runtime crates
+        # happen to be lying around. That is not what anyone downloads. This unpacks the archive
+        # somewhere else and asks it to build something — which v2.2.0 could not do.
+        shell: bash
+        run: |
+          out="$(mktemp -d)"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z x -o"$out" "${{ env.asset }}" >/dev/null
+          else
+            tar xzf "${{ env.asset }}" -C "$out"
+          fi
+          bash release/smoke.sh "$out/${{ env.stage }}"
 
       - uses: actions/upload-artifact@v4
         with:

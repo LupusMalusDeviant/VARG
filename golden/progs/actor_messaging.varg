@@ -2,6 +2,32 @@
 /// `send("process", ..)` fell through the dispatcher's `_ => "unknown"` arm because only a
 /// message literally named after a method was routed, and `on_start`/`on_stop` were emitted but
 /// never called. Silent no-ops, so no test noticed.
+/// An agent that is handed its dependency and then spawned. `spawn Named(arg)` called
+/// `Named::new()` for any agent with fields — whatever stood in the parentheses — and the
+/// constructor was also turned into a message arm, invoking an associated function as a method.
+/// The documented way to spawn an agent with a dependency type-checked and then failed in rustc.
+contract IGreeting {
+    string greet(string who);
+}
+
+agent Polite implements IGreeting {
+    public string greet(string who) { return "hello " + who; }
+}
+
+agent Greeter {
+    IGreeting style;
+
+    public Greeter(IGreeting style) {
+        self.style = style;
+    }
+
+    public void on_message(string method, string[] args) {
+        if method == "greet" {
+            print "greeter: " + self.style.greet(args[0]);
+        }
+    }
+}
+
 agent Worker {
     int handled;
 
@@ -28,6 +54,11 @@ agent Worker {
 
 agent Main {
     public void Run() {
+        // Spawned with its dependency handed in.
+        var g = spawn Greeter(Polite {});
+        g.send("greet", ["world"]);
+        sleep(120);
+
         var w = spawn Worker();
         w.send("process", "alpha");
         w.send("process", "beta");

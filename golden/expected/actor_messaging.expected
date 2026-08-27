@@ -1,3 +1,4 @@
+greeter: hello world
 worker: on_start
 worker: processed alpha (#1)
 worker: processed beta (#2)
