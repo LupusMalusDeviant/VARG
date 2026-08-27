@@ -174,7 +174,9 @@ Node or Python script with no SDK loaded — and it ships as one binary with no 
 - **Property-Based Testing** -- `@[Property("runs")]` — random input generation + assertion
 - **Multimodal** -- `image_load`, `audio_load`, `llm_vision` — image/audio analysis via LLM
 - **Workflow DAG** -- `workflow_new`, `workflow_add_step` — dependency-ordered step execution
-- **Package Registry** -- `registry_open`, `registry_install`, `registry_search` — local package management
+- **Local package cache** — `registry_open`, `registry_install`, `registry_download` (verifies a
+  SHA-256 you supply). There is **no Varg package registry**: libraries come from crates.io via
+  `import crate`, which is real and needs no index of our own.
 - **Human-in-the-Loop** -- `await_approval`, `await_input`, `await_choice` — blocking human checkpoints
 
 ### Standard Library (200+ builtins)

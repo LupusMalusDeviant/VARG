@@ -1861,7 +1861,14 @@ impl RustGenerator {
                     out.push_str(&format!("{}}}\n", indent));
                 },
                 Statement::While { condition, body } => {
-                    out.push_str(&format!("{}while {} {{\n", indent, self.gen_expression(condition)));
+                    // `while true` is spelled `loop` in Rust, and rustc says so — a warning
+                    // about generated code, arriving at someone who wrote `while true` in
+                    // Varg, where that is the ordinary spelling.
+                    let head = match condition {
+                        Expression::Bool(true) => "loop".to_string(),
+                        other => format!("while {}", self.gen_expression(other)),
+                    };
+                    out.push_str(&format!("{}{} {{\n", indent, head));
                     out.push_str(&self.gen_block(body, indent_level + 1));
                     out.push_str(&format!("{}}}\n", indent));
                 },
@@ -4901,7 +4908,10 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.generate(&program);
-        assert!(code.contains("while true {"));
+        //  becomes : that is what Rust wants, and rustc otherwise warns
+        // about generated code at someone who did not write it.
+        assert!(code.contains("loop {"));
+        assert!(!code.contains("while true"));
         assert!(code.contains("return;"));
     }
 

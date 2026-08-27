@@ -49,7 +49,7 @@ pub fn __varg_fts_open(path: &str) -> Result<FtsHandle, String> {
 }
 
 pub fn __varg_fts_add(handle: &FtsHandle, doc_id: &str, text: &str) -> Result<(), String> {
-    let mut inner = handle.lock().unwrap_or_else(|e| e.into_inner());
+    let inner = handle.lock().unwrap_or_else(|e| e.into_inner());
     let id_field   = inner.id_field;
     let body_field = inner.body_field;
     inner.writer.add_document(doc!(

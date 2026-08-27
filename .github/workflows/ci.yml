@@ -149,6 +149,24 @@ jobs:
           "$V" build tools/varg-tutor/tutor.varg
           VARG_HOME="$PWD" VARGC="$V" "$V" mcp list tools/varg-tutor/tutor.varg | grep -q "check(source"
           VARG_HOME="$PWD" VARGC="$V" "$V" mcp call tools/varg-tutor/tutor.varg check             '{"source": "agent Main { public void Run() { print \"hi\"; } }"}' | grep -q "no type errors"
+      - name: A generated program compiles without warnings
+        # rustc's complaints about *generated* Rust reached the author of the Varg: `unnecessary
+        # unsafe block` for a capability marker, `should have a snake case name` for a method they
+        # named, `denote infinite loops with loop` for a `while true` they wrote. None of it was
+        # theirs to act on. The README claimed "0 warnings" while this was happening.
+        working-directory: .
+        run: |
+          V="$PWD/varg-compiler/target/release/vargc"
+          work="$(mktemp -d)"
+          cd "$work"
+          "$V" new mcp-server clean >/dev/null
+          out="$("$V" build clean.varg 2>&1)"
+          if echo "$out" | grep -q "^warning:"; then
+            echo "$out" | grep "^warning:"
+            echo
+            echo "A program built by vargc must not make its author read warnings about Rust."
+            exit 1
+          fi
       - name: WebAssembly target still builds
         # `vargc build --target wasm32-wasip1` is in `vargc --help` and could never work: the
         # manifest declared a cdylib while only src/main.rs was written, and rusqlite was an

@@ -1208,7 +1208,9 @@ fn run_cli() {
                 }
             };
             let output_path = input_file_str.replace(".varg", ".rs");
-            let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
+            let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code,
+    unused_assignments, unused_unsafe, non_snake_case, unused_parens, unused_must_use,
+    non_camel_case_types, unused_braces, while_true)]\n\n";
             let formatted = format!("{}{}", allow_header, rust_source);
             fs::write(&output_path, &formatted).unwrap();
             let _ = Command::new("rustfmt").args(["--edition", "2021"]).arg(&output_path).status();
@@ -2715,7 +2717,9 @@ serde_json = "1.0"
 
     let main_rs_path = src_dir.join("main.rs");
     // Plan 44: Prepend #![allow(...)] to suppress common Rust warnings
-    let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
+    let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code,
+    unused_assignments, unused_unsafe, non_snake_case, unused_parens, unused_must_use,
+    non_camel_case_types, unused_braces, while_true)]\n\n";
     let allocator = if is_wasm || cross_compiling {
         ""
     } else {
@@ -3097,7 +3101,9 @@ serde_json = "1.0"
     }
 
     let main_rs_path = src_dir.join("main.rs");
-    let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
+    let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code,
+    unused_assignments, unused_unsafe, non_snake_case, unused_parens, unused_must_use,
+    non_camel_case_types, unused_braces, while_true)]\n\n";
     let formatted_source = format!("{}{}", allow_header, final_rust_source);
     fs::write(&main_rs_path, &formatted_source).unwrap();
 

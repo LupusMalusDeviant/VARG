@@ -1827,6 +1827,13 @@ agent VectorApp {
 }
 ```
 
+**What `embed_local` is, and is not.** It hashes words and character bigrams and trigrams into
+384 dimensions and normalises the result. It is a *lexical* vector: two texts score close when
+they share words or letter sequences. It is not a trained model and knows nothing about meaning —
+"car" and "automobile" are as unrelated to it as "car" and "carpet" are related. It needs no
+network and no key, which makes it useful for keyword-ish retrieval and for tests; for semantic
+search use `llm_embed_batch` against a real provider.
+
 Batch embeddings:
 ```csharp
 var texts = ["doc1", "doc2", "doc3"];

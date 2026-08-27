@@ -1787,6 +1787,20 @@ var n = workflow_step_count(wf);              // int
 
 ### Package Registry
 
+**There is no Varg package registry.** These builtins manage a local cache directory: what is in
+it got there because something put it there. `registry_search` answers from a small list compiled
+into the runtime, not from an index — nothing is queried, and no online registry exists to query.
+
+**Use `import crate` instead.** It reaches crates.io, which is real, and it is how a Varg program
+gets a library today:
+
+```csharp
+import crate serde_json;
+import crate reqwest = "0.11" features ["json"];
+```
+
+The builtins below are for managing files you fetched yourself, with a checksum you already know:
+
 ```csharp
 var reg = registry_open("./varg_packages");   // RegistryHandle — a cache DIRECTORY,
                                              // not a file; state lands in <dir>/installed.json
