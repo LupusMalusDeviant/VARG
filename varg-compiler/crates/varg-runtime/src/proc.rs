@@ -26,6 +26,45 @@ impl std::fmt::Debug for ProcState {
 
 pub type ProcHandle = Arc<Mutex<ProcState>>;
 
+/// Run a command through the platform shell and hand back what it printed.
+///
+/// Two things were wrong with the version inlined in the codegen. On Windows the command went
+/// through Rust's argument escaping, which `cmd.exe` does not understand ~ so a command
+/// containing quotes, which any path with a space needs, arrived mangled and the shell reported
+/// a program it could not find. And only stdout was returned, so a command that failed came back
+/// as an empty string with no reason and no failure: `exec("cmd-that-does-not-exist")` answered
+/// `Ok("")`.
+#[cfg(windows)]
+fn shell_output(cmd: &str) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+    // raw_arg passes the string to cmd.exe exactly as written; the surrounding pair is cmd's own
+    // convention. Given a line that begins with a quote it strips the first and the last one, so
+    // `"C:/Program Files/x.exe" --flag` lost its quoting and became a program it could not find.
+    // The extra pair is what it removes instead.
+    Command::new("cmd")
+        .arg("/C")
+        .raw_arg(format!("\"{}\"", cmd))
+        .output()
+}
+
+#[cfg(not(windows))]
+fn shell_output(cmd: &str) -> std::io::Result<std::process::Output> {
+    Command::new("sh").args(["-c", cmd]).output()
+}
+
+pub fn __varg_exec(cmd: &str) -> Result<String, String> {
+    let out = shell_output(cmd).map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let complaint = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if complaint.is_empty() {
+            format!("`{}` exited with {}", cmd, out.status.code().unwrap_or(-1))
+        } else {
+            complaint
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 /// Spawn a child process via the platform shell.
 /// Stdin, stdout, stderr are all piped.
 pub fn __varg_proc_spawn(cmd: &str) -> Result<ProcHandle, String> {

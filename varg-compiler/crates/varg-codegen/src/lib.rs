@@ -3715,10 +3715,7 @@ impl RustGenerator {
                     format!("std::fs::read_to_string(&{}).map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>()).map_err(|e| e.to_string())", arg_strs[0])
                 // ===== Wave 15: Shell Command Execution =====
                 } else if method_name == "exec" {
-                    // Bind the command to a local first: passing `&"literal".to_string()` directly
-                    // into the args vec borrows a temporary that is dropped before `.output()`
-                    // runs (E0716). A `let` keeps the String alive for the whole statement.
-                    format!("{{ let __cmd: String = {}; std::process::Command::new(if cfg!(target_os = \"windows\") {{ \"cmd\" }} else {{ \"sh\" }}).args(if cfg!(target_os = \"windows\") {{ vec![\"/C\", __cmd.as_str()] }} else {{ vec![\"-c\", __cmd.as_str()] }}).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).map_err(|e| e.to_string()) }}", arg_strs[0])
+                    format!("varg_runtime::proc::__varg_exec(&{})", arg_strs[0])
                 // ===== Wave 15: Typed JSON =====
                 } else if method_name == "json_parse" {
                     // Fallible: it used to swallow the error and yield Value::Null, which made a
@@ -8955,10 +8952,14 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("Command::new"), "exec should use Command::new: {}", code);
-        assert!(code.contains("target_os"), "exec should have platform switch: {}", code);
-        assert!(code.contains("map_err"), "exec should return Result: {}", code);
-        assert!(code.contains("stdout"), "exec should capture stdout: {}", code);
+        // The shell call lives in the runtime now. Inlined here it went through Rust's argument
+        // escaping, which cmd.exe does not understand, and it returned only stdout — so a command
+        // that failed came back as an empty string with no reason.
+        assert!(
+            code.contains("varg_runtime::proc::__varg_exec"),
+            "exec should call the runtime: {}",
+            code
+        );
     }
 
     #[test]
@@ -9284,10 +9285,13 @@ mod tests {
 
     #[test]
     fn test_e2e_or_operator_with_default() {
+        // `or` resolves something that may be absent. A literal never is — the checker refuses
+        // that spelling now — so the case worth generating is a real optional.
         let code = e2e_compile(r#"
             agent App {
                 public void Run() {
-                    var name = "test" or "default";
+                    var m = {"a": "x"};
+                    var name = m["b"] or "default";
                 }
             }
         "#);
@@ -10797,8 +10801,8 @@ mod tests {
     #[test]
     fn test_codegen_exec_binds_command_to_local() {
         // Regression: exec("literal") used to emit `&"literal".to_string()` inside the args
-        // vec — a borrow of a temporary dropped before .output() runs (E0716). The command
-        // must be bound to a local first.
+        // vec — a borrow of a temporary dropped before .output() runs (E0716). The whole shell
+        // call moved into the runtime, which is what removes the class rather than the instance.
         let mut gen = RustGenerator::new();
         let expr = Expression::MethodCall {
             caller: Box::new(Expression::Identifier("self".to_string())),
@@ -10806,10 +10810,14 @@ mod tests {
             args: vec![Expression::String("echo hi".to_string())],
         };
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("let __cmd"), "exec must bind command to a local: {code}");
-        assert!(code.contains("__cmd.as_str()"), "exec must pass the local by &str: {code}");
-        assert!(!code.contains("&\"echo hi\".to_string()"),
-            "exec must not borrow a temporary String: {code}");
+        assert!(
+            code.contains("varg_runtime::proc::__varg_exec"),
+            "exec must go through the runtime: {code}"
+        );
+        assert!(
+            !code.contains("Command::new"),
+            "the shell call must not be inlined again: {code}"
+        );
     }
 
     #[test]

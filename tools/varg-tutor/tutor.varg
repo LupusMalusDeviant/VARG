@@ -1,0 +1,98 @@
+/// An MCP server, written in Varg, that teaches Varg.
+///
+/// The measured barrier to writing Varg is not that the language is hard — it is that no model has
+/// seen it. Documentation alone does not fix that: guessing stays guessing until something
+/// answers. So the first tool here is the compiler itself, in the loop, at about 36 ms a call.
+///
+/// The other two answer from things that cannot rot: the golden programs, which CI builds and
+/// runs, and the reference, which the documentation gates check against the compiler.
+///
+///   vargc build tutor.varg
+///   VARG_HOME=/path/to/varg  tutor.exe --mcp-serve
+///
+/// VARG_HOME is the checkout; VARGC is the compiler (default: `vargc` on PATH).
+
+fn setting(string name, string otherwise) -> string {
+    unsafe {
+        var sys = SystemAccess {};
+        return env(name) or otherwise;
+    }
+}
+
+agent VargTutor {
+    @[McpTool("Type-check a Varg snippet and return the compiler's own diagnostics. Use this before proposing Varg code — it is the only way to know the code is valid.")]
+    public string check(string source) {
+        unsafe {
+            var files = FileAccess {};
+            var sys = SystemAccess {};
+
+            // The scratch path is ours, built from a platform directory and a fixed name. The
+            // snippet goes into the file, never onto the command line, so nothing a caller sends
+            // is ever handed to a shell.
+            var scratch = path_join(cache_dir(), "varg_tutor_check.varg");
+            fs_write(scratch, source)?;
+
+            // The compiler reports on stderr and exits non-zero, which `exec` hands back as a
+            // failure. `or` would swallow exactly the thing being asked for, so it is caught.
+            try {
+                var out = exec($"\"{setting("VARGC", "vargc")}\" check \"{scratch}\"")?;
+                if out.contains("no type errors") { return "OK — no type errors."; }
+                return out.trim();
+            } catch diagnostics {
+                return diagnostics;
+            }
+        }
+    }
+
+    @[McpTool("Find a complete, working Varg program for a topic. Every one of these is built and run in CI, so it is known to compile.")]
+    public string example(string topic) {
+        unsafe {
+            var files = FileAccess {};
+            var home = setting("VARG_HOME", ".");
+            var wanted = topic.to_lower();
+            var found = "";
+
+            foreach (dir in ["golden/progs", "examples"]) {
+                if found != "" { continue; }
+                var names = fs_read_dir(path_join(home, dir)) or [];
+                foreach (n in names) {
+                    if found == "" && n.ends_with(".varg") && n.to_lower().contains(wanted) {
+                        found = n;
+                    }
+                }
+            }
+
+            if found == "" {
+                return $"No example matches `{topic}`. Try: mcp, http, json, agent, memory, vector, string, collection, module.";
+            }
+            var body = fs_read(found)?;
+            return $"--- {found} ---\n{body}";
+        }
+    }
+
+    @[McpTool("Look up Varg builtins by name or keyword, with their signatures, from the reference the compiler is checked against.")]
+    public string builtins(string query) {
+        unsafe {
+            var files = FileAccess {};
+            var text = fs_read(path_join(setting("VARG_HOME", "."), "REFERENCE.md"))?;
+            var wanted = query.to_lower();
+            var out = "";
+            var shown = 0;
+            foreach (line in text.split("\n")) {
+                var l = line.trim();
+                if shown < 40 && l.contains("(") && l.to_lower().contains(wanted) && l.starts_with("var ") {
+                    out = out + l + "\n";
+                    shown = shown + 1;
+                }
+            }
+            if shown == 0 { return $"Nothing in the reference mentions `{query}`."; }
+            return out.trim();
+        }
+    }
+
+    public void Run() {
+        print "VargTutor — an MCP server that teaches Varg.";
+        print "  tools: check(source), example(topic), builtins(query)";
+        print "  run with --mcp-serve; set VARG_HOME to the Varg checkout";
+    }
+}

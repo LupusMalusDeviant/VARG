@@ -131,6 +131,15 @@ jobs:
       - name: Golden output
         working-directory: .
         run: VARGC="$PWD/varg-compiler/target/release/vargc" bash golden/run.sh
+      - name: The tutor builds and answers
+        # An MCP server written in Varg that teaches Varg. It is the clearest demonstration of
+        # what the language is for, so it has to keep working.
+        working-directory: .
+        run: |
+          V="$PWD/varg-compiler/target/release/vargc"
+          "$V" build tools/varg-tutor/tutor.varg
+          VARG_HOME="$PWD" VARGC="$V" "$V" mcp list tools/varg-tutor/tutor.varg | grep -q "check(source"
+          VARG_HOME="$PWD" VARGC="$V" "$V" mcp call tools/varg-tutor/tutor.varg check             '{"source": "agent Main { public void Run() { print \"hi\"; } }"}' | grep -q "no type errors"
       - name: WebAssembly target still builds
         # `vargc build --target wasm32-wasip1` is in `vargc --help` and could never work: the
         # manifest declared a cdylib while only src/main.rs was written, and rusqlite was an

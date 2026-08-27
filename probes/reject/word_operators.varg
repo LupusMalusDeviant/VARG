@@ -1,0 +1,11 @@
+// @probe reject: Varg spells this `&&`
+// The first mistake anyone trained on Python makes. `and` lexes as an ordinary identifier, so the
+// expression simply ended at it and the parser complained about the *next* thing, at the top
+// level, naming neither the word nor the operator that was meant.
+agent Main {
+    public void Run() {
+        var a = true;
+        var b = false;
+        if a and b { print "both"; }
+    }
+}

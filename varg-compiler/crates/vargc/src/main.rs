@@ -1551,7 +1551,7 @@ fn find_struct_def<'a>(ast: &'a varg_ast::ast::Program, name: &str) -> Option<&'
 fn report_parse_error(filename: &str, source: &str, err: &ParseError) {
     let mut files = SimpleFiles::new();
     let file_id = files.add(filename, source);
-    let writer = StandardStream::stderr(ColorChoice::Auto);
+    let writer = StandardStream::stderr(diagnostic_colour());
     let config = term::Config::default();
 
     let diagnostic = match err {
@@ -1581,6 +1581,20 @@ fn report_parse_error(filename: &str, source: &str, err: &ParseError) {
     term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap_or_else(|_| {
         eprintln!("Syntax Error in {}: {:?}", filename, err);
     });
+}
+
+/// Colour only when someone is looking.
+///
+/// `ColorChoice::Auto` in termcolor only turns colour off for `TERM=dumb` — it does not ask
+/// whether the stream is a terminal, so escape codes went into every pipe: CI logs, an editor
+/// reading diagnostics, and a tool asking the compiler a question on someone's behalf.
+fn diagnostic_colour() -> ColorChoice {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+        ColorChoice::Auto
+    } else {
+        ColorChoice::Never
+    }
 }
 
 fn report_semantic_error(filename: &str, source: &str, err: &varg_typechecker::SpannedTypeError) {
@@ -1622,7 +1636,7 @@ fn report_semantic_error(filename: &str, source: &str, err: &varg_typechecker::S
 
     let mut files = SimpleFiles::new();
     let file_id = files.add(filename, source);
-    let writer = StandardStream::stderr(ColorChoice::Auto);
+    let writer = StandardStream::stderr(diagnostic_colour());
     let config = term::Config::default();
 
     let label_msg = if span.is_some() { "here" } else { "in this file" };

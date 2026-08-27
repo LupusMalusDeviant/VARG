@@ -1,0 +1,10 @@
+// @probe reject: write `||`
+// `or` supplies a fallback for a value that may be absent. Between two booleans nothing can be,
+// so it used to reach rustc as "no method named `unwrap_or_else` for bool".
+agent Main {
+    public void Run() {
+        var a = true;
+        var b = false;
+        if a or b { print "either"; }
+    }
+}

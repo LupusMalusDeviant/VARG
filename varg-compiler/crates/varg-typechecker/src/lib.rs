@@ -65,6 +65,8 @@ pub enum TypeError {
     ReceiverBuiltinCalledFree { method_name: String, takes_args: bool },
     RetiredBuiltin { method_name: String, replacement: String, why: String },
     OrFallbackMismatch { expected: String, found: String },
+    /// `or` used where nothing can be absent — almost always boolean or was meant.
+    OrOnAValueAlwaysPresent { found: String },
     ReceiverBuiltinTakesNoArgs { method_name: String, found: usize },
     DivisionByZeroLiteral,
     FieldTypeMismatch { type_name: String, field_name: String, expected: String, found: String },
@@ -155,6 +157,13 @@ impl TypeError {
                     method_name,
                     if *takes_args { "..." } else { "" }
                 )
+            }
+            TypeError::OrOnAValueAlwaysPresent { found } => {
+                if found == "Bool" {
+                    "`or` supplies a fallback for a value that may be absent; both sides here are `bool`, so nothing can be. For boolean or, write `||`".to_string()
+                } else {
+                    format!("`or` supplies a fallback for a value that may be absent, but `{}` always is. Drop the `or`, or make the value optional", found)
+                }
             }
             TypeError::OrFallbackMismatch { expected, found } => {
                 format!(
@@ -4287,6 +4296,30 @@ impl TypeChecker {
                     TypeNode::Result(ok, _) | TypeNode::Nullable(ok) => Some((**ok).clone()),
                     _ => None,
                 };
+                // Nothing to fall back from. `a or b` between two booleans is the commonest thing
+                // a model trained on Python or JavaScript writes, and it reached rustc as "no
+                // method named `unwrap_or_else` for bool". Only definite primitives are refused;
+                // anything the checker cannot pin down passes, as before.
+                //
+                // Only for a shape that cannot be fallible: a literal, a name, or an operation on
+                // them. A *call* is excluded on purpose — a method whose body uses `?` is
+                // fallible even though its declared return type does not say so, and `or` on its
+                // result is exactly how a caller handles that.
+                let cannot_be_absent = matches!(
+                    &**expr,
+                    Expression::Int(_)
+                        | Expression::Float(_)
+                        | Expression::Bool(_)
+                        | Expression::String(_)
+                        | Expression::Identifier(_)
+                        | Expression::BinaryOp { .. }
+                        | Expression::UnaryOp { .. }
+                );
+                if inner.is_none() && cannot_be_absent && Self::is_definite_primitive(&expr_ty) {
+                    return Err(TypeError::OrOnAValueAlwaysPresent {
+                        found: format!("{:?}", expr_ty),
+                    });
+                }
                 if let Some(inner_ty) = &inner {
                     let handle_vs_value = matches!(inner_ty, TypeNode::Custom(n)
                         if n != "Dynamic" && Self::is_definite_primitive(&default_ty));
@@ -4718,6 +4751,7 @@ impl TypeChecker {
                 // puts it in the *caller*, where a plain TypeMismatch would be discarded and the
                 // program would go back to failing in rustc.
                 | TypeError::OrFallbackMismatch { .. }
+                | TypeError::OrOnAValueAlwaysPresent { .. }
         ) {
             return true;
         }
@@ -6983,7 +7017,9 @@ mod tests {
 
     #[test]
     fn test_or_default_type_inference() {
-        // expr or "default" should type-check
+        // A literal `or` a fallback: the fallback can never be reached, because a literal is
+        // never absent. This asserted that it type-checks, which is how `a or b` between two
+        // booleans got as far as rustc. It is refused now, and the message names `||`.
         let mut checker = TypeChecker::new();
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
@@ -7014,7 +7050,14 @@ mod tests {
                 }],
             })],
         };
-        assert!(checker.check_program(&program).is_ok());
+        let errors = checker
+            .check_program(&program)
+            .expect_err("a value that is always present has nothing to fall back from");
+        assert!(
+            matches!(errors[0].error, TypeError::OrOnAValueAlwaysPresent { .. }),
+            "expected the `or`-on-a-present-value message, got: {}",
+            errors[0].message()
+        );
     }
 
     // ===== Plan 30: Type System Hardening Tests =====
@@ -12089,6 +12132,39 @@ mod tests {
                     print "hi".shout();
                     print "ab".repeated(2);
                     print $"{21.doubled()}";
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn or_between_two_booleans_names_the_operator_meant() {
+        // The commonest thing a model trained on Python or JavaScript writes. `or` supplies a
+        // fallback for a value that may be absent; between two booleans there is nothing to fall
+        // back from, and it used to reach rustc as "no method named `unwrap_or_else` for bool".
+        assert_rejected(
+            r#"
+            agent Main {
+                public void Run() {
+                    var a = false;
+                    var b = true;
+                    if a or b { print "yes"; }
+                }
+            }
+            "#,
+            "||",
+        );
+    }
+
+    #[test]
+    fn or_still_resolves_something_that_may_be_absent() {
+        assert_accepted(
+            r#"
+            agent Main {
+                public void Run() {
+                    var m = {"a": 1};
+                    print $"{m["b"] or 0}";
                 }
             }
             "#,

@@ -95,6 +95,19 @@ impl Parser {
     }
 
     /// Returns the byte span of the last consumed token
+    /// Does the next token begin an expression? Used to tell `not x` from a variable happening
+    /// to be called `not`.
+    fn starts_an_expression(&self) -> bool {
+        matches!(
+            self.peek(),
+            Some(Token::Identifier(_))
+                | Some(Token::IntLiteral(_))
+                | Some(Token::StringLiteral(_))
+                | Some(Token::LParen)
+                | Some(Token::Bang)
+        )
+    }
+
     fn last_span(&self) -> Range<usize> {
         if self.pos > 0 && self.pos <= self.tokens.len() {
             self.tokens[self.pos - 1].1.clone()
@@ -2297,6 +2310,17 @@ impl Parser {
                     operand: Box::new(operand),
                 }
             },
+            // `not x` is not negation here — `!x` is. It lexes as an ordinary identifier, so
+            // the expression became a variable named `not` and the error landed on whatever came
+            // after it.
+            Some(Token::Identifier(ref w)) if w == "not" && self.starts_an_expression() => {
+                let span = self.last_span();
+                return Err(ParseError::UnexpectedToken {
+                    expected: "`not` — Varg spells this `!`".to_string(),
+                    found: Some(Token::Identifier("not".to_string())),
+                    span,
+                });
+            }
             Some(Token::Bang) => {
                 let operand = self.parse_expression_bp(15)?;
                 Expression::UnaryOp {
@@ -2631,6 +2655,22 @@ impl Parser {
                     args,
                 };
                 continue;
+            }
+
+            // `and` and `not` are not operators here — `&&` and `!` are. Both lex as ordinary
+            // identifiers, so an expression simply ended at them and the parser complained about
+            // the *next* thing, at the top level, mentioning neither. It is the first mistake
+            // anyone trained on Python makes, and the message pointed nowhere near it.
+            if let Token::Identifier(word) = tok {
+                if word == "and" || word == "not" {
+                    let wanted = if word == "and" { "&&" } else { "!" };
+                    let span = self.current_span();
+                    return Err(ParseError::UnexpectedToken {
+                        expected: format!("`{}` — Varg spells this `{}`", word, wanted),
+                        found: Some(Token::Identifier(word.clone())),
+                        span,
+                    });
+                }
             }
 
             // Check for binary operator with precedence
