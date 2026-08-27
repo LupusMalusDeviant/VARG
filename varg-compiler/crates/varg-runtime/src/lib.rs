@@ -191,6 +191,10 @@ pub fn __varg_parse_float(s: &str) -> Result<f64, String> {
 }
 
 // ── Always-on modules (pure Rust, no heavy deps) ──────────────────────────────
+// Generated programs name this for `ordered_map<K, V>`; re-exported so they need no
+// dependency of their own.
+pub use indexmap::IndexMap;
+
 pub mod json;          // JSON accessors accepting a parsed value or a raw JSON string
 pub mod db;            // legacy stub
 pub mod regex_utils;   // Regex builtins: regex_match, regex_find_all, regex_replace

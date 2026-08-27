@@ -85,6 +85,7 @@ fn main() {
 | `string[]` | `Vec<String>` | `["a", "b"]` |
 | `int[]` | `Vec<i64>` | `[1, 2, 3]` |
 | `map<K, V>` | `HashMap<K, V>` | `{"key": "val"}` |
+| `ordered_map<K, V>` | `IndexMap<K, V>` | `{"key": "val"}` |
 | `set<T>` | `HashSet<T>` | `set_of("a", "b")` |
 | `(int, string)` | `(i64, String)` | `(42, "hello")` |
 | `string?` | `Option<String>` | `null` |
@@ -682,6 +683,38 @@ for (key, value) in config {
     print $"{key}: {value}";
 }
 ```
+
+### Ordered maps
+
+`map<K, V>` hands its keys back in whatever order the hash landed them in. Two runs of the same
+binary can print them differently, and sorting them costs a full sort. `ordered_map<K, V>` keeps
+insertion order, the way Python's `dict` and JavaScript's `Map` do.
+
+Everything a map can do, an ordered map can do, with the same spelling:
+
+```csharp
+ordered_map<string, int> counts = {};
+foreach (word in ["zulu", "alpha", "mike"]) {
+    counts[word] = (counts[word] or 0) + 1;
+}
+print counts.keys().join(",");        // zulu,alpha,mike — every time
+
+counts.remove("alpha");
+print counts.keys().join(",");        // zulu,mike — the rest keep their order
+```
+
+The literal is the same `{...}`; the declared type decides which container it builds. Removal on
+an ordered map shifts the entries after the hole rather than moving the last one into it, which
+is what makes the order a promise rather than a coincidence.
+
+**When to use which.** Reach for `ordered_map` when the program's output depends on the order:
+anything printed, serialised, hashed, or compared between runs. Reach for `map` when it does not
+and the map is large or has entries removed from it often — a plain map uses less memory and its
+removals are constant-time.
+
+The two are different types and do not convert into one another, because they are different
+containers underneath. A literal takes whichever the declaration asks for; a variable does not
+change kind.
 
 ### Sets
 

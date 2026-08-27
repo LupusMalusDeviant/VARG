@@ -15,7 +15,13 @@ agent Main {
     public void Run() {
         var text = build(200000);
         var start = time_millis();
-        var counts = {"seed": 0};
+        // `ordered_map`, not `map`, because the other three languages here have no choice:
+        // Python's dict and JavaScript's Map both keep insertion order, and C#'s Dictionary
+        // does in practice for an insert-only run. A plain Varg `map` hands its keys back in
+        // hash order, so the sort below received a shuffled list while the others received a
+        // nearly-ordered one — the whole of the gap, measured. This is the comparable
+        // structure, and it is what makes this a comparison.
+        ordered_map<string, int> counts = {"seed": 0};
         foreach (w in text.split(" ")) {
             counts[w] = (counts[w] or 0) + 1;
         }

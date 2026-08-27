@@ -5375,6 +5375,7 @@ dependencies = [
  "duckdb",
  "flate2",
  "futures",
+ "indexmap",
  "instant-distance",
  "ndarray",
  "pbkdf2",

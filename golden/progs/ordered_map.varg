@@ -1,0 +1,45 @@
+agent OM {
+    // `map<K, V>` hands its keys back in whatever order the hash landed them in, so a program
+    // that prints them can print them differently on two runs of the same binary. Python's `dict`
+    // and JavaScript's `Map` both promise insertion order; `ordered_map<K, V>` is that promise,
+    // and it costs memory and makes removal move the entries after the hole. Both are offered
+    // because both are the right answer somewhere.
+    //
+    // Nothing here asserts the order of a plain `map` — it has none to assert.
+    public void Run() {
+        ordered_map<string, int> ord = {};
+        foreach (w in ["zulu", "alpha", "mike", "bravo"]) {
+            ord[w] = (ord[w] or 0) + 1;
+        }
+        print $"insertion:  {ord.keys().join(",")}";
+
+        // Reading, membership and length behave as they do on a plain map.
+        print $"read:       {ord["mike"] or -1}";
+        print $"has bravo:  {ord.contains_key("bravo")}";
+        print $"len:        {ord.len()}";
+
+        // Removal keeps the order of what is left: `shift_remove`, not `swap_remove`, which
+        // would move the last entry into the hole and break the promise the type makes.
+        ord.remove("alpha");
+        print $"removed:    {ord.keys().join(",")}";
+        ord["yankee"] = 9;
+        print $"appended:   {ord.keys().join(",")}";
+
+        // (key, value) iteration walks the same order.
+        var trail = "";
+        foreach (k, v in ord) {
+            trail = trail + k + "=" + v.to_string() + " ";
+        }
+        print $"pairs:      {trail.trim()}";
+
+        // A literal takes the container its declaration asks for.
+        ordered_map<string, string> lit = {"one": "1", "two": "2", "three": "3"};
+        print $"literal:    {lit.keys().join(",")}";
+
+        // A plain map still works, and its keys are only checkable when sorted.
+        map<string, int> plain = {"c": 3, "a": 1, "b": 2};
+        var ks = plain.keys();
+        ks.sort();
+        print $"plain:      {ks.join(",")}";
+    }
+}

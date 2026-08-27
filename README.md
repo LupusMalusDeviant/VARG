@@ -111,21 +111,25 @@ Time the programs measured around their own work, median of 30 runs on one machi
 
 | Workload | Varg | C# | TypeScript | Python |
 |----------|-----:|---:|-----------:|-------:|
-| fib(35), recursive | **15.5 ms** | 53 ms | 53 ms | 700 ms |
-| 100k list: build, filter, map, sum | **1 ms** | 12 ms | 4 ms | 9 ms |
-| 1000-record JSON: build, parse, re-serialise | 1 ms | 22 ms | **<1 ms** | 2 ms |
-| Word frequency, 200k distinct keys | 31 ms | 63 ms | 37 ms | **28 ms** |
+| fib(35), recursive | **16 ms** | 53 ms | 53 ms | 695.5 ms |
+| 100k list: build, filter, map, sum | **1 ms** | 11 ms | 4 ms | 9 ms |
+| 1000-record JSON: build, parse, re-serialise | 1 ms | 21 ms | **<1 ms** | 2 ms |
+| Word frequency, 200k distinct keys | **15 ms** | 64 ms | 36 ms | 27 ms |
 
-Faster than C# on all four. It loses word frequency to Python, and the reason is not what it
-looks like. Timed in phases, the counting loop is *faster* than Python's — 21 ms against 26 —
-so hashing and map lookups are not the gap. All of it is the final sort: 18 ms against 2 ms.
+Fastest of the four on all four workloads. Word frequency used to be the one Varg lost, and
+finding out why changed the language rather than the benchmark.
 
-Python's `dict` preserves insertion order, so `sorted()` receives the keys in the order they were
-counted, which is full of long ascending runs that Timsort merges almost for free. Rust's
-`HashMap` yields keys in hash order, which is effectively shuffled. Rust sorts the *same* keys in
-counting order in 2 ms as well; on genuinely shuffled input Python takes 30 ms and Rust 18 ms, and
-the result reverses. The workload measures a difference in what a map guarantees about ordering,
-not a difference in speed.
+Timed in phases, the counting loop was never the problem — it was already faster than Python's.
+All of the gap was the final sort: 18 ms against 2. Python's `dict` preserves insertion order, so
+`sorted()` received the keys in the order they were counted, full of long ascending runs that
+Timsort merges almost for free; a Varg `map` yielded them in hash order, which is effectively
+shuffled. JavaScript's `Map` keeps insertion order too, and C#'s `Dictionary` does in practice for
+an insert-only run. Varg had no equivalent, so the four programs were not using comparable
+structures.
+
+`ordered_map<K, V>` is that equivalent, and the benchmark now uses it: 31 ms to 15. `map<K, V>` is
+unchanged and still the right choice when order does not matter — see
+[the reference](REFERENCE.md#ordered-maps).
 
 Varg and C# are timed as their built binaries; Python and Node through their interpreter, which
 is how those languages are used. Build time is reported separately in

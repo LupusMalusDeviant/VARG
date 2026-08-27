@@ -1346,6 +1346,23 @@ impl TypeChecker {
                         }
                     }
                     let val_type = self.infer_expression_type(value)?;
+                    // A map literal has no container of its own: `{...}` becomes whichever kind
+                    // is declared. It always infers as a plain map, so without this
+                    // `ordered_map<string, int> m = {}` was refused by its own declaration.
+                    // Only a literal is treated this way; a plain map *variable* assigned to an
+                    // ordered declaration stays an error, because the two are different Rust
+                    // containers.
+                    let val_type = match (ty, value) {
+                        (Some(TypeNode::OrderedMap(k, v)), Expression::MapLiteral(_))
+                            if self.types_match(
+                                &TypeNode::Map(k.clone(), v.clone()),
+                                &val_type,
+                            ) =>
+                        {
+                            TypeNode::OrderedMap(k.clone(), v.clone())
+                        }
+                        _ => val_type,
+                    };
                     if let Some(expected_ty) = ty {
                         if !self.types_match(expected_ty, &val_type) {
                             return Err(TypeError::TypeMismatch {
@@ -1456,7 +1473,8 @@ impl TypeChecker {
                      // Wave 16: Map iteration with (key, value) destructuring
                      if let Some(val_name) = value_name {
                          match &coll_ty {
-                             TypeNode::Map(key_ty, val_ty) => {
+                             TypeNode::Map(key_ty, val_ty)
+                             | TypeNode::OrderedMap(key_ty, val_ty) => {
                                  self.env.insert(item_name.clone(), *key_ty.clone());
                                  self.env.insert(val_name.clone(), *val_ty.clone());
                              }
@@ -1478,7 +1496,8 @@ impl TypeChecker {
                              TypeNode::Array(inner) => *inner.clone(),
                              TypeNode::List(inner) => *inner.clone(),
                              TypeNode::Set(inner) => *inner.clone(),
-                             TypeNode::Map(key_ty, _) => *key_ty.clone(),
+                             TypeNode::Map(key_ty, _)
+                             | TypeNode::OrderedMap(key_ty, _) => *key_ty.clone(),
                              TypeNode::Generic(name, args) if name == "map" && args.len() == 2 => args[0].clone(),
                              // A definite scalar is not iterable. `for x in 5` produced rustc's
                              // "`{integer}` is not an iterator" against generated code.
@@ -1733,6 +1752,10 @@ impl TypeChecker {
             TypeNode::List(inner) => TypeNode::List(Box::new(Self::substitute_type(inner, subs))),
             TypeNode::Set(inner) => TypeNode::Set(Box::new(Self::substitute_type(inner, subs))),
             TypeNode::Map(k, v) => TypeNode::Map(
+                Box::new(Self::substitute_type(k, subs)),
+                Box::new(Self::substitute_type(v, subs)),
+            ),
+            TypeNode::OrderedMap(k, v) => TypeNode::OrderedMap(
                 Box::new(Self::substitute_type(k, subs)),
                 Box::new(Self::substitute_type(v, subs)),
             ),
@@ -2645,14 +2668,16 @@ impl TypeChecker {
                     // Plan 54: Infer key type from map
                     let caller_ty = self.infer_expression_type(caller)?;
                     match &caller_ty {
-                        TypeNode::Map(key, _) => Ok(TypeNode::Array(key.clone())),
+                        TypeNode::Map(key, _)
+                        | TypeNode::OrderedMap(key, _) => Ok(TypeNode::Array(key.clone())),
                         _ => Ok(TypeNode::Array(Box::new(TypeNode::String))),
                     }
                 } else if method_name == "values" {
                     // Plan 54: Infer value type from map
                     let caller_ty = self.infer_expression_type(caller)?;
                     match &caller_ty {
-                        TypeNode::Map(_, val) => Ok(TypeNode::Array(val.clone())),
+                        TypeNode::Map(_, val)
+                        | TypeNode::OrderedMap(_, val) => Ok(TypeNode::Array(val.clone())),
                         _ => Ok(TypeNode::Array(Box::new(TypeNode::Custom("Dynamic".to_string())))),
                     }
                 } else if method_name == "remove" {
@@ -2667,7 +2692,8 @@ impl TypeChecker {
                     }
                     let caller_ty = self.infer_expression_type(caller)?;
                     match &caller_ty {
-                        TypeNode::Map(_, val) => Ok(*val.clone()),
+                        TypeNode::Map(_, val)
+                        | TypeNode::OrderedMap(_, val) => Ok(*val.clone()),
                         _ => Ok(TypeNode::Custom("Dynamic".to_string())),
                     }
                 // ===== Plan 16: Agent Messaging Methods =====
@@ -4131,7 +4157,7 @@ impl TypeChecker {
                         }
                         Ok(*inner)
                     }
-                    TypeNode::Map(key, val) => {
+                    TypeNode::Map(key, val) | TypeNode::OrderedMap(key, val) => {
                         if Self::is_definite_primitive(&index_ty)
                             && Self::is_definite_primitive(&key)
                             && !self.types_match(&key, &index_ty)
@@ -4923,6 +4949,12 @@ impl TypeChecker {
                 self.types_match(inner1, inner2)
             },
             (TypeNode::Map(k1, v1), TypeNode::Map(k2, v2)) => {
+                self.types_match(k1, k2) && self.types_match(v1, v2)
+            },
+            // Deliberately not interchangeable with the line above. The two lower to different
+            // Rust containers, so accepting one where the other is declared would type-check and
+            // then fail in rustc against generated code.
+            (TypeNode::OrderedMap(k1, v1), TypeNode::OrderedMap(k2, v2)) => {
                 self.types_match(k1, k2) && self.types_match(v1, v2)
             },
             (TypeNode::Set(inner1), TypeNode::Set(inner2)) => {

@@ -43,21 +43,25 @@ Build time is recorded separately. It is a cost of the toolchain, not of the pro
 | `wordfreq/` | Map insertion keyed by strings, hashing |
 | `token_compare/` | Source size for equivalent agent programs — not timed |
 
-`wordfreq` is here because Varg loses it, and a suite containing only the workloads a language
-wins is advertising. What it actually measures is worth stating, because the obvious reading is
-wrong. Timed in phases on this machine:
+`wordfreq` was added because Varg lost it, and a suite containing only the workloads a language
+wins is advertising. It no longer loses, and how that happened is worth recording, because the
+obvious reading of the original result was wrong.
 
-| Phase | Varg / Rust | Python |
-|-------|------------:|-------:|
-| Counting loop | 21 ms | 26 ms |
-| Copying the keys out | 7 ms | — |
-| Sorting them | 18 ms | 2 ms |
+Timed in phases, the counting loop was already the faster of the two — 21 ms against Python's 26.
+The whole gap was the final sort: 18 ms against 2. Python's `dict` preserves insertion order, so
+`sorted()` received the keys in counting order, long ascending runs that Timsort merges almost for
+free; Varg's `map` yielded hash order, effectively shuffled. Rust sorts the *same* keys in
+counting order in 2 ms as well, and on genuinely shuffled input Python takes 30 ms against
+Rust's 18.
 
-The counting loop is the faster of the two, so hashing and map lookups are not the gap. Python's `dict` preserves
-insertion order, so `sorted()` gets the keys in counting order — long ascending runs that Timsort
-merges almost for free. Rust's `HashMap` yields hash order, which is effectively shuffled. Rust
-sorts the same keys in counting order in 2 ms too, and on genuinely shuffled input Python takes
-30 ms against Rust's 18 ms. The difference is what the two maps guarantee about ordering.
+JavaScript's `Map` also keeps insertion order, and C#'s `Dictionary` does in practice for an
+insert-only run. Varg had no equivalent, so the four programs were not using comparable
+structures — the benchmark was measuring that, not speed. `ordered_map<K, V>` was added to the
+language, the Varg program uses it, and the workload went from 31 ms to 15.
+
+Reading that as "the benchmark was changed until it won" would be fair if the change were
+arbitrary. It is the opposite: the other three languages never had the choice, and Varg was the
+odd one out.
 
 ## What the numbers are not
 

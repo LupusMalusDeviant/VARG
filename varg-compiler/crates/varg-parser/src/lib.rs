@@ -217,6 +217,12 @@ impl Parser {
                     Box::new(Self::resolve_type_vars(v, type_params)),
                 )
             }
+            TypeNode::OrderedMap(k, v) => {
+                TypeNode::OrderedMap(
+                    Box::new(Self::resolve_type_vars(k, type_params)),
+                    Box::new(Self::resolve_type_vars(v, type_params)),
+                )
+            }
             TypeNode::Nullable(inner) => {
                 TypeNode::Nullable(Box::new(Self::resolve_type_vars(inner, type_params)))
             }
@@ -1147,6 +1153,13 @@ impl Parser {
                     let val = Box::new(self.parse_type()?);
                     self.consume(Token::GreaterThan)?;
                     Ok(TypeNode::Map(key, val))
+                } else if name == "OrderedMap" || name == "ordered_map" {
+                    self.consume(Token::LessThan)?;
+                    let key = Box::new(self.parse_type()?);
+                    self.consume(Token::Comma)?;
+                    let val = Box::new(self.parse_type()?);
+                    self.consume(Token::GreaterThan)?;
+                    Ok(TypeNode::OrderedMap(key, val))
                 // Wave 16: set<T> → HashSet<T>
                 } else if name == "Set" || name == "set" {
                     self.consume(Token::LessThan)?;

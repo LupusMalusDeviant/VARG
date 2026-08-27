@@ -1,0 +1,9 @@
+insertion:  zulu,alpha,mike,bravo
+read:       1
+has bravo:  true
+len:        4
+removed:    zulu,mike,bravo
+appended:   zulu,mike,bravo,yankee
+pairs:      zulu=1 mike=1 bravo=1 yankee=9
+literal:    one,two,three
+plain:      a,b,c

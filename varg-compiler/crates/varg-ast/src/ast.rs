@@ -429,6 +429,12 @@ pub enum TypeNode {
     // Complex / Varg-Min Types
     Array(Box<TypeNode>), // e.g., string[]
     Map(Box<TypeNode>, Box<TypeNode>), // e.g., map<string, int>
+    // `ordered_map<string, int>` — the same operations, in insertion order. A plain `map` hands
+    // its keys back in whatever order the hash landed them in, which is why a program that
+    // prints them can print them differently twice. Python's `dict` and JavaScript's `Map` both
+    // promise insertion order; Varg offers the choice, because the promise costs memory and
+    // makes removal move elements.
+    OrderedMap(Box<TypeNode>, Box<TypeNode>),
     Set(Box<TypeNode>),              // Wave 16: set<string> → HashSet<String>
     
     // Plan 07: Nullable Types

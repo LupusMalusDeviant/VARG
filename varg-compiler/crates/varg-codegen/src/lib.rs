@@ -158,6 +158,11 @@ pub struct RustGenerator {
     // variable is rebound on every iteration, which is what makes it safe to move out of the
     // body on its last textual use; a name bound outside the loop is not.
     foreach_vars: Vec<String>,
+
+    // The container a `{...}` literal should build while a declaration says which. A literal has
+    // no container of its own; without this an `ordered_map` declaration was initialised with a
+    // HashMap and rustc reported the mismatch against generated code.
+    map_literal_container: Option<&'static str>,
     /// Wave 12: Known enum definitions for variant construction codegen
     known_enums: HashMap<String, Vec<EnumVariant>>,
     /// Reverse map: variant_name → enum_name, for qualified pattern generation
@@ -252,6 +257,7 @@ impl RustGenerator {
             current_file: String::new(),
             usage_remaining: HashMap::new(),
             foreach_vars: Vec::new(),
+            map_literal_container: None,
             known_enums: HashMap::new(),
             variant_to_enum: HashMap::new(),
             in_result_function: false,
@@ -1277,7 +1283,9 @@ impl RustGenerator {
                 let looks_like_map = matches!(&**index, Expression::String(_))
                     || matches!(&**caller, Expression::Identifier(n) if self.map_vars.contains(n));
                 match self.resolve_type(caller) {
-                    Some(TypeNode::Map(_, val)) => Some(TypeNode::Nullable(val)),
+                    Some(TypeNode::Map(_, val)) | Some(TypeNode::OrderedMap(_, val)) => {
+                        Some(TypeNode::Nullable(val))
+                    }
                     Some(TypeNode::Array(inner)) | Some(TypeNode::List(inner)) => Some(*inner),
                     _ if looks_like_map => Some(TypeNode::Nullable(Box::new(TypeNode::Custom(
                         "Dynamic".to_string(),
@@ -1400,6 +1408,10 @@ impl RustGenerator {
             TypeNode::Array(inner) => format!("Vec<{}>", self.gen_type(inner)),
             TypeNode::List(inner) => format!("Vec<{}>", self.gen_type(inner)),
             TypeNode::Map(k, v) => format!("std::collections::HashMap<{}, {}>", self.gen_type(k), self.gen_type(v)),
+            // Insertion-ordered. The operations are the same names, so nothing else in
+            // codegen has to branch — except removal, which on an IndexMap has to say
+            // whether it keeps the order.
+            TypeNode::OrderedMap(k, v) => format!("varg_runtime::IndexMap<{}, {}>", self.gen_type(k), self.gen_type(v)),
             TypeNode::Set(inner) => format!("std::collections::HashSet<{}>", self.gen_type(inner)),
             TypeNode::TypeVar(name) => name.clone(),
             TypeNode::Generic(name, args) => {
@@ -1463,6 +1475,7 @@ impl RustGenerator {
             TypeNode::Array(inner) => format!("Vec::<{}>::new()", self.gen_type(inner)),
             TypeNode::List(inner) => format!("Vec::<{}>::new()", self.gen_type(inner)),
             TypeNode::Map(k, v) => format!("std::collections::HashMap::<{}, {}>::new()", self.gen_type(k), self.gen_type(v)),
+            TypeNode::OrderedMap(k, v) => format!("varg_runtime::IndexMap::<{}, {}>::new()", self.gen_type(k), self.gen_type(v)),
             TypeNode::Set(inner) => format!("std::collections::HashSet::<{}>::new()", self.gen_type(inner)),
             TypeNode::Nullable(_) => "None".to_string(),
             TypeNode::Context => "Context::new(\"default\")".to_string(),
@@ -1687,17 +1700,28 @@ impl RustGenerator {
                         self.string_vars.insert(name.clone());
                     }
                     // Wave 19: Track map variables for correct index codegen
-                    if matches!(ty, Some(TypeNode::Map(_, _))) || matches!(value, Expression::MapLiteral(_)) {
+                    if matches!(ty, Some(TypeNode::Map(_, _) | TypeNode::OrderedMap(_, _)))
+                        || matches!(value, Expression::MapLiteral(_))
+                    {
                         self.map_vars.insert(name.clone());
                     }
                     // Closure variable: treat as callable function so `f(args)` works
                     if matches!(value, Expression::Lambda { .. }) {
                         self.known_functions.insert(name.clone());
                     }
+                    self.map_literal_container = match ty {
+                        Some(TypeNode::OrderedMap(_, _)) => Some("varg_runtime::IndexMap"),
+                        Some(TypeNode::Map(_, _)) => Some("std::collections::HashMap"),
+                        _ => None,
+                    };
                     let val_str = self.gen_expression(value);
+                    self.map_literal_container = None;
                     let val_str = self.clone_self_field_if_needed(&val_str);
                     // Emit type annotation for Map/List when declared — fixes Rust type inference on empty collections
                     let type_annotation = match ty {
+                        Some(TypeNode::OrderedMap(k_ty, v_ty)) => {
+                            format!(": varg_runtime::IndexMap<{}, {}>", self.gen_type(k_ty), self.gen_type(v_ty))
+                        },
                         Some(TypeNode::Map(k_ty, v_ty)) => {
                             format!(": std::collections::HashMap<{}, {}>", self.gen_type(k_ty), self.gen_type(v_ty))
                         },
@@ -3304,7 +3328,14 @@ impl RustGenerator {
                 } else if method_name == "contains_key" {
                     format!("{}.contains_key(&{})", self.gen_receiver(caller), arg_strs[0])
                 } else if method_name == "remove" {
-                    format!("{}.remove(&{})", self.gen_receiver(caller), arg_strs[0])
+                    // An ordered map has to say which order it keeps. IndexMap deprecates the
+                    // bare `remove` for exactly that reason: it is `swap_remove`, which moves the
+                    // last entry into the hole and quietly breaks the promise the type makes.
+                    let removal = match self.resolve_type(caller) {
+                        Some(TypeNode::OrderedMap(_, _)) => "shift_remove",
+                        _ => "remove",
+                    };
+                    format!("{}.{}(&{})", self.gen_receiver(caller), removal, arg_strs[0])
                 // ===== Wave 19: map.get(key, default) =====
                 } else if method_name == "get" {
                     format!("{}.get(&{}).cloned().unwrap_or({})", self.gen_receiver(caller), arg_strs[0], arg_strs[1])
@@ -4389,12 +4420,15 @@ impl RustGenerator {
                 format!("vec![{}]", elems.join(", "))
             },
             Expression::MapLiteral(entries) => {
+                let container = self
+                    .map_literal_container
+                    .unwrap_or("std::collections::HashMap");
                 if entries.is_empty() {
-                    // Empty map literal: HashMap::new() has better type inference than from([])
-                    "std::collections::HashMap::new()".to_string()
+                    // `new()` infers better than `from([])` on an empty literal.
+                    format!("{}::new()", container)
                 } else {
                     let pairs: Vec<String> = entries.iter().map(|(k, v)| format!("({}, {})", self.gen_expression(k), self.gen_expression(v))).collect();
-                    format!("std::collections::HashMap::from([{}])", pairs.join(", "))
+                    format!("{}::from([{}])", container, pairs.join(", "))
                 }
             },
             Expression::Linq(q) => {

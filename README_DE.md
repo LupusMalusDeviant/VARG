@@ -106,23 +106,25 @@ Von den Programmen um die eigene Arbeit gemessene Zeit, Median aus 30 Laeufen au
 
 | Workload | Varg | C# | TypeScript | Python |
 |----------|-----:|---:|-----------:|-------:|
-| fib(35), rekursiv | **15.5 ms** | 53 ms | 53 ms | 700 ms |
-| 100k-Liste: bauen, filtern, mappen, summieren | **1 ms** | 12 ms | 4 ms | 9 ms |
-| JSON mit 1000 Records: bauen, parsen, neu serialisieren | 1 ms | 22 ms | **<1 ms** | 2 ms |
-| Wortfrequenz, 200k eigene Schluessel | 31 ms | 63 ms | 37 ms | **28 ms** |
+| fib(35), rekursiv | **16 ms** | 53 ms | 53 ms | 695.5 ms |
+| 100k-Liste: bauen, filtern, mappen, summieren | **1 ms** | 11 ms | 4 ms | 9 ms |
+| JSON mit 1000 Records: bauen, parsen, neu serialisieren | 1 ms | 21 ms | **<1 ms** | 2 ms |
+| Wortfrequenz, 200k eigene Schluessel | **15 ms** | 64 ms | 36 ms | 27 ms |
 
-Schneller als C# in allen vier. Die Wortfrequenz verliert es gegen Python, und der Grund ist nicht
-der naheliegende. In Phasen gemessen ist die Zaehlschleife sogar *schneller* als Pythons — 21 ms
-gegen 26 — Hashing und Map-Zugriffe sind also nicht der Rueckstand. Er steckt vollstaendig im
-abschliessenden Sortieren: 18 ms gegen 2 ms.
+Der schnellste der vier in allen vier Workloads. Die Wortfrequenz war der eine, den Varg verlor,
+und herauszufinden warum hat die Sprache geaendert, nicht den Benchmark.
 
-Pythons `dict` bewahrt die Einfuegereihenfolge, `sorted()` bekommt die Schluessel also in der
-Reihenfolge, in der sie gezaehlt wurden — voller langer aufsteigender Laeufe, die Timsort fast
-umsonst zusammenfuehrt. Rusts `HashMap` gibt sie in Hash-Reihenfolge heraus, praktisch gemischt.
-Rust sortiert *dieselben* Schluessel in Zaehlreihenfolge ebenfalls in 2 ms; auf wirklich
-gemischter Eingabe braucht Python 30 ms und Rust 18 ms, das Ergebnis dreht sich also um. Der
-Workload misst einen Unterschied darin, was eine Map ueber Reihenfolge zusichert, nicht einen
-Geschwindigkeitsunterschied.
+In Phasen gemessen war die Zaehlschleife nie das Problem — sie war schon schneller als Pythons.
+Der ganze Rueckstand steckte im abschliessenden Sortieren: 18 ms gegen 2. Pythons `dict` bewahrt
+die Einfuegereihenfolge, `sorted()` bekam die Schluessel also in Zaehlreihenfolge, voller langer
+aufsteigender Laeufe, die Timsort fast umsonst zusammenfuehrt; eine Varg-`map` gab sie in
+Hash-Reihenfolge heraus, praktisch gemischt. JavaScripts `Map` bewahrt sie ebenfalls, und C#s
+`Dictionary` tut es praktisch bei reinem Einfuegen. Varg hatte kein Gegenstueck, die vier
+Programme benutzten also keine vergleichbaren Strukturen.
+
+`ordered_map<K, V>` ist dieses Gegenstueck, und der Benchmark benutzt es jetzt: 31 ms auf 15.
+`map<K, V>` bleibt unveraendert und ist weiterhin die richtige Wahl, wenn die Reihenfolge egal ist
+— siehe [die Referenz](REFERENCE.md#ordered-maps).
 
 Varg und C# werden als gebaute Binaries gemessen, Python und Node ueber ihren Interpreter, weil
 diese Sprachen so benutzt werden. Die Bauzeit steht getrennt in

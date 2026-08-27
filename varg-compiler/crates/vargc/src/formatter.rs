@@ -662,6 +662,7 @@ impl VargFormatter {
             TypeNode::Array(inner) => format!("{}[]", self.format_type(inner)),
             TypeNode::List(inner) => format!("List<{}>", self.format_type(inner)),
             TypeNode::Map(k, v) => format!("map<{}, {}>", self.format_type(k), self.format_type(v)),
+            TypeNode::OrderedMap(k, v) => format!("ordered_map<{}, {}>", self.format_type(k), self.format_type(v)),
             TypeNode::Set(inner) => format!("set<{}>", self.format_type(inner)),
             TypeNode::Nullable(inner) => format!("{}?", self.format_type(inner)),
             TypeNode::Result(ok, err) => format!("Result<{}, {}>", self.format_type(ok), self.format_type(err)),
