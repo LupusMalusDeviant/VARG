@@ -1,0 +1,114 @@
+# Binaries for the three platforms, built on each of them.
+#
+# README.md tells people to download `varg-v<version>-linux-x64.tar.gz` from the Releases page.
+# Nothing produced it: the newest release was v1.0.0, whose assets were uploaded by hand, and no
+# workflow built anything. The promise was older than the thing promised.
+#
+# Each platform builds on its own runner rather than cross-compiling: a cross build needs the
+# target's linker and C toolchain, and mimalloc and bundled SQLite both compile C.
+#
+# Every job also *runs* what it built. A binary that compiles is not a binary that works, and
+# until now nothing had ever exercised vargc on macOS at all.
+name: Release binaries
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x64
+            exe: vargc
+            archive: tar.gz
+          - os: macos-latest
+            name: macos-arm64
+            exe: vargc
+            archive: tar.gz
+          - os: windows-latest
+            name: windows-x64
+            exe: vargc.exe
+            archive: zip
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: varg-compiler
+          key: release-${{ matrix.name }}
+
+      - name: Build the compiler
+        working-directory: varg-compiler
+        run: cargo build -p vargc --release --locked
+
+      - name: It runs on this platform
+        shell: bash
+        run: |
+          V="$PWD/varg-compiler/target/release/${{ matrix.exe }}"
+          "$V" | head -1
+          work="$(mktemp -d)"
+          cd "$work"
+          "$V" new mcp-server smoke
+          "$V" check smoke.varg | grep -q "no type errors"
+          "$V" new cli tool
+          "$V" check tool.varg | grep -q "no type errors"
+          echo 'agent Main { public void Run() { print "built on ${{ matrix.name }}"; } }' > hello.varg
+          "$V" run hello.varg | grep -q "built on ${{ matrix.name }}"
+
+      - name: Package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then version="dev-${GITHUB_SHA:0:7}"; fi
+          stage="varg-v${version}-${{ matrix.name }}"
+          mkdir -p "$stage"
+          cp "varg-compiler/target/release/${{ matrix.exe }}" "$stage/"
+          cp README.md CHANGELOG.md REFERENCE.md VARG_AGENT_GUIDE.md LICENSE "$stage/"
+          # Only the Varg. `examples/` also holds the Rust each one transpiles to, which is
+          # build output, not something anyone downloads a release to read.
+          mkdir -p "$stage/examples" "$stage/tools/varg-tutor"
+          cp examples/*.varg "$stage/examples/"
+          cp tools/varg-tutor/tutor.varg tools/varg-tutor/README.md "$stage/tools/varg-tutor/"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a -tzip "${stage}.zip" "$stage" >/dev/null
+            echo "asset=${stage}.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "${stage}.tar.gz" "$stage"
+            echo "asset=${stage}.tar.gz" >> "$GITHUB_ENV"
+          fi
+          ls -la "$stage".*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: varg-${{ matrix.name }}
+          path: ${{ env.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Draft the release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - run: ls -la assets
+      # A draft, not a publication: the artifacts are attached and someone decides to release
+      # them. Publishing is an outward-facing act and does not belong to a push.
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: assets/*
+          generate_release_notes: true

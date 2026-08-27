@@ -82,15 +82,26 @@ echo "Downloading: $DOWNLOAD_URL"
 # ── Step 5: Download and extract ─────────────────────────────────────────────
 
 TEMP_DIR="$(mktemp -d)"
-TEMP_ZIP="$TEMP_DIR/varg.zip"
 
-curl -sL "$DOWNLOAD_URL" -o "$TEMP_ZIP"
-
+# Unpack by what the file actually is. Every asset was run through `unzip` regardless, and the
+# Linux one has always been a .tar.gz — so this installer could never have worked on Linux, which
+# is the only platform it runs on.
+case "$DOWNLOAD_URL" in
+    *.tar.gz|*.tgz)
+        ARCHIVE="$TEMP_DIR/varg.tar.gz"
+        curl -sL "$DOWNLOAD_URL" -o "$ARCHIVE"
+        tar xzf "$ARCHIVE" -C "$TEMP_DIR"
+        ;;
+    *)
+        ARCHIVE="$TEMP_DIR/varg.zip"
+        curl -sL "$DOWNLOAD_URL" -o "$ARCHIVE"
+        (cd "$TEMP_DIR" && unzip -q "$ARCHIVE")
+        ;;
+esac
 cd "$TEMP_DIR"
-unzip -q "$TEMP_ZIP"
 
 # Find the vargc binary (may be at root or in a subdirectory)
-VARGC_BIN="$(find "$TEMP_DIR" -name "vargc" -not -name "*.zip" | head -1)"
+VARGC_BIN="$(find "$TEMP_DIR" -name "vargc" -type f | head -1)"
 
 if [ -z "$VARGC_BIN" ]; then
     echo "Error: vargc binary not found in the downloaded archive."
