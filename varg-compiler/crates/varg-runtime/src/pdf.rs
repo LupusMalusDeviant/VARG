@@ -5,7 +5,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use printpdf::*;
-use std::io::BufWriter;
+
 use std::sync::{Arc, Mutex};
 
 const PAGE_WIDTH_MM: f32 = 210.0;

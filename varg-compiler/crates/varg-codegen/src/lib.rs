@@ -737,11 +737,13 @@ impl RustGenerator {
 
                     // Method-level Annotations
                     for ann in &method.annotations {
-                        if ann.name == "McpTool" {
-                            let desc = ann.values.join(" ");
-                            out.push_str(&format!("    pub fn {}_mcp_schema() -> String {{\n        r#\"{{ \"name\": \"{}\", \"description\": \"{}\" }}\"#.to_string()\n    }}\n",
-                                method.name, method.name, desc));
-                        } else if ann.name == "RateLimit" {
+                        // `@[McpTool]` used to emit a `<Name>_mcp_schema()` here that reported only the tool's
+                        // name and description — no parameters. Nothing ever called it: the schema a program
+                        // actually advertises is built by vargc from the method signature and carries both
+                        // `inputSchema` and `outputSchema`, which is what REFERENCE.md describes. The function
+                        // sat in every generated program behind `allow(dead_code)`, claiming to be the tool
+                        // schema and being wrong about it.
+                        if ann.name == "RateLimit" {
                             // Accepts BOTH the named form `@[RateLimit(calls=10, window=1000)]` and
                             // the positional form `@[RateLimit("10", "60000")]` documented in
                             // REFERENCE.md. Previously only the named form was recognised, so the

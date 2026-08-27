@@ -1902,7 +1902,9 @@ context with the user turn and no assistant turn, so a retry does not replay a p
 ```csharp
 // Structured output (JSON schema enforcement)
 var schema = "{\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}}}";
-var json_out = llm_structured(prompt, schema, 3);      // (prompt, schema_json, retries) → string (JSON)
+// Fallible: exhausting the retries used to hand back `{}`, which a model may legitimately
+// produce, so nothing could tell a model that never answered from one that answered with nothing.
+var json_out = llm_structured(prompt, schema, 3)?;     // (prompt, schema_json, retries) → Result<string, Error>
 
 // Streaming (SSE chunks)
 var stream = llm_stream(prompt, "gpt-4o");             // (prompt, model) → SseHandle
@@ -1919,7 +1921,8 @@ var reply = llm_chat_cached(ctx, prompt, "gpt-4o");    // string
 var tuned = llm_chat_opts(ctx, prompt, "gpt-4o", 0.2, 512);
 
 // Structured output naming the provider and model rather than taking the defaults.
-var shaped = llm_structured_schema("openai", "gpt-4o", schema, prompt);
+// Fallible for the same reason: it used to return the raw reply where JSON was expected.
+var shaped = llm_structured_schema("openai", "gpt-4o", schema, prompt)?;
 var chunk = sse_read(stream);                          // string chunk
 
 // Batch embeddings
@@ -1995,6 +1998,13 @@ a variable holding a string map are both still accepted.
 
 `exe_path()` returns the running binary, which is what lets a program start itself in server
 mode — the pattern `golden/progs/mcp_server_mode.varg` uses to test both halves at once.
+
+Every request has a deadline. A server that stops answering used to leave the caller blocked
+forever, and with it the agent: the framing loop was bounded by a message count, which cannot
+bound a server that sends no messages. The wait is **30 seconds** by default and
+`VARG_MCP_TIMEOUT_SECS` changes it — raise it for a server that is legitimately slow rather than
+stuck. A timeout and a closed pipe are reported differently, because they are different
+failures.
 
 ### Rate Limiting
 

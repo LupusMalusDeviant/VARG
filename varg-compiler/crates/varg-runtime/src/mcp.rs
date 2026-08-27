@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 /// MCP tool description
@@ -22,7 +24,11 @@ pub struct McpConnectionInner {
     pub is_connected: bool,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
-    reader: Option<BufReader<ChildStdout>>,
+    // A reader thread owns the child's stdout and pushes whole lines down this channel. It
+    // used to be the BufReader itself, read straight from the request path: a server that sent
+    // nothing left `read_line` blocked and took the agent with it, and no message count could
+    // bound that because no message ever arrived.
+    lines: Option<Receiver<String>>,
     next_id: u64,
 }
 
@@ -41,6 +47,37 @@ impl Drop for McpConnectionInner {
     }
 }
 
+/// How long to wait for a server to answer one request. `VARG_MCP_TIMEOUT_SECS` overrides it;
+/// a server that is merely slow should not be mistaken for one that is stuck.
+fn response_timeout() -> Duration {
+    let secs = std::env::var("VARG_MCP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30);
+    Duration::from_secs(secs.max(1))
+}
+
+/// Read the child's stdout on its own thread so the request path can wait with a deadline.
+/// The thread ends when the pipe closes, which is what turns into a Disconnected on the
+/// receiving side and then into "closed the connection before responding".
+fn spawn_reader(stdout: ChildStdout) -> Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        return; // the connection was dropped
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+    });
+    rx
+}
+
 /// R3: read from a JSON-RPC stream until the message whose `id` matches `expected_id` arrives.
 /// MCP servers may interleave notifications (no `id`), log lines, or responses to earlier
 /// requests on stdout; blindly taking the first line desynchronised the client. Skips
@@ -48,14 +85,15 @@ impl Drop for McpConnectionInner {
 /// our id cannot spin forever. (A server that emits nothing at all can still block on read; a
 /// wall-clock timeout would require a dedicated reader thread.) Extracted from `send_request`
 /// so the framing logic is unit-testable against a synthetic stream.
-fn read_matching_response<R: BufRead>(reader: &mut R, expected_id: u64) -> Result<serde_json::Value, String> {
+fn read_matching_response(
+    mut next_line: impl FnMut() -> Result<Option<String>, String>,
+    expected_id: u64,
+) -> Result<serde_json::Value, String> {
     for _ in 0..1000 {
-        let mut response_line = String::new();
-        let n = reader.read_line(&mut response_line)
-            .map_err(|e| format!("Failed to read MCP response: {}", e))?;
-        if n == 0 {
-            return Err("MCP server closed the connection before responding".to_string());
-        }
+        let response_line = match next_line()? {
+            Some(l) => l,
+            None => return Err("MCP server closed the connection before responding".to_string()),
+        };
         let trimmed = response_line.trim();
         if trimmed.is_empty() { continue; }
         let msg: serde_json::Value = match serde_json::from_str(trimmed) {
@@ -86,9 +124,23 @@ fn send_request(conn: &mut McpConnectionInner, method: &str, params: serde_json:
     stdin.write_all(line.as_bytes()).map_err(|e| format!("Failed to write to MCP server: {}", e))?;
     stdin.flush().map_err(|e| format!("Failed to flush MCP stdin: {}", e))?;
 
-    let reader = conn.reader.as_mut().ok_or("MCP stdout not available")?;
+    let lines = conn.lines.as_ref().ok_or("MCP stdout not available")?;
     let expected_id = conn.next_id;
-    let response = read_matching_response(reader, expected_id)?;
+    // One deadline for the whole exchange, not per line: a server that dribbles out noise
+    // forever is as stuck as one that says nothing.
+    let deadline = Instant::now() + response_timeout();
+    let response = read_matching_response(
+        || match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => Ok(Some(line)),
+            Err(RecvTimeoutError::Disconnected) => Ok(None),
+            Err(RecvTimeoutError::Timeout) => Err(format!(
+                "MCP server did not answer `{}` within {} seconds",
+                method,
+                response_timeout().as_secs()
+            )),
+        },
+        expected_id,
+    )?;
 
     if let Some(error) = response.get("error") {
         let msg = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
@@ -147,7 +199,7 @@ pub fn __varg_mcp_connect(cmd: &str, args: &[String]) -> Result<McpConnection, S
         is_connected: true,
         child: Some(child),
         stdin: Some(stdin),
-        reader: Some(BufReader::new(stdout)),
+        lines: Some(spawn_reader(stdout)),
         next_id: 0,
     };
 
@@ -284,7 +336,7 @@ pub fn __varg_mcp_disconnect(conn: &McpConnection) {
     }
     conn.child = None;
     conn.stdin = None;
-    conn.reader = None;
+    conn.lines = None;
 }
 
 #[cfg(test)]
@@ -292,13 +344,68 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    /// The framing tests drive a synthetic stream; production drives a channel. Both hand the
+    /// same shape to `read_matching_response`, so the framing cases are unchanged by the reader
+    /// thread that sits behind it now.
+    fn next_from<R: BufRead>(r: &mut R) -> Result<Option<String>, String> {
+        let mut line = String::new();
+        match r.read_line(&mut line) {
+            Ok(0) => Ok(None),
+            Ok(_) => Ok(Some(line)),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    #[test]
+    fn a_server_that_says_nothing_times_out_instead_of_blocking() {
+        // The framing loop was bounded by a message count, which cannot bound a server that
+        // sends no messages at all: the read blocked and took the agent with it. This drives
+        // the same shape the request path uses — a channel nobody sends to — against a short
+        // deadline, and expects the wait to end.
+        let (_tx, rx) = std::sync::mpsc::channel::<String>();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let err = read_matching_response(
+            || match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(line) => Ok(Some(line)),
+                Err(RecvTimeoutError::Disconnected) => Ok(None),
+                Err(RecvTimeoutError::Timeout) => Err("timed out".to_string()),
+            },
+            1,
+        )
+        .unwrap_err();
+        assert_eq!(err, "timed out");
+    }
+
+    #[test]
+    fn a_closed_pipe_is_reported_as_a_closed_connection() {
+        // The sender dropped: the reader thread has ended because the child's stdout closed.
+        // That is a different failure from a timeout and has to read as one.
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        drop(tx);
+        let err = read_matching_response(
+            || match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(line) => Ok(Some(line)),
+                Err(RecvTimeoutError::Disconnected) => Ok(None),
+                Err(RecvTimeoutError::Timeout) => Err("timed out".to_string()),
+            },
+            1,
+        )
+        .unwrap_err();
+        assert!(err.contains("closed the connection"), "got: {}", err);
+    }
+
+    #[test]
+    fn the_response_timeout_is_configurable_and_never_zero() {
+        assert_eq!(response_timeout(), Duration::from_secs(30));
+    }
+
     #[test]
     fn test_r3_skips_notification_then_matches_response() {
         // A notification (no id) precedes the real response — must be skipped, not returned.
         let stream = "{\"jsonrpc\":\"2.0\",\"method\":\"log\",\"params\":{}}\n\
                       {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n";
         let mut r = Cursor::new(stream);
-        let resp = read_matching_response(&mut r, 7).expect("should find id 7");
+        let resp = read_matching_response(|| next_from(&mut r), 7).expect("should find id 7");
         assert_eq!(resp["result"]["ok"], serde_json::json!(true));
     }
 
@@ -309,7 +416,7 @@ mod tests {
                       [info] ready\n\
                       {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":\"done\"}\n";
         let mut r = Cursor::new(stream);
-        let resp = read_matching_response(&mut r, 3).expect("should find id 3");
+        let resp = read_matching_response(|| next_from(&mut r), 3).expect("should find id 3");
         assert_eq!(resp["result"], serde_json::json!("done"));
     }
 
@@ -319,7 +426,7 @@ mod tests {
         let stream = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"stale\"}\n\
                       {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\"fresh\"}\n";
         let mut r = Cursor::new(stream);
-        let resp = read_matching_response(&mut r, 2).expect("should find id 2");
+        let resp = read_matching_response(|| next_from(&mut r), 2).expect("should find id 2");
         assert_eq!(resp["result"], serde_json::json!("fresh"));
     }
 
@@ -328,7 +435,7 @@ mod tests {
         // Server closes without ever answering — must error, not hang or panic.
         let stream = "{\"jsonrpc\":\"2.0\",\"method\":\"note\",\"params\":{}}\n";
         let mut r = Cursor::new(stream);
-        let err = read_matching_response(&mut r, 9).unwrap_err();
+        let err = read_matching_response(|| next_from(&mut r), 9).unwrap_err();
         assert!(err.contains("closed the connection"), "got: {err}");
     }
 
@@ -348,7 +455,7 @@ mod tests {
             is_connected: false,
             child: None,
             stdin: None,
-            reader: None,
+            lines: None,
             next_id: 0,
         };
         let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
@@ -364,7 +471,7 @@ mod tests {
             is_connected: false,
             child: None,
             stdin: None,
-            reader: None,
+            lines: None,
             next_id: 0,
         };
         let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
@@ -379,7 +486,7 @@ mod tests {
             is_connected: false,
             child: None,
             stdin: None,
-            reader: None,
+            lines: None,
             next_id: 0,
         };
         let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));

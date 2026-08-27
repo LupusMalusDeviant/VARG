@@ -340,7 +340,15 @@ where
 
 /// Call the LLM and force JSON output matching `schema_json`.
 /// Retries up to `retries` times if the response is not valid JSON.
-pub fn __varg_llm_structured(prompt: &str, schema_json: &str, retries: i64) -> String {
+///
+/// Fallible. Exhausting the retries used to return `"{}"` — an empty JSON object, which a model
+/// may legitimately produce, so nothing downstream could tell a model that never answered from
+/// one that answered with nothing. The error says which of the two happened.
+pub fn __varg_llm_structured(
+    prompt: &str,
+    schema_json: &str,
+    retries: i64,
+) -> Result<String, String> {
     let provider = LlmProvider::detect();
     let system_msg = format!(
         "Respond with ONLY a valid JSON object matching this exact schema. No markdown fences, no explanation:\n{}",
@@ -352,13 +360,15 @@ pub fn __varg_llm_structured(prompt: &str, schema_json: &str, retries: i64) -> S
     ])
     .to_string();
     let body = provider.build_body(&provider.default_model(), &messages_json, false);
+    let mut last_failure = String::from("no attempt was made");
 
     for attempt in 0..retries.max(1) {
         // A request that never reached the provider is not a candidate answer: retry it rather
         // than feeding the transport error into the JSON extraction below.
         let raw = match __varg_fetch(&provider.chat_endpoint(), "POST", provider.headers(), &body) {
             Ok(raw) => raw,
-            Err(_) => {
+            Err(e) => {
+                last_failure = format!("the request never reached the provider: {}", e);
                 if attempt < retries - 1 {
                     std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
                 }
@@ -368,20 +378,28 @@ pub fn __varg_llm_structured(prompt: &str, schema_json: &str, retries: i64) -> S
         let content = provider.parse_response(&raw).unwrap_or(raw);
         // Accept if it parses as a JSON object
         if serde_json::from_str::<serde_json::Value>(&content).is_ok() {
-            return content;
+            return Ok(content);
         }
         // Try to extract a JSON object embedded in surrounding text
         if let (Some(s), Some(e)) = (content.find('{'), content.rfind('}')) {
             let candidate = &content[s..=e];
             if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
-                return candidate.to_string();
+                return Ok(candidate.to_string());
             }
         }
+        last_failure = format!(
+            "the reply was not JSON and contained none: {}",
+            content.chars().take(200).collect::<String>()
+        );
         if attempt < retries - 1 {
             std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
         }
     }
-    "{}".to_string()
+    Err(format!(
+        "llm_structured gave up after {} attempt(s): {}",
+        retries.max(1),
+        last_failure
+    ))
 }
 
 /// Wave 37: Generic typed variant — llm_structured<T>(provider, model, prompt) -> Result<T, String>
@@ -393,7 +411,7 @@ pub fn __varg_llm_structured(prompt: &str, schema_json: &str, retries: i64) -> S
 /// Callers handle failure with Varg's `?` / `or` / `try` instead.
 pub fn __varg_llm_structured_typed<T: serde::de::DeserializeOwned>(provider: &str, model: &str, prompt: &str) -> Result<T, String> {
     let _ = (provider, model); // reserved for future provider/model routing
-    let json_str = __varg_llm_structured(prompt, "", 3);
+    let json_str = __varg_llm_structured(prompt, "", 3)?;
     serde_json::from_str::<T>(&json_str).map_err(|e| {
         format!("llm_structured: could not deserialize response as {}: {} (raw: {})",
             std::any::type_name::<T>(), e, json_str)
@@ -602,12 +620,15 @@ pub fn build_anthropic_structured_request(model: &str, schema_json: &str, prompt
 /// - **OpenAI / GPT**: uses `response_format: {type: "json_schema", …}`
 /// - **Anthropic / Claude**: uses tool-use forced call
 /// - **Ollama / others**: falls back to `__varg_llm_structured`
+/// Fallible for the same reason as `__varg_llm_structured`: it used to return the raw response
+/// text when the reply held no structured output, so a caller parsing it as JSON received prose,
+/// or a provider error message, with nothing saying so.
 pub fn __varg_llm_structured_schema(
     provider_hint: &str,
     model: &str,
     schema_json: &str,
     prompt: &str,
-) -> String {
+) -> Result<String, String> {
     let provider = LlmProvider::detect();
     let is_openai = provider == LlmProvider::OpenAI
         || provider_hint.to_lowercase().contains("openai")
@@ -631,11 +652,12 @@ pub fn __varg_llm_structured_schema(
             &body_str,
         ) {
             Ok(raw) => raw,
-            Err(e) => return e,
+            Err(e) => return Err(e),
         };
-        return LlmProvider::OpenAI
-            .parse_response(&raw)
-            .unwrap_or(raw);
+        return LlmProvider::OpenAI.parse_response(&raw).ok_or_else(|| {
+            format!("the OpenAI reply held no message content: {}",
+                raw.chars().take(200).collect::<String>())
+        });
     }
 
     if is_anthropic {
@@ -646,26 +668,28 @@ pub fn __varg_llm_structured_schema(
         };
         let body = build_anthropic_structured_request(&effective_model, schema_json, prompt);
         let body_str = serde_json::to_string(&body).unwrap_or_default();
-        let raw = fetch_or_error_text(
+        let raw = __varg_fetch(
             &LlmProvider::Anthropic.chat_endpoint(),
             "POST",
             LlmProvider::Anthropic.headers(),
             &body_str,
-        );
+        )?;
         // Extract tool_use input from the response.
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
             if let Some(content_arr) = json.get("content").and_then(|c| c.as_array()) {
                 for block in content_arr {
                     if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                         if let Some(input) = block.get("input") {
-                            return serde_json::to_string(input)
-                                .unwrap_or_else(|_| "{}".to_string());
+                            return serde_json::to_string(input).map_err(|e| e.to_string());
                         }
                     }
                 }
             }
         }
-        return raw;
+        return Err(format!(
+            "the Anthropic reply held no tool_use block: {}",
+            raw.chars().take(200).collect::<String>()
+        ));
     }
 
     // Ollama / unknown: prompt-engineering fallback.

@@ -3231,7 +3231,10 @@ impl TypeChecker {
                 } else if method_name == "llm_structured" {
                     if args.len() != 3 { return Err(TypeError::TypeMismatch { expected: "3 arguments (prompt, schema_json, retries)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::LlmAccess, "llm_structured")?;
-                    Ok(TypeNode::String)
+                    // Fallible: exhausting the retries used to hand back `{}`, an empty JSON
+                    // object a model may legitimately produce — so nothing could tell a model
+                    // that never answered from one that answered with nothing.
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "llm_stream" {
                     if args.len() != 2 { return Err(TypeError::TypeMismatch { expected: "2 arguments (prompt, model)".to_string(), found: format!("{} arguments", args.len()) }); }
                     self.check_ocap(&CapabilityType::LlmAccess, "llm_stream")?;
@@ -3565,7 +3568,9 @@ impl TypeChecker {
                     Ok(TypeNode::String)
                 } else if method_name == "llm_structured_schema" {
                     if args.len() != 4 { return Err(TypeError::TypeMismatch { expected: "4 arguments (provider, model, schema_json, prompt)".to_string(), found: format!("{} arguments", args.len()) }); }
-                    Ok(TypeNode::String)
+                    // Fallible for the same reason: it used to return the raw reply where JSON
+                    // was expected, so a caller parsing it received prose or a provider error.
+                    Ok(TypeNode::Result(Box::new(TypeNode::String), Box::new(TypeNode::Error)))
                 } else if method_name == "llm_chat_opts" {
                     if args.len() != 5 { return Err(TypeError::TypeMismatch { expected: "5 arguments (ctx, prompt, model, temperature, max_tokens)".to_string(), found: format!("{} arguments", args.len()) }); }
                     Ok(TypeNode::String)
@@ -4090,6 +4095,31 @@ impl TypeChecker {
                     }
                 }
                 let caller_ty = self.infer_expression_type(caller)?;
+                // A field read straight off a fallible or optional value. This type-checked and
+                // reached rustc as "no field `x` on type `Result<Point, String>`", pointing at
+                // generated Rust for a mistake the author made in Varg. `print` and string
+                // interpolation already refuse a Result for the same reason; a field read did not.
+                match &caller_ty {
+                    TypeNode::Result(_, _) => {
+                        return Err(TypeError::TypeMismatch {
+                            expected: format!(
+                                "a value to read `{}` from — handle the Result first with `?` or `or`",
+                                property_name
+                            ),
+                            found: format!("{:?}", caller_ty),
+                        });
+                    }
+                    TypeNode::Nullable(_) => {
+                        return Err(TypeError::TypeMismatch {
+                            expected: format!(
+                                "a value to read `{}` from — it may be absent, so use `?.` or `or`",
+                                property_name
+                            ),
+                            found: format!("{:?}", caller_ty),
+                        });
+                    }
+                    _ => {}
+                }
                 // Hardcoded built-in properties
                 if *property_name == "text" && caller_ty == TypeNode::Prompt {
                     return Ok(TypeNode::String);

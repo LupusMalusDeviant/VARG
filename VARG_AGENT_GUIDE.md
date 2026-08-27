@@ -288,7 +288,9 @@ var triple = (true, 42, "ok");
 ### Generic Call
 ```csharp
 // funcName<Type>(args)
-var report = llm_structured<WeatherReport>(prompt, schema, 2);
+// The three arguments are (provider, model, prompt). Written as (prompt, schema, retries) it
+// still had three of them and still compiled — it just sent the prompt as the provider name.
+var report = llm_structured<WeatherReport>("", "", prompt)?;
 ```
 
 ### Named Arguments
@@ -801,7 +803,9 @@ struct WeatherReport {
     string condition;
 }
 
-var report = llm_structured<WeatherReport>("", "", prompt, llm);
+// (provider, model, prompt) — three arguments, and a capability token is never one of them.
+// The reply is model-generated and may not conform, so the call is fallible.
+var report = llm_structured<WeatherReport>("", "", prompt)?;
 print $"{report.city}: {report.temperature}°C";
 ```
 
