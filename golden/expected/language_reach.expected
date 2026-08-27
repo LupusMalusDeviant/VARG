@@ -1,0 +1,13 @@
+OK   fn_as_parameter
+OK   fn_as_return
+OK   fn_in_a_field
+OK   fn_of_no_arguments
+OK   chain_present
+OK   chain_absent
+OK   chain_stays_optional
+OK   chain_on_find
+OK   chain_on_missing_find
+OK   operator_add
+OK   operator_sub
+OK   operator_mul
+OK   operands_survive

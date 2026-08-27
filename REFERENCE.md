@@ -713,6 +713,38 @@ var pair = (42, "hello");
 
 ---
 
+## Function Types
+
+A function has a type, so it can be a parameter, a return value, a field or a variable:
+`(int, string) => bool`, and `() => string` for one that takes nothing.
+
+```csharp
+fn apply(int v, (int) => int f) -> int {
+    return f(v);
+}
+
+fn adder(int n) -> (int) => int {
+    return (int x) => x + n;      // carries `n` with it
+}
+
+struct Holder { (int) => int step; }
+
+agent Main {
+    public void Run() {
+        print $"{apply(4, (int x) => x * 2)}";      // 8
+        var plus3 = adder(3);
+        print $"{plus3(4)}";                        // 7
+        var h = Holder { step: (int x) => x + 1 };
+        print $"{h.step(41)}";                      // 42
+    }
+}
+```
+
+A struct holding a function cannot be cloned or serialized — a function is neither — but it still
+prints, showing its other fields and the function as `<function>`.
+
+---
+
 ## Closures & Lambdas
 
 ```csharp
@@ -1007,6 +1039,62 @@ You are a helpful assistant.
 Respond in JSON format.
 """;
 ```
+
+---
+
+## Optional Chaining
+
+`?.` reaches through a value that may not be there. If there is nothing, the result is nothing —
+no failure, and no need to resolve the value first just to look inside it. The result is itself
+optional, so it still needs `or` before it can be used as a plain value.
+
+```csharp
+agent Main {
+    public void Run() {
+        var m = {"a": "hello"};
+
+        print m["a"]?.to_upper() or "<none>";       // HELLO
+        print m["b"]?.to_upper() or "<none>";       // <none>
+        print $"{m["a"]?.len() or 0}";              // 5
+
+        var xs = [1, 2, 3];
+        print $"{xs.find((int v) => v > 1)?.to_string() or "<none>"}";   // 2
+        print $"{xs.find((int v) => v > 9)?.to_string() or "<none>"}";   // <none>
+    }
+}
+```
+
+Writing `?.` on a value that is not optional is refused: it would say nothing, and accepting it
+would hide a wrong assumption about the type.
+
+---
+
+## Operators on Your Own Types
+
+An operator on a type of your own is that type's own method. Define `add`, `sub`, `mul`, `div` or
+`rem` taking one argument, and the operator works:
+
+```csharp
+struct V { int x; }
+
+impl V {
+    public fn add(V o) -> V { return V { x: self.x + o.x }; }
+    public fn sub(V o) -> V { return V { x: self.x - o.x }; }
+}
+
+agent Main {
+    public void Run() {
+        var a = V { x: 3 };
+        var b = V { x: 2 };
+        print $"{(a + b).x}";      // 5
+        print $"{(a - b).x}";      // 1
+        print $"{a.x}";            // 3 — the operands are copied, not consumed
+    }
+}
+```
+
+Using an operator on a type that does not define the method is refused, and the message names the
+method to write.
 
 ---
 

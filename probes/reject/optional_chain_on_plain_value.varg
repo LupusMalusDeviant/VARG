@@ -1,0 +1,9 @@
+// @probe reject: an optional
+// `?.` is for reaching through a value that may not be there. On a plain value it says nothing,
+// and silently accepting it would hide the reader's wrong assumption about the type.
+agent Main {
+    public void Run() {
+        var s = "hello";
+        print s?.to_upper() or "<none>";
+    }
+}

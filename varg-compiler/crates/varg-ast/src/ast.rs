@@ -252,6 +252,16 @@ pub enum Expression {
 
     // Plan 24: Error Propagation
     TryPropagate(Box<Expression>),  // expr? — auto-propagate Result error
+    /// `a?.b` and `a?.m(args)` — reach through a value that may not be there.
+    ///
+    /// The result stays nullable: an absent value yields an absent result rather than a
+    /// failure, which is the whole point of writing it this way.
+    OptionalChain {
+        caller: Box<Expression>,
+        member: String,
+        /// `None` for a property, `Some(args)` for a call.
+        args: Option<Vec<Expression>>,
+    },
     OrDefault {
         expr: Box<Expression>,
         default: Box<Expression>,

@@ -1,0 +1,58 @@
+/// Things every language it is compared against could do, and Varg could not.
+///
+/// A function had no type, so it could be written only where it was called. Reaching through a
+/// value that might not be there meant resolving it first, even when the answer for an absent
+/// value is the same absent value. And an operator on a user-defined type type-checked and then
+/// failed in rustc.
+
+struct V { int x; }
+
+impl V {
+    public fn add(V o) -> V { return V { x: self.x + o.x }; }
+    public fn sub(V o) -> V { return V { x: self.x - o.x }; }
+    public fn mul(V o) -> V { return V { x: self.x * o.x }; }
+}
+
+struct Holder { (int) => int step; }
+
+fn check(string name, string got, string want) -> string {
+    if got == want { return "OK   " + name; }
+    return "FAIL " + name + ": got `" + got + "` want `" + want + "`";
+}
+
+// A function as a parameter.
+fn apply(int v, (int) => int f) -> int { return f(v); }
+
+// A function as a return value, carrying what it captured.
+fn adder(int n) -> (int) => int { return (int x) => x + n; }
+
+// A function taking nothing.
+fn run_it(() => string f) -> string { return f(); }
+
+agent Main {
+    public void Run() {
+        // ── Functions are values ─────────────────────────────────────
+        print check("fn_as_parameter", $"{apply(4, (int x) => x * 2)}", "8");
+        var plus3 = adder(3);
+        print check("fn_as_return", $"{plus3(4)}", "7");
+        print check("fn_in_a_field", $"{Holder { step: (int x) => x + 1 }.step(41)}", "42");
+        print check("fn_of_no_arguments", run_it(() => "done"), "done");
+
+        // ── Reaching through what may not be there ───────────────────
+        var m = {"a": "hello"};
+        print check("chain_present", m["a"]?.to_upper() or "<none>", "HELLO");
+        print check("chain_absent", m["b"]?.to_upper() or "<none>", "<none>");
+        print check("chain_stays_optional", $"{m["a"]?.len() or 0}", "5");
+        var xs = [1, 2, 3];
+        print check("chain_on_find", $"{xs.find((int v) => v > 1)?.to_string() or "<none>"}", "2");
+        print check("chain_on_missing_find", $"{xs.find((int v) => v > 9)?.to_string() or "<none>"}", "<none>");
+
+        // ── Operators on a type of one's own ─────────────────────────
+        var a = V { x: 3 };
+        var b = V { x: 2 };
+        print check("operator_add", $"{(a + b).x}", "5");
+        print check("operator_sub", $"{(a - b).x}", "1");
+        print check("operator_mul", $"{(a * b).x}", "6");
+        print check("operands_survive", $"{a.x} {b.x}", "3 2");
+    }
+}

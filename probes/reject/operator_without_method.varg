@@ -1,0 +1,12 @@
+// @probe reject: add
+// An operator on a user-defined type is that type's own method. Without it there is nothing to
+// call, and the mistake used to reach rustc as "cannot add `W` to `W`" against generated code.
+struct W { int x; }
+
+agent Main {
+    public void Run() {
+        var a = W { x: 3 };
+        var b = W { x: 2 };
+        print $"{(a + b).x}";
+    }
+}

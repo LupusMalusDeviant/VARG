@@ -138,6 +138,9 @@ pub struct RustGenerator {
     known_functions: HashSet<String>,
     /// Contract method names for trait impl generation
     known_contract_methods: HashMap<String, Vec<String>>,
+    /// Fields of every struct and agent, so a field's declared type is available at a use site.
+    /// Needed to call a field that holds a function and to box a lambda put into one.
+    field_types: HashMap<String, Vec<FieldDecl>>,
     /// Track string-typed variables for correct += codegen
     string_vars: HashSet<String>,
     /// Plan 46: Source map - current varg source line counter
@@ -172,6 +175,9 @@ pub struct RustGenerator {
     known_method_params: HashMap<String, Option<Vec<FieldDecl>>>,
     /// Named-arg support: fn_name → ordered param declarations (name + type + default)
     known_function_params: HashMap<String, Vec<FieldDecl>>,
+    /// Declared return type of every standalone function, so `var f = adder(3);` records that
+    /// `f` holds a function and the call `f(4)` can be generated as one.
+    known_function_returns: HashMap<String, TypeNode>,
     /// Method names defined in user impl blocks — these take priority over builtin dispatch
     user_impl_methods: HashSet<String>,
     /// Whether we are currently generating the body of a TryCatch try block
@@ -231,6 +237,7 @@ impl RustGenerator {
             use_async: false,
             known_functions: HashSet::new(),
             known_contract_methods: HashMap::new(),
+            field_types: HashMap::new(),
             string_vars: HashSet::new(),
             var_types: HashMap::new(),
             varg_line_counter: 0,
@@ -246,6 +253,7 @@ impl RustGenerator {
             known_method_defaults: HashMap::new(),
             known_method_params: HashMap::new(),
             known_function_params: HashMap::new(),
+            known_function_returns: HashMap::new(),
             user_impl_methods: HashSet::new(),
             in_try_block: false,
             trace_method: false,
@@ -291,12 +299,24 @@ impl RustGenerator {
                 self.known_functions.insert(f.name.clone());
                 // Named-arg support: store full param list for reordering
                 self.known_function_params.insert(f.name.clone(), f.params.clone());
+                if let Some(ref rt) = f.return_ty {
+                    self.known_function_returns.insert(f.name.clone(), rt.clone());
+                }
                 let defaults: Vec<Option<Expression>> = f.params.iter()
                     .map(|p| p.default_value.clone())
                     .collect();
                 if defaults.iter().any(|d| d.is_some()) {
                     self.known_function_defaults.insert(f.name.clone(), defaults);
                 }
+            }
+            match item {
+                Item::Struct(st) => {
+                    self.field_types.insert(st.name.clone(), st.fields.clone());
+                }
+                Item::Agent(a) => {
+                    self.field_types.insert(a.name.clone(), a.fields.clone());
+                }
+                _ => {}
             }
             // Collect contract method names for trait impl filtering
             if let Item::Contract(c) = item {
@@ -511,12 +531,44 @@ impl RustGenerator {
             Item::Struct(s) => {
                 let vis = if s.is_public { "pub " } else { "" };
                 let type_params = if s.type_params.is_empty() { "".to_string() } else { format!("<{}>", s.type_params.join(", ")) };
-                let mut out = format!("#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]\n{}struct {}{} {{\n", vis, s.name, type_params);
+                // A `Box<dyn Fn>` is none of Debug, Clone, Serialize or Deserialize, so a
+                // struct holding a function cannot derive them — rustc reported four missing
+                // trait bounds about a type the author never wrote.
+                let holds_a_function = s.fields.iter().any(|f| matches!(f.ty, TypeNode::Func(..)));
+                let derives = if holds_a_function {
+                    ""
+                } else {
+                    "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]\n"
+                };
+                let mut out = format!("{}{}struct {}{} {{\n", derives, vis, s.name, type_params);
                 for field in &s.fields {
                     // MVP: all generated fields are pub to the struct
                     out.push_str(&format!("    pub {}: {},\n", field.name, self.gen_type(&field.ty)));
                 }
                 out.push_str("}\n");
+                // Printing goes through Debug, which the derive could not supply here. Written
+                // out instead, so a struct holding a function still prints — its other fields as
+                // themselves, the function as what it is.
+                if holds_a_function {
+                    out.push_str(&format!(
+                        "impl std::fmt::Debug for {} {{\n    fn fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        __f.debug_struct({:?})\n",
+                        s.name, s.name
+                    ));
+                    for field in &s.fields {
+                        if matches!(field.ty, TypeNode::Func(..)) {
+                            out.push_str(&format!(
+                                "            .field({:?}, &\"<function>\")\n",
+                                field.name
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "            .field({:?}, &self.{})\n",
+                                field.name, field.name
+                            ));
+                        }
+                    }
+                    out.push_str("            .finish()\n    }\n}\n");
+                }
                 // a2: emit a __VargFmt impl (via Debug) so `print`/interpolation render this
                 // type cleanly through the same path as strings/collections.
                 out.push_str(&Self::vargfmt_impl(&s.name, &s.type_params));
@@ -892,6 +944,37 @@ impl RustGenerator {
             }
             // Wave 13: impl blocks for structs
             Item::Impl { type_name, type_params, methods } => {
+                // A type that defines `add`, `sub`, `mul`, `div` or `rem` taking one argument
+                // can be written with the operator. `a + b` on such a type type-checked and then
+                // failed in rustc with "cannot add `V` to `V`" — an error about generated code
+                // for something the front end had accepted. The trait is written out here and
+                // forwards to the inherent method, which stays the one definition.
+                const OPERATORS: &[(&str, &str)] = &[
+                    ("add", "Add"), ("sub", "Sub"), ("mul", "Mul"), ("div", "Div"), ("rem", "Rem"),
+                ];
+                let mut operator_impls = String::new();
+                if type_params.is_empty() {
+                    for method in methods {
+                        let Some((_, trait_name)) =
+                            OPERATORS.iter().find(|(n, _)| *n == method.name)
+                        else {
+                            continue;
+                        };
+                        if method.args.len() != 1 {
+                            continue;
+                        }
+                        let rhs = self.gen_type(&method.args[0].ty);
+                        let out_ty = method
+                            .return_ty
+                            .as_ref()
+                            .map(|t| self.gen_type(t))
+                            .unwrap_or_else(|| type_name.clone());
+                        operator_impls.push_str(&format!(
+                            "impl std::ops::{t}<{rhs}> for {ty} {{\n    type Output = {out};\n    fn {m}(mut self, __rhs: {rhs}) -> {out} {{\n        {ty}::{m}(&mut self, __rhs)\n    }}\n}}\n",
+                            t = trait_name, rhs = rhs, ty = type_name, out = out_ty, m = method.name
+                        ));
+                    }
+                }
                 let tp = if type_params.is_empty() { "".to_string() } else { format!("<{}>", type_params.join(", ")) };
                 // impl<A, B> Pair<A, B> { ... } — repeat type params on the struct name
                 let type_with_params = if type_params.is_empty() { type_name.clone() } else { format!("{}{}", type_name, tp) };
@@ -905,6 +988,7 @@ impl RustGenerator {
                     out.push_str("    }\n");
                 }
                 out.push_str("}\n");
+                out.push_str(&operator_impls);
                 out
             }
         }
@@ -1136,6 +1220,12 @@ impl RustGenerator {
                 UnaryOperator::Negate => self.resolve_type(operand),
             },
             Expression::Cast { target_type, .. } => Some(target_type.clone()),
+            // Reaching through an optional yields an optional. Codegen resolves types separately
+            // from the checker, and without this `m[k]?.f() or d` emitted the Result-shaped
+            // fallback and failed with rustc's "closure is expected to take 0 arguments".
+            Expression::OptionalChain { .. } => Some(TypeNode::Nullable(Box::new(
+                TypeNode::Custom("Dynamic".to_string()),
+            ))),
             // Reading a map hands back the absence with the value; reading a list does not.
             // Codegen resolves types separately from the checker, and without this arm a map read
             // looked like an unknown type ~ so `m[k] or d` emitted the Result-shaped fallback and
@@ -1152,6 +1242,9 @@ impl RustGenerator {
                     _ => None,
                 }
             }
+            Expression::StructLiteral { type_name, .. } => {
+                Some(TypeNode::Custom(type_name.clone()))
+            }
             Expression::MapLiteral(entries) => {
                 let val = entries
                     .first()
@@ -1161,6 +1254,12 @@ impl RustGenerator {
             }
             // T-stage3: builtin call results, via the shared signature table — unless the name
             // is a user-defined method (those shadow builtins and have their own return type).
+            Expression::MethodCall { method_name, caller, .. }
+                if matches!(&**caller, Expression::Identifier(n) if n == "self")
+                    && self.known_function_returns.contains_key(method_name.as_str()) =>
+            {
+                self.known_function_returns.get(method_name.as_str()).cloned()
+            }
             Expression::MethodCall { method_name, caller, .. } => {
                 if self.user_impl_methods.contains(method_name.as_str()) {
                     None
@@ -1631,6 +1730,16 @@ impl RustGenerator {
                 },
                 Statement::Return(Some(expr)) => {
                     let ret_expr = self.gen_expression(expr);
+                    // A function type is a `Box<dyn Fn(..)>`; a lambda is a bare closure. A
+                    // returned lambda can satisfy nothing else, so it goes in the box.
+                    let ret_expr = if matches!(expr, Expression::Lambda { .. }) {
+                        // `move`, because the closure outlives the call that made it: without it
+                        // rustc reports that it "may outlive the current function" for the very
+                        // thing a returned function is for — carrying its captures with it.
+                        format!("Box::new(move {})", ret_expr)
+                    } else {
+                        ret_expr
+                    };
                     // Plan 53: Use unified self-field clone helper
                     let ret_str = self.clone_self_field_if_needed(&ret_expr);
                     // A try block is compiled into a closure (for catch_unwind), so a plain
@@ -2079,6 +2188,11 @@ impl RustGenerator {
     /// argument that is already optional are left alone.
     fn adapt_arg_to_param(&mut self, declared: &TypeNode, arg: &Expression, rendered: String) -> String {
         match declared {
+            // A function type is a `Box<dyn Fn(..)>`; a lambda written at the call site is a
+            // bare closure and has to be put in the box.
+            TypeNode::Func(..) if matches!(arg, Expression::Lambda { .. }) => {
+                format!("Box::new({})", rendered)
+            }
             TypeNode::Custom(n) if self.known_contract_methods.contains_key(n) => {
                 // Render the argument again rather than reusing `rendered`: arguments are cloned
                 // defensively to keep the caller's variable usable, but an agent behind a
@@ -2472,6 +2586,45 @@ impl RustGenerator {
     fn gen_expression(&mut self, expr: &Expression) -> String {
         match expr {
             Expression::Null => "None".to_string(),
+            // `a?.b` / `a?.m(args)`: `Option::map`, with the member generated by the ordinary
+            // path against a stand-in bound to what the optional holds — so a builtin lowers
+            // exactly as it would anywhere else.
+            Expression::OptionalChain { caller, member, args } => {
+                const HOLD: &str = "__varg_opt";
+                let recv = self.gen_expression(caller);
+                let inner_ty = match self.resolve_type(caller) {
+                    Some(TypeNode::Nullable(t)) => Some(*t),
+                    other => other,
+                };
+                let saved_ty = self.var_types.get(HOLD).cloned();
+                let was_string = self.string_vars.contains(HOLD);
+                if let Some(t) = inner_ty {
+                    if matches!(t, TypeNode::String) {
+                        self.string_vars.insert(HOLD.to_string());
+                    }
+                    self.var_types.insert(HOLD.to_string(), t);
+                }
+                let hold = Expression::Identifier(HOLD.to_string());
+                let inner_code = match args {
+                    Some(a) => self.gen_expression(&Expression::MethodCall {
+                        caller: Box::new(hold),
+                        method_name: member.clone(),
+                        args: a.clone(),
+                    }),
+                    None => self.gen_expression(&Expression::PropertyAccess {
+                        caller: Box::new(hold),
+                        property_name: member.clone(),
+                    }),
+                };
+                match saved_ty {
+                    Some(v) => { self.var_types.insert(HOLD.to_string(), v); }
+                    None => { self.var_types.remove(HOLD); }
+                }
+                if !was_string {
+                    self.string_vars.remove(HOLD);
+                }
+                format!("({}).map(|{}| {})", recv, HOLD, inner_code)
+            }
             // B8: literals outside i32 range need an explicit i64 suffix, otherwise Rust's
             // default i32 inference overflows (Varg `int` is i64). Small literals stay
             // unsuffixed so they still coerce freely into usize/index contexts.
@@ -2695,6 +2848,26 @@ impl RustGenerator {
                 // to `left op right` silently drops precedence. Wrap any operand that is itself
                 // a binary/unary/cast expression in parens. Over-parenthesizing is always
                 // semantically safe and immune to Varg-vs-Rust precedence-table differences.
+                // An operator on a user-defined type forwards to a trait that takes its
+                // operands by value, so `a + b` would consume both. Varg hands values on by
+                // copying them, and using `a` again after adding it is ordinary, so the operands
+                // are cloned — the same defensive copy an argument gets.
+                let user_typed = matches!(self.resolve_type(left), Some(TypeNode::Custom(ref n))
+                    if self.field_types.contains_key(n));
+                if user_typed {
+                    // Always a copy, never a move: `gen_cloned_arg` hands the value over on what
+                    // it believes is its last use, and it counts uses per block — `a + b` then
+                    // `a.x` on the next line was read as the last use and moved `a` away.
+                    let operand = |g: &mut Self, e: &Expression| match e {
+                        Expression::Identifier(_) | Expression::PropertyAccess { .. } => {
+                            format!("{}.clone()", g.gen_expression(e))
+                        }
+                        other => g.gen_operand(other),
+                    };
+                    let l = operand(self, left);
+                    let r = operand(self, right);
+                    return format!("{} {} {}", l, op, r);
+                }
                 format!("{} {} {}", self.gen_operand(left), op, self.gen_operand(right))
             },
             Expression::Await(inner) => {
@@ -2708,6 +2881,32 @@ impl RustGenerator {
                 }
             },
             Expression::MethodCall { caller, method_name, args } => {
+                // Calling a value that holds a function — a parameter, a local, or a field.
+                //
+                // The name went to method dispatch, which prefixed it with the receiver:
+                // `f(v)` inside a free function came out as `self.f(v)` and rustc reported
+                // "expected value, found module `self`". A function type is a
+                // `Box<dyn Fn(..)>`, so the call is written around the value itself.
+                {
+                    let calls_a_value = if matches!(&**caller, Expression::Identifier(n) if n == "self") {
+                        matches!(self.var_types.get(method_name.as_str()), Some(TypeNode::Func(..)))
+                            .then(|| esc_ident(method_name))
+                    } else {
+                        self.resolve_type(caller)
+                            .and_then(|t| match t {
+                                TypeNode::Custom(owner) => self.field_types.get(&owner).cloned(),
+                                _ => None,
+                            })
+                            .and_then(|fs| fs.iter().find(|f| f.name == *method_name).cloned())
+                            .filter(|f| matches!(f.ty, TypeNode::Func(..)))
+                            .map(|_| format!("{}.{}", self.gen_receiver(caller), esc_ident(method_name)))
+                    };
+                    if let Some(target) = calls_a_value {
+                        let call_args: Vec<String> =
+                            args.iter().map(|a| self.gen_cloned_arg(a)).collect();
+                        return format!("({})({})", target, call_args.join(", "));
+                    }
+                }
                 // Dot-notation construction of a data-carrying enum variant: `Shape.Circle(2)`.
                 // Path notation (`Shape::Circle(2)`) parses straight to EnumConstruct, but the dot
                 // form arrives here as a method call and used to be emitted verbatim, producing
@@ -4284,7 +4483,17 @@ impl RustGenerator {
                         let val_code = self.gen_expression(val);
                         // F41-6: Wrap contract-typed fields in Box::new() for dyn dispatch
                         let key = format!("{}.{}", type_name, name);
-                        if self.contract_typed_fields.contains(&key) {
+                        // A function-typed field is a `Box<dyn Fn(..)>`, so a lambda written
+                        // here has to be put in the box, exactly like a contract-typed one.
+                        let field_is_a_function = self
+                            .field_types
+                            .get(type_name)
+                            .and_then(|fs| fs.iter().find(|f| f.name == *name))
+                            .map(|f| matches!(f.ty, TypeNode::Func(..)))
+                            .unwrap_or(false);
+                        if self.contract_typed_fields.contains(&key)
+                            || (field_is_a_function && matches!(val, Expression::Lambda { .. }))
+                        {
                             format!("{}: Box::new({})", name, val_code)
                         } else {
                             format!("{}: {}", name, val_code)

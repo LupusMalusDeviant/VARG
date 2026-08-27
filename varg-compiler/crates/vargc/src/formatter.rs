@@ -482,6 +482,19 @@ impl VargFormatter {
             Expression::String(s) => format!("\"{}\"", s.replace('"', "\\\"")),
             Expression::Bool(b) => b.to_string(),
             Expression::Null => "null".to_string(),
+            Expression::OptionalChain { caller, member, args } => match args {
+                Some(a) => {
+                    let rendered: Vec<String> =
+                        a.iter().map(|x| self.format_expression(x)).collect();
+                    format!(
+                        "{}?.{}({})",
+                        self.format_expression(caller),
+                        member,
+                        rendered.join(", ")
+                    )
+                }
+                None => format!("{}?.{}", self.format_expression(caller), member),
+            },
             Expression::Identifier(name) => name.clone(),
             Expression::BinaryOp { left, operator, right } => {
                 format!("{} {} {}", self.format_expression(left), self.format_binop(operator), self.format_expression(right))

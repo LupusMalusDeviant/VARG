@@ -1008,6 +1008,41 @@ impl Parser {
     }
 
     fn parse_base_type(&mut self) -> Result<TypeNode, ParseError> {
+        // A function type: `(int, string) => bool`, or `() => string` for one taking nothing.
+        //
+        // Lambdas existed but their type had no spelling, so one could never be named — not as a
+        // parameter, not as a return type, not as a field. A function could therefore be written
+        // only at the point it was called. `TypeNode::Func` was already in the AST and the
+        // codegen already emitted `Box<dyn Fn(..) -> ..>` for it; nothing could reach either.
+        if self.peek() == Some(&Token::LParen) {
+            let mut lookahead = 1;
+            let mut depth = 1;
+            while depth > 0 {
+                match self.peek_at(lookahead) {
+                    Some(Token::LParen) => depth += 1,
+                    Some(Token::RParen) => depth -= 1,
+                    None => break,
+                    _ => {}
+                }
+                lookahead += 1;
+            }
+            if self.peek_at(lookahead) == Some(&Token::FatArrow) {
+                self.advance(); // (
+                let mut params = Vec::new();
+                while self.peek() != Some(&Token::RParen) {
+                    params.push(self.parse_type()?);
+                    if self.peek() == Some(&Token::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.consume(Token::RParen)?;
+                self.consume(Token::FatArrow)?;
+                let ret = self.parse_type()?;
+                return Ok(TypeNode::Func(params, Box::new(ret)));
+            }
+        }
         match self.advance() {
             Some(Token::TypeInt) => Ok(TypeNode::Int),
             Some(Token::TypeFloat) => Ok(TypeNode::Float),  // Plan 42
@@ -2544,6 +2579,44 @@ impl Parser {
                     left = Expression::GenericCall { func_name, type_arg, args };
                     continue;
                 }
+            }
+
+            // `a?.b` and `a?.m(args)`: reaching through a value that may not be there.
+            //
+            // Handled before the precedence gate, because this is a postfix on `a` and binds as
+            // tightly as `.` does — `?` on its own is the very loose ternary/propagate operator,
+            // and going through that gate would have attached the chain to the wrong expression.
+            if matches!(tok, Token::QuestionMark) && self.peek_at(1) == Some(&Token::Dot) {
+                self.advance(); // ?
+                self.advance(); // .
+                let member = self.parse_identifier()?;
+                let args = if self.peek() == Some(&Token::LParen) {
+                    self.advance();
+                    let mut collected = Vec::new();
+                    if self.peek() != Some(&Token::RParen) {
+                        loop {
+                            collected.push(self.parse_expression()?);
+                            if self.peek() == Some(&Token::Comma) {
+                                self.advance();
+                                if self.peek() == Some(&Token::RParen) {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.consume(Token::RParen)?;
+                    Some(collected)
+                } else {
+                    None
+                };
+                left = Expression::OptionalChain {
+                    caller: Box::new(left),
+                    member,
+                    args,
+                };
+                continue;
             }
 
             // Check for binary operator with precedence

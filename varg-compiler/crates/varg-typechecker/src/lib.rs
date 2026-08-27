@@ -1835,6 +1835,16 @@ impl TypeChecker {
         }
     }
 
+    /// The expression a block hands back, if it ends in `return <expr>`.
+    ///
+    /// Used to give a lambda written as a block the return type its body actually produces.
+    fn block_return_expr(block: &Block) -> Option<&Expression> {
+        match block.statements.last() {
+            Some(Statement::Return(Some(e))) => Some(e),
+            _ => None,
+        }
+    }
+
     fn block_always_returns(block: &Block, enums: &HashMap<String, Vec<EnumVariant>>) -> bool {
         if block.statements.is_empty() {
             return false;
@@ -1987,6 +1997,47 @@ impl TypeChecker {
                                 expected: "a plain value — supply a fallback with `or`".to_string(),
                                 found: format!("{:?}", ty),
                             });
+                        }
+                    }
+                }
+                // An operator on a user-defined type is that type's own method: `+` is `add`,
+                // `-` is `sub`, and so on. Without the method there is nothing to call, and the
+                // mistake used to surface as rustc's "cannot add `V` to `V`" against generated
+                // code. Naming the method is also how one learns the operator can be had.
+                if let TypeNode::Custom(ref owner) = left_ty {
+                    let wanted = match operator {
+                        BinaryOperator::Add => Some("add"),
+                        BinaryOperator::Sub => Some("sub"),
+                        BinaryOperator::Mul => Some("mul"),
+                        BinaryOperator::Div => Some("div"),
+                        BinaryOperator::Mod => Some("rem"),
+                        _ => None,
+                    };
+                    if let Some(name) = wanted {
+                        let is_known_type = self.struct_fields.contains_key(owner)
+                            || self.agent_fields.contains_key(owner);
+                        let has_it = self
+                            .method_signatures
+                            .get(owner)
+                            .map_or(false, |m| m.contains_key(name));
+                        if is_known_type && !has_it {
+                            return Err(TypeError::UnknownMethod {
+                                type_name: owner.clone(),
+                                method_name: name.to_string(),
+                                suggestions: Vec::new(),
+                            });
+                        }
+                        if has_it {
+                            return self
+                                .method_signatures
+                                .get(owner)
+                                .and_then(|m| m.get(name))
+                                .and_then(|sig| sig.return_ty.clone())
+                                .ok_or_else(|| TypeError::UnknownMethod {
+                                    type_name: owner.clone(),
+                                    method_name: name.to_string(),
+                                    suggestions: Vec::new(),
+                                });
                         }
                     }
                 }
@@ -2235,6 +2286,32 @@ impl TypeChecker {
                             expected: "1".to_string(),
                             found: args.len(),
                         });
+                    }
+                }
+                // A field holding a function is called through its owner: `h.f(1)`. Without
+                // this the name is looked up among the type's methods and reported as unknown,
+                // so a function could be stored in a field but never called from one.
+                if !caller_is_synthetic_self {
+                    if let Ok(TypeNode::Custom(owner)) = self.infer_expression_type(caller) {
+                        let field_fn = self
+                            .struct_fields
+                            .get(&owner)
+                            .or_else(|| self.agent_fields.get(&owner))
+                            .and_then(|fs| fs.iter().find(|f| f.name == *method_name))
+                            .map(|f| f.ty.clone());
+                        if let Some(TypeNode::Func(params, ret)) = field_fn {
+                            if params.len() != args.len() {
+                                return Err(TypeError::WrongArgumentCount {
+                                    callee: format!("{}.{}", owner, method_name),
+                                    expected: params.len().to_string(),
+                                    found: args.len(),
+                                });
+                            }
+                            for arg in args.iter() {
+                                self.infer_expression_type(arg)?;
+                            }
+                            return Ok(*ret);
+                        }
                     }
                 }
                 if RECEIVER_METHODS.contains(&method_name) && !caller_is_synthetic_self {
@@ -4032,6 +4109,45 @@ impl TypeChecker {
                 };
                 Ok(TypeNode::Map(Box::new(key_ty), Box::new(val_ty)))
             },
+            // `a?.b` / `a?.m(args)`: the member is looked up on what `a` holds, and the answer
+            // carries the same absence `a` did — reaching through nothing yields nothing.
+            Expression::OptionalChain { caller, member, args } => {
+                let caller_ty = self.infer_expression_type(caller)?;
+                let TypeNode::Nullable(inner) = caller_ty else {
+                    return Err(TypeError::TypeMismatch {
+                        expected: "an optional — `?.` is for a value that may not be there"
+                            .to_string(),
+                        found: format!("{:?}", caller_ty),
+                    });
+                };
+                // Ask the ordinary machinery what the member yields, with a stand-in bound to
+                // what the optional holds.
+                const HOLD: &str = "__varg_opt";
+                let saved = self.env.get(HOLD).cloned();
+                self.env.insert(HOLD.to_string(), *inner);
+                let probe = match args {
+                    Some(a) => Expression::MethodCall {
+                        caller: Box::new(Expression::Identifier(HOLD.to_string())),
+                        method_name: member.clone(),
+                        args: a.clone(),
+                    },
+                    None => Expression::PropertyAccess {
+                        caller: Box::new(Expression::Identifier(HOLD.to_string())),
+                        property_name: member.clone(),
+                    },
+                };
+                let result = self.infer_expression_type(&probe);
+                match saved {
+                    Some(v) => { self.env.insert(HOLD.to_string(), v); }
+                    None => { self.env.remove(HOLD); }
+                }
+                let member_ty = result?;
+                Ok(match member_ty {
+                    // Already optional: reaching through does not stack another layer.
+                    TypeNode::Nullable(t) => TypeNode::Nullable(t),
+                    other => TypeNode::Nullable(Box::new(other)),
+                })
+            }
             Expression::Lambda { params, return_ty, body } => {
                 // Register lambda params in scope temporarily
                 let saved_env = self.env.clone();
@@ -4043,16 +4159,34 @@ impl TypeChecker {
                 // inside a void method was read as that method returning a value. The lambda's own
                 // return type is not enforced here (it is usually inferred, not written).
                 let saved_return_ty = self.current_return_ty.take();
+                // What the body produces is the lambda's return type when none is written, which
+                // is nearly always. It was taken as `Void` regardless, so a function type could
+                // never match a lambda: `(int) => int` against `(int x) => x + 1` read as
+                // `Func([Int], Void)`.
+                let mut inferred_ret = None;
                 let result = match body.as_ref() {
-                    LambdaBody::Expression(expr) => self.infer_expression_type(expr).map(|_| ()),
-                    LambdaBody::Block(block) => self.check_block(block),
+                    LambdaBody::Expression(expr) => self.infer_expression_type(expr).map(|t| {
+                        inferred_ret = Some(t);
+                    }),
+                    LambdaBody::Block(block) => {
+                        let r = self.check_block(block);
+                        if r.is_ok() {
+                            inferred_ret = Self::block_return_expr(block)
+                                .and_then(|e| self.infer_expression_type(e).ok());
+                        }
+                        r
+                    }
                 };
                 self.current_return_ty = saved_return_ty;
                 self.env = saved_env;
                 result?;
                 // Infer Func type from params and return type
                 let param_types: Vec<TypeNode> = params.iter().map(|p| p.ty.clone()).collect();
-                let ret = return_ty.as_ref().map(|t| *t.clone()).unwrap_or(TypeNode::Void);
+                let ret = return_ty
+                    .as_ref()
+                    .map(|t| *t.clone())
+                    .or(inferred_ret)
+                    .unwrap_or(TypeNode::Void);
                 Ok(TypeNode::Func(param_types, Box::new(ret)))
             },
             Expression::Query(_) => {
@@ -11746,6 +11880,128 @@ mod tests {
             }
             "#,
             "supply a fallback with",
+        );
+    }
+
+    #[test]
+    fn a_function_can_be_a_parameter_a_return_and_a_field() {
+        // A lambda could only ever be written at the call site: there was no way to name its
+        // type, so it could not be stored, passed on or handed back. `Func` existed in the AST
+        // and the codegen already emitted `Box<dyn Fn(..) -> ..>`; only the syntax was missing.
+        assert_accepted(
+            r#"
+            struct Holder { (int) => int f; }
+
+            fn apply(int v, (int) => int f) -> int {
+                return f(v);
+            }
+
+            fn adder(int n) -> (int) => int {
+                return (int x) => x + n;
+            }
+
+            agent Main {
+                public void Run() {
+                    print $"{apply(4, (int x) => x * 2)}";
+                    var plus3 = adder(3);
+                    print $"{plus3(4)}";
+                    var h = Holder { f: (int x) => x + 1 };
+                    print $"{h.f(1)}";
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn a_function_type_takes_no_arguments_too() {
+        assert_accepted(
+            r#"
+            fn run_it(() => string f) -> string { return f(); }
+
+            agent Main {
+                public void Run() {
+                    print run_it(() => "done");
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn optional_chaining_reaches_through_an_absent_value() {
+        // With map reads, `json_get`, `find`, `first` and `last` all nullable, reaching through
+        // one meant resolving it first even when the answer for an absent value is the same
+        // absent value. `?.` says that in one step, and the result stays nullable.
+        assert_accepted(
+            r#"
+            agent Main {
+                public void Run() {
+                    var m = {"a": "hello"};
+                    print m["a"]?.to_upper() or "<none>";
+                    print m["b"]?.to_upper() or "<none>";
+                    var n = m["a"]?.len() or 0;
+                    print $"{n}";
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn optional_chaining_still_yields_a_nullable() {
+        assert_rejected(
+            r#"
+            agent Main {
+                public void Run() {
+                    var m = {"a": "hello"};
+                    print $"{m["a"]?.len() + 1}";
+                }
+            }
+            "#,
+            "supply a fallback with",
+        );
+    }
+
+    #[test]
+    fn a_type_that_defines_add_can_be_added() {
+        // `a + b` on a struct type-checked and then failed in rustc with "cannot add `V` to `V`",
+        // an error about generated code for something the front end had accepted.
+        assert_accepted(
+            r#"
+            struct V { int x; }
+
+            impl V {
+                public fn add(V o) -> V { return V { x: self.x + o.x }; }
+                public fn sub(V o) -> V { return V { x: self.x - o.x }; }
+            }
+
+            agent Main {
+                public void Run() {
+                    var a = V { x: 3 };
+                    var b = V { x: 2 };
+                    print $"{(a + b).x} {(a - b).x}";
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn a_type_without_add_still_cannot_be_added() {
+        assert_rejected(
+            r#"
+            struct W { int x; }
+
+            agent Main {
+                public void Run() {
+                    var a = W { x: 3 };
+                    var b = W { x: 2 };
+                    print $"{(a + b).x}";
+                }
+            }
+            "#,
+            "add",
         );
     }
 
