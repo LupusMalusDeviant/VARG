@@ -18,6 +18,5 @@ OK   audio_size_bytes
 OK   audio_to_base64
 OK   context_from
 OK   registry_list
-OK   registry_search
 OK   cascade_keeps_base
 OK   cascade_overrides

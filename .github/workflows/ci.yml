@@ -117,15 +117,15 @@ jobs:
             varg-progs-${{ runner.os }}-
       - name: Build vargc (release)
         run: cargo build -p vargc --release --locked
-      - name: Known vulnerabilities in the dependency tree
+      - name: Known vulnerabilities, and the reasons the two skipped ones are safe
         # An external audit found nine, four of them in the TLS crate the compiler itself links.
-        # Nothing had ever looked. Two remain, both in optional features that no default build
-        # pulls in, and both are listed by name so a *new* one fails the job rather than joining
-        # a number nobody reads.
-        working-directory: varg-compiler
+        # Nothing had ever looked. Two remain. They used to be two bare --ignore flags: a flag
+        # records a decision without its reason, so it outlives the reason. security/advisories.sh
+        # states the precondition behind each skip and fails when it stops holding — rkyv leaving
+        # the lockfile for the build graph, or the PDF writer gaining a reader.
         run: |
           cargo install cargo-audit --locked --quiet || true
-          cargo audit --ignore RUSTSEC-2026-0187 --ignore RUSTSEC-2026-0235
+          bash security/advisories.sh
       - name: Documentation compiles, covers the builtins, and its prose holds
         # Four rounds found the same defect: a signature in REFERENCE.md or VARG_AGENT_GUIDE.md
         # that the compiler rejects. Nothing caught it because nothing fed the docs to the

@@ -3647,8 +3647,6 @@ impl RustGenerator {
                     format!("varg_runtime::registry::__varg_registry_version(&{}, &{})", arg_strs[0], arg_strs[1])
                 } else if method_name == "registry_list" {
                     format!("varg_runtime::registry::__varg_registry_list(&{})", arg_strs[0])
-                } else if method_name == "registry_search" {
-                    format!("varg_runtime::registry::__varg_registry_search(&{})", arg_strs[0])
                 // ===== LLM Extended =====
                 } else if method_name == "llm_structured" {
                     format!("varg_runtime::llm::__varg_llm_structured(&{}, &{}, {})", arg_strs[0], arg_strs[1], arg_strs[2])
@@ -10354,19 +10352,6 @@ mod tests {
         assert!(code.contains("__varg_workflow_new"), "workflow_new: {code}");
     }
 
-    #[test]
-    fn test_codegen_registry_builtin_generates_correct_call() {
-        let stmt = Statement::Let { name: "r".to_string(), ty: None,
-            value: Expression::MethodCall {
-                caller: Box::new(Expression::Identifier("self".to_string())),
-                method_name: "registry_search".to_string(),
-                args: vec![Expression::String("http".to_string())],
-            }
-        };
-        let program = make_agent("Reg", vec![], vec![], vec![simple_method("Run", vec![stmt])]);
-        let code = RustGenerator::new().generate(&program);
-        assert!(code.contains("__varg_registry_search"), "registry_search: {code}");
-    }
 
     #[test]
     fn test_codegen_rate_limit_annotation_generates_helper_methods() {

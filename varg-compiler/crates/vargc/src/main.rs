@@ -7,35 +7,31 @@ mod formatter;
 
 // ── Package registry ───────────────────────────────────────────────────────────
 
-/// Fallback registry embedded in the binary. Used when the network is unavailable.
-const EMBEDDED_REGISTRY: &str = r#"{
-  "packages": [
-    {
-      "name": "varg-http-utils",
-      "version": "0.1.0",
-      "description": "HTTP utility functions for Varg agents",
-      "url": "https://raw.githubusercontent.com/LupusMalusDeviant/VARG/main/packages/http_utils.varg",
-      "checksum": ""
-    },
-    {
-      "name": "varg-json-tools",
-      "version": "0.1.0",
-      "description": "JSON parsing and transformation helpers for Varg",
-      "url": "https://raw.githubusercontent.com/LupusMalusDeviant/VARG/main/packages/json_tools.varg",
-      "checksum": ""
-    },
-    {
-      "name": "varg-agent-kit",
-      "version": "0.1.0",
-      "description": "Reusable agent patterns: retry, circuit-breaker, fan-out",
-      "url": "https://raw.githubusercontent.com/LupusMalusDeviant/VARG/main/packages/agent_kit.varg",
-      "checksum": ""
-    }
-  ]
-}"#;
-
-const REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/LupusMalusDeviant/VARG/main/registry/packages.json";
+/// There is no Varg package registry.
+///
+/// What stood here: a catalogue of six package names compiled into the binary, a REGISTRY_URL
+/// that answers 404, and a `fetch_registry` that fell back to the catalogue on any error and
+/// called it a warning. `vargc search` printed "Searching Varg package registry..." and listed
+/// packages that do not exist. `vargc install` then fetched one over the network and wrote it to
+/// disk — the catalogue carried a `checksum` field, every entry left it empty, and no code path
+/// ever read it. An unverified download of a file that is not there.
+///
+/// Both commands now say so. `registry_open`/`registry_download` remain: they manage a local
+/// directory and verify against a SHA-256 the caller already knows.
+fn no_registry(command: &str) -> ! {
+    eprintln!("There is no Varg package registry, so `vargc {}` has nothing to reach.", command);
+    eprintln!();
+    eprintln!("For a library, use crates.io from Varg source:");
+    eprintln!("    import crate serde_json;");
+    eprintln!("    import crate reqwest = \"0.11\" features [\"json\"];");
+    eprintln!();
+    eprintln!("For a file you fetched yourself, with a checksum you already know:");
+    eprintln!("    var reg = registry_open(\"./varg_packages\");");
+    eprintln!("    registry_download(reg, name, version, url, sha256)?;");
+    eprintln!();
+    eprintln!("`vargc list` still reports what is in the local cache.");
+    exit(1);
+}
 
 /// Returns the local package installation directory: ~/.varg/packages/
 fn packages_dir() -> PathBuf {
@@ -43,132 +39,6 @@ fn packages_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".varg")
         .join("packages")
-}
-
-/// Fetch the registry JSON.  Falls back to the embedded copy on any network error.
-fn fetch_registry() -> serde_json::Value {
-    match ureq::get(REGISTRY_URL).call() {
-        Ok(response) => {
-            match response.into_string() {
-                Ok(body) => {
-                    match serde_json::from_str(&body) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("Warning: registry JSON parse error ({}); using embedded fallback.", e);
-                            serde_json::from_str(EMBEDDED_REGISTRY).expect("embedded registry is valid JSON")
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Warning: could not read registry response ({}); using embedded fallback.", e);
-                    serde_json::from_str(EMBEDDED_REGISTRY).expect("embedded registry is valid JSON")
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Warning: could not reach registry ({}); using embedded fallback.", e);
-            serde_json::from_str(EMBEDDED_REGISTRY).expect("embedded registry is valid JSON")
-        }
-    }
-}
-
-/// `vargc search <query>` — filter packages by name/description
-fn cmd_search(query: &str) {
-    println!("Searching Varg package registry for \"{}\"...\n", query);
-    let registry = fetch_registry();
-    let packages = registry["packages"].as_array().cloned().unwrap_or_default();
-    let q = query.to_lowercase();
-    let matches: Vec<_> = packages.iter().filter(|p| {
-        let name = p["name"].as_str().unwrap_or("").to_lowercase();
-        let desc = p["description"].as_str().unwrap_or("").to_lowercase();
-        name.contains(&q) || desc.contains(&q)
-    }).collect();
-
-    if matches.is_empty() {
-        println!("No packages found matching \"{}\".", query);
-        println!("\nAvailable packages:");
-        for p in &packages {
-            println!("  {:<25} {} — {}",
-                p["name"].as_str().unwrap_or(""),
-                p["version"].as_str().unwrap_or(""),
-                p["description"].as_str().unwrap_or(""));
-        }
-    } else {
-        println!("{:<25} {:<10} {}", "NAME", "VERSION", "DESCRIPTION");
-        println!("{}", "-".repeat(70));
-        for p in matches {
-            println!("  {:<23} {:<10} {}",
-                p["name"].as_str().unwrap_or(""),
-                p["version"].as_str().unwrap_or(""),
-                p["description"].as_str().unwrap_or(""));
-        }
-    }
-}
-
-/// `vargc install <package>` — download a package to ~/.varg/packages/
-fn cmd_install(package_name: &str) {
-    println!("Fetching registry...");
-    let registry = fetch_registry();
-    let packages = registry["packages"].as_array().cloned().unwrap_or_default();
-
-    let pkg = packages.iter().find(|p| {
-        p["name"].as_str().unwrap_or("") == package_name
-    });
-
-    let pkg = match pkg {
-        Some(p) => p.clone(),
-        None => {
-            eprintln!("Error: package \"{}\" not found in registry.", package_name);
-            eprintln!("\nAvailable packages:");
-            for p in &packages {
-                eprintln!("  {} — {}", p["name"].as_str().unwrap_or(""), p["description"].as_str().unwrap_or(""));
-            }
-            exit(1);
-        }
-    };
-
-    let name    = pkg["name"].as_str().unwrap_or(package_name);
-    let version = pkg["version"].as_str().unwrap_or("0.1.0");
-    let url     = pkg["url"].as_str().unwrap_or("");
-
-    if url.is_empty() {
-        eprintln!("Error: package \"{}\" has no download URL.", name);
-        exit(1);
-    }
-
-    // Resolve destination: ~/.varg/packages/<name>/<version>/<name>.varg
-    // (underscores replace hyphens in the filename to be Varg-import-friendly)
-    let dest_dir = packages_dir().join(name).join(version);
-    let file_name = format!("{}.varg", name.replace('-', "_"));
-    let dest_file = dest_dir.join(&file_name);
-
-    fs::create_dir_all(&dest_dir).unwrap_or_else(|e| {
-        eprintln!("Error creating package directory {:?}: {}", dest_dir, e);
-        exit(1);
-    });
-
-    println!("Downloading {} {}...", name, version);
-    match ureq::get(url).call() {
-        Ok(response) => {
-            match response.into_string() {
-                Ok(content) => {
-                    fs::write(&dest_file, &content).unwrap_or_else(|e| {
-                        eprintln!("Error writing package file: {}", e);
-                        exit(1);
-                    });
-                    println!("Installed {} {} -> {}", name, version, dest_file.display());
-                }
-                Err(e) => {
-                    eprintln!("Error downloading package source: {}", e);
-                    exit(1);
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error downloading {}: {}", url, e);
-            exit(1);
-        }
-    }
 }
 
 /// `vargc list` — list all locally installed packages
@@ -1114,12 +984,8 @@ fn run_cli() {
             exit(1);
         }
         let arg = &args[2];
-        match command.as_str() {
-            "install" => cmd_install(arg),
-            "search"  => cmd_search(arg),
-            _ => unreachable!(),
-        }
-        return;
+        let _ = arg;
+        no_registry(command);
     }
 
     // ── Commands that do need a .varg file ────────────────────────────────────
@@ -3363,21 +3229,6 @@ mod tests {
             "packages_dir() should end with .varg/packages, got: {:?}", dir);
     }
 
-    #[test]
-    fn test_registry_parse_embedded() {
-        let registry: serde_json::Value = serde_json::from_str(EMBEDDED_REGISTRY)
-            .expect("EMBEDDED_REGISTRY must be valid JSON");
-        let packages = registry["packages"].as_array()
-            .expect("registry must have a 'packages' array");
-        assert!(!packages.is_empty(), "embedded registry must contain at least one package");
-        // Every entry must have name, version, description, url fields.
-        for pkg in packages {
-            assert!(pkg["name"].as_str().is_some(), "package missing 'name'");
-            assert!(pkg["version"].as_str().is_some(), "package missing 'version'");
-            assert!(pkg["description"].as_str().is_some(), "package missing 'description'");
-            assert!(pkg["url"].as_str().is_some(), "package missing 'url'");
-        }
-    }
 
     // ===== (a) rustc → .varg source mapping =====
 

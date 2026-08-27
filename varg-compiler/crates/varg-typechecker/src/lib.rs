@@ -2165,15 +2165,29 @@ impl TypeChecker {
                     ("time_now", "timestamp",
                      "was a second spelling of the same clock, with no documentation saying \
                       which to reach for."),
+                    ("registry_search", "registry_list",
+                     "answered from twelve package names compiled into the runtime. None of \
+                      them exist, no index was ever queried, and there is no Varg registry to \
+                      query. `registry_list` reports what is actually in the local cache, and \
+                      `import crate` reaches crates.io, which is real."),
                 ];
-                if let Some((_, replacement, why)) =
-                    RETIRED.iter().find(|(n, _, _)| *n == method_name)
-                {
-                    return Err(TypeError::RetiredBuiltin {
-                        method_name: method_name.to_string(),
-                        replacement: replacement.to_string(),
-                        why: why.split_whitespace().collect::<Vec<_>>().join(" "),
-                    });
+                // This looked only at the name of *this* call, so a retired builtin used as the
+                // receiver of a chain walked straight past: `file_read(p).len()` type-checked,
+                // because `len` answers from the collection shape without inferring its receiver.
+                // Every retired name was reachable that way, which is the whole gate missing.
+                let mut probe: Option<&Expression> = Some(expr);
+                while let Some(Expression::MethodCall { caller: c, method_name: m, .. }) = probe {
+                    let m = m.trim_start_matches("__varg_").trim_start_matches("__varg_min_");
+                    if let Some((_, replacement, why)) =
+                        RETIRED.iter().find(|(n, _, _)| *n == m)
+                    {
+                        return Err(TypeError::RetiredBuiltin {
+                            method_name: m.to_string(),
+                            replacement: replacement.to_string(),
+                            why: why.split_whitespace().collect::<Vec<_>>().join(" "),
+                        });
+                    }
+                    probe = Some(c.as_ref());
                 }
                 // B2: close the OCAP-nesting bypass. Each builtin branch below early-returns
                 // after only an arity check, so a capability-gated builtin used as an ARGUMENT
@@ -4272,7 +4286,7 @@ impl TypeChecker {
                 // `retry { fetch(..) } fallback { .. }` unusable without a second `or`, against a
                 // failure the fallback had already handled.
                 match (body_ty, fallback) {
-                    (TypeNode::Result(ok, e), Some(_)) => Ok(*ok),
+                    (TypeNode::Result(ok, _), Some(_)) => Ok(*ok),
                     // With no fallback the failure has nowhere to go, so it stays a Result.
                     (TypeNode::Result(ok, e), None) => Ok(TypeNode::Result(ok, e)),
                     (other, _) => Ok(other),
@@ -11141,10 +11155,15 @@ mod tests {
     }
 
     #[test]
-    fn test_tc_registry_search_returns_array_of_string() {
+    fn registry_search_is_refused_and_names_its_replacement() {
+        // It used to assert the return type of a builtin that answered from twelve package names
+        // compiled into the runtime, none of which exist.
         let mut c = TypeChecker::new();
-        let ty = c.infer_expression_type(&call("registry_search", vec![str_lit("http")])).unwrap();
-        assert_eq!(ty, TypeNode::Array(Box::new(TypeNode::String)));
+        let err = c
+            .infer_expression_type(&call("registry_search", vec![str_lit("http")]))
+            .unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("registry_list"), "should name the replacement, got: {}", msg);
     }
 
     #[test]

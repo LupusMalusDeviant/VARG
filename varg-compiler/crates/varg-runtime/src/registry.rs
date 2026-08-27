@@ -146,19 +146,6 @@ pub fn __varg_registry_download(
     install_verified_bytes(h, name, version, &bytes, expected_sha256)
 }
 
-/// Search the known package catalog (stub — real registry would HTTP-query an index).
-pub fn __varg_registry_search(query: &str) -> Vec<String> {
-    let catalog = [
-        "varg-http-tools", "varg-db-tools", "varg-llm-tools",
-        "varg-text-utils", "varg-json-utils", "varg-crypto-utils",
-        "varg-file-utils", "varg-agent-templates", "varg-mcp-clients",
-        "varg-vector-extra", "varg-graph-utils", "varg-workflow-dsl",
-    ];
-    catalog.iter()
-        .filter(|p| query.is_empty() || p.contains(query))
-        .map(|p| p.to_string())
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {
@@ -248,17 +235,7 @@ mod tests {
         assert_eq!(__varg_registry_version(&r, "pkg"), "3.1.4");
     }
 
-    #[test]
-    fn test_registry_search_by_keyword() {
-        let results = __varg_registry_search("http");
-        assert!(!results.is_empty());
-        assert!(results.iter().all(|r| r.contains("http")));
-    }
 
-    #[test]
-    fn test_registry_search_empty_returns_all() {
-        assert!(__varg_registry_search("").len() > 5);
-    }
 
     #[test]
     fn test_registry_uninstall_nonexistent_returns_false() {

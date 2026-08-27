@@ -1,0 +1,11 @@
+// @probe reject: `registry_search` is gone
+// It answered from twelve package names compiled into the runtime. None exist, no index was ever
+// queried, and there is no Varg registry to query — so every caller got a plausible list of
+// things it could not install. `vargc search` and `vargc install` told the same story from the
+// command line, and `install` downloaded without reading the checksum field it carried.
+agent Main {
+    public void Run() {
+        var found = registry_search("http");
+        print found.len();
+    }
+}

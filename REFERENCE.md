@@ -1815,8 +1815,9 @@ var n = workflow_step_count(wf);              // int
 ### Package Registry
 
 **There is no Varg package registry.** These builtins manage a local cache directory: what is in
-it got there because something put it there. `registry_search` answers from a small list compiled
-into the runtime, not from an index — nothing is queried, and no online registry exists to query.
+it got there because something put it there. `registry_search` used to answer from twelve package
+names compiled into the runtime; it has been withdrawn, and calling it names `registry_list`
+instead. `vargc search` and `vargc install` say the same thing rather than pretending.
 
 **Use `import crate` instead.** It reaches crates.io, which is real, and it is how a Varg program
 gets a library today:
@@ -1837,8 +1838,7 @@ registry_uninstall(reg, "varg-http");        // bool
 var path = registry_download(reg, "varg-http", "1.2.0", url, sha256)?;
 var installed = registry_is_installed(reg, "varg-http"); // bool
 var ver = registry_version(reg, "varg-http");            // string
-var all = registry_list(reg);                            // string[]
-var found = registry_search("http");                     // string[] — query only (1 arg)
+var all = registry_list(reg);                            // string[] — what is actually here
 ```
 
 ### LLM calls are fallible

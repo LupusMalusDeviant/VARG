@@ -1,0 +1,10 @@
+// @probe reject: `file_read` is gone
+// The retirement gate looked only at the name of the call it was inspecting. A retired builtin
+// used as the *receiver* of a chain went straight past it, because `len` answers from the
+// collection's shape without ever inferring what produced it. `file_read(p).len()` type-checked,
+// and so did every other retired name written that way — the gate was missing for all of them.
+agent Main {
+    public void Run() {
+        print file_read("notes.txt").len();
+    }
+}

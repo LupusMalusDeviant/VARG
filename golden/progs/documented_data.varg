@@ -91,7 +91,8 @@ agent Main {
             var reg = registry_open("dd_registry");
             registry_install(reg, "varg-http", "1.0.0");
             print check("registry_list", $"{registry_list(reg).len()}", "1");
-            print check("registry_search", yn(registry_search("http").len() >= 0), "true");
+            // `registry_search` was withdrawn: it answered from a compiled-in list of packages
+            // that do not exist. The check here was `len() >= 0`, which no result can fail.
 
             // ── Configuration from a chain of files ──────────────────────
             fs_write("dd_base.json", "{\"mode\": \"safe\", \"level\": \"1\"}")?;

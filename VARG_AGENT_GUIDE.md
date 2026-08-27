@@ -2253,7 +2253,7 @@ if registry_is_installed(reg, "varg-rag") {
 }
 
 registry_uninstall(reg, "old-pkg");
-var http_pkgs = registry_search("http");
+var http_pkgs = registry_list(reg);   // registry_search is withdrawn: it invented its answers
 var all       = registry_list(reg);
 ```
 
