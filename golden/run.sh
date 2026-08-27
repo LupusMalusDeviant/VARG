@@ -22,6 +22,7 @@ for v in progs/*.varg; do
   # Reset persisted state so programs that write named SQLite/graph/vector DBs are idempotent.
   rm -f ./*.db ./*.graph.db ./*.vector.db 2>/dev/null || true
   rm -rf ./golden_registry_cache ./dd_registry ./dt_dir 2>/dev/null || true
+  rm -f ./mcp_probe.txt 2>/dev/null || true
   if ! "$VARGC" build "$v" >/dev/null 2>&1; then echo "BUILD-FAIL  $base"; fail=1; continue; fi
   # vargc emits the binary into the current directory as <name>.exe.
   exe="./${base}.exe"

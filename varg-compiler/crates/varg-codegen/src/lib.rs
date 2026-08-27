@@ -34,7 +34,9 @@ pub fn byte_offset_to_line(source: &str, offset: usize) -> usize {
 
 /// Wave 14: Check if a block contains any TryPropagate (?) expressions.
 /// If so, the enclosing function must return Result<T, String>.
-fn block_contains_try_propagate(block: &Block) -> bool {
+/// Does this body use `?`? Its generated form is then Result-shaped, which every caller of
+/// it — including the generated MCP dispatcher — has to account for.
+pub fn block_contains_try_propagate(block: &Block) -> bool {
     for stmt in &block.statements {
         if stmt_contains_try_propagate(stmt) {
             return true;

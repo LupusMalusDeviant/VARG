@@ -31,6 +31,18 @@ agent Main {
         return $"{s}|{n}|{flag}";
     }
 
+    /// A tool that can fail, which is what every tool touching a file, a database or the
+    /// network is. Its generated form is Result-shaped, and the dispatcher formatted it
+    /// regardless — so the first realistic MCP server anyone wrote type-checked and then failed
+    /// in rustc. A failure now reaches the client as a JSON-RPC error.
+    @[McpTool("Read a file, which may not be there")]
+    public string read_file(string path) {
+        unsafe {
+            var files = FileAccess {};
+            return fs_read(path)?;
+        }
+    }
+
     @[McpTool("Look up the best document")]
     public Doc best(string query) {
         return Doc { title: $"best: {query}", score: 99 };
@@ -44,7 +56,7 @@ agent Main {
             var conn = mcp_connect(exe_path()?, ["--mcp-serve"])?;
 
             var tools = mcp_list_tools(conn)?;
-            print check("tool_count", $"{tools.len()}", "4");
+            print check("tool_count", $"{tools.len()}", "5");
 
             // Arguments arrive by name and are parsed into the declared parameter type, so an
             // `int` parameter receives a number rather than the string "17".
@@ -67,6 +79,18 @@ agent Main {
             // takes over and the connection stays usable.
             var missing = mcp_call_tool(conn, "nope", {}) or "NO-SUCH-TOOL";
             print check("unknown_tool_errors", missing, "NO-SUCH-TOOL");
+
+            // A tool that fails reports it as a JSON-RPC error rather than as text or a crash,
+            // and the connection stays usable afterwards.
+            var gone = mcp_call_tool(conn, "read_file", {"path": "definitely_not_here.txt"}) or "TOOL-FAILED";
+            print check("fallible_tool_errors", gone, "TOOL-FAILED");
+
+            unsafe {
+                var files = FileAccess {};
+                fs_write("mcp_probe.txt", "readable")?;
+            }
+            var got = mcp_call_tool(conn, "read_file", {"path": "mcp_probe.txt"}) or "CALL-FAILED";
+            print check("fallible_tool_succeeds", got.trim(), "readable");
 
             // The connection survives that error: a following call still works.
             var after = mcp_call_tool(conn, "add", {"a": 1, "b": 2}) or "CALL-FAILED";

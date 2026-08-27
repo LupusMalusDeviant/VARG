@@ -1727,6 +1727,18 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
                         }
                         
                         command_dispatch_block.push_str(&format!("            let res = instance.{}({});\n", method_decl.name, arg_vars.join(", ")));
+                        // A command that uses `?` hands back a Result. Printed as-is it did not
+                        // compile; unwrapped silently it would report a failure as if it were an
+                        // answer. It is reported on stderr with a non-zero exit, which is what a
+                        // caller in a shell or a pipeline can act on.
+                        if method_decl
+                            .body
+                            .as_ref()
+                            .map_or(false, varg_codegen::block_contains_try_propagate)
+                            && !a.methods.iter().any(|m| m.name == "on_error")
+                        {
+                            command_dispatch_block.push_str("            let res = match res {\n                Ok(__v) => __v,\n                Err(__e) => { eprintln!(\"{}\", __e); std::process::exit(1); }\n            };\n");
+                        }
                         if method_decl.return_ty.is_some() && method_decl.return_ty != Some(varg_ast::ast::TypeNode::Void) {
                             // Check if return type is a struct → serialize as JSON
                             let is_struct_return = if let Some(varg_ast::ast::TypeNode::Custom(ref name)) = method_decl.return_ty {
@@ -1769,22 +1781,50 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
                         } else { false };
                         let returns_value = method_decl.return_ty.is_some()
                             && method_decl.return_ty != Some(varg_ast::ast::TypeNode::Void);
-                        if returns_value {
-                            mcp_call_block.push_str(&format!(
-                                "                        let __res = instance.{}({});\n",
-                                method_decl.name, mcp_arg_vars.join(", ")));
-                            if is_struct_ret {
-                                mcp_call_block.push_str("                        let __text = serde_json::to_string(&__res).unwrap_or_default();\n");
-                            } else {
-                                mcp_call_block.push_str("                        let __text = format!(\"{}\", __res);\n");
-                            }
+                        // A tool that uses `?` is Result-shaped, and a tool that touches a
+                        // database, a file or the network always does — which is to say every
+                        // useful one. The dispatcher formatted the value regardless, so the very
+                        // first realistic MCP server type-checked and then failed in rustc with
+                        // "`Result<String, String>` doesn't implement Display". A failure is now
+                        // reported to the client as a JSON-RPC error, which is something it can
+                        // act on, rather than taking the server down or never compiling.
+                        let is_fallible = method_decl
+                            .body
+                            .as_ref()
+                            .map_or(false, varg_codegen::block_contains_try_propagate)
+                            && !a.methods.iter().any(|m| m.name == "on_error");
+                        let render = if is_struct_ret {
+                            "                        let __text = serde_json::to_string(&__value).unwrap_or_default();\n"
                         } else {
-                            mcp_call_block.push_str(&format!(
-                                "                        instance.{}({});\n",
-                                method_decl.name, mcp_arg_vars.join(", ")));
-                            mcp_call_block.push_str("                        let __text = String::from(\"ok\");\n");
+                            "                        let __text = format!(\"{}\", __value);\n"
+                        };
+                        mcp_call_block.push_str(&format!(
+                            "                        let __res = instance.{}({});\n",
+                            method_decl.name, mcp_arg_vars.join(", ")));
+                        if is_fallible {
+                            // The dispatch is an expression, so the error is the block's value —
+                            // a `return` here would leave `main` instead.
+                            mcp_call_block.push_str("                        match __res {\n");
+                            mcp_call_block.push_str("                            Err(__e) => varg_runtime::mcp_server::__varg_mcp_rpc_error(&__id, -32000, &format!(\"{}\", __e)),\n");
+                            if returns_value {
+                                mcp_call_block.push_str("                            Ok(__value) => {\n");
+                                mcp_call_block.push_str(render);
+                                mcp_call_block.push_str("                                varg_runtime::mcp_server::__varg_mcp_rpc_result(&__id, &__text)\n");
+                                mcp_call_block.push_str("                            }\n");
+                            } else {
+                                mcp_call_block.push_str("                            Ok(()) => varg_runtime::mcp_server::__varg_mcp_rpc_result(&__id, \"ok\"),\n");
+                            }
+                            mcp_call_block.push_str("                        }\n                    }\n");
+                        } else {
+                            if returns_value {
+                                mcp_call_block.push_str("                        let __value = __res;\n");
+                                mcp_call_block.push_str(render);
+                            } else {
+                                mcp_call_block.push_str("                        let _ = __res;\n");
+                                mcp_call_block.push_str("                        let __text = String::from(\"ok\");\n");
+                            }
+                            mcp_call_block.push_str("                        varg_runtime::mcp_server::__varg_mcp_rpc_result(&__id, &__text)\n                    }\n");
                         }
-                        mcp_call_block.push_str("                        varg_runtime::mcp_server::__varg_mcp_rpc_result(&__id, &__text)\n                    }\n");
                     }
                 }
             }
