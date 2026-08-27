@@ -116,10 +116,16 @@ Time the programs measured around their own work, median of 30 runs on one machi
 | 1000-record JSON: build, parse, re-serialise | 1 ms | 21 ms | **<1 ms** | 2 ms |
 | Word frequency, 200k distinct keys | 35 ms | 64 ms | 36 ms | **27 ms** |
 
-Faster than C# on all four. It loses word frequency to Python, and that is understood: a key is
-copied for each new entry, and Rust's default hasher is slower on strings than either. Removing
-the copy needs a move analysis across block boundaries, where a wrong answer emits wrong code, so
-it stands.
+Faster than C# on all four. It loses word frequency to Python, and the reason is not what it
+looks like. Timed in phases, the counting loop is a tie — 26 ms against Python's 25 ms, so
+hashing and map lookups are not the gap. All of it is the final sort: 18 ms against 2 ms.
+
+Python's `dict` preserves insertion order, so `sorted()` receives the keys in the order they were
+counted, which is full of long ascending runs that Timsort merges almost for free. Rust's
+`HashMap` yields keys in hash order, which is effectively shuffled. Rust sorts the *same* keys in
+counting order in 2 ms as well; on genuinely shuffled input Python takes 30 ms and Rust 18 ms, and
+the result reverses. The workload measures a difference in what a map guarantees about ordering,
+not a difference in speed.
 
 Varg and C# are timed as their built binaries; Python and Node through their interpreter, which
 is how those languages are used. Build time is reported separately in

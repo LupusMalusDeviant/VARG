@@ -111,10 +111,18 @@ Von den Programmen um die eigene Arbeit gemessene Zeit, Median aus 30 Laeufen au
 | JSON mit 1000 Records: bauen, parsen, neu serialisieren | 1 ms | 21 ms | **<1 ms** | 2 ms |
 | Wortfrequenz, 200k eigene Schluessel | 35 ms | 64 ms | 36 ms | **27 ms** |
 
-Schneller als C# in allen vier. Die Wortfrequenz verliert es gegen Python, und der Rueckstand ist
-verstanden: pro neuem Eintrag wird ein Schluessel kopiert, und Rusts Standard-Hash ist bei
-Strings langsamer als der von beiden. Die Kopie wegzulassen braeuchte eine Move-Analyse ueber
-Blockgrenzen, wo eine falsche Antwort falschen Code erzeugt — deshalb bleibt sie.
+Schneller als C# in allen vier. Die Wortfrequenz verliert es gegen Python, und der Grund ist nicht
+der naheliegende. In Phasen gemessen ist die Zaehlschleife ein Gleichstand — 26 ms gegen Pythons
+25 ms, Hashing und Map-Zugriffe sind also nicht der Rueckstand. Er steckt vollstaendig im
+abschliessenden Sortieren: 18 ms gegen 2 ms.
+
+Pythons `dict` bewahrt die Einfuegereihenfolge, `sorted()` bekommt die Schluessel also in der
+Reihenfolge, in der sie gezaehlt wurden — voller langer aufsteigender Laeufe, die Timsort fast
+umsonst zusammenfuehrt. Rusts `HashMap` gibt sie in Hash-Reihenfolge heraus, praktisch gemischt.
+Rust sortiert *dieselben* Schluessel in Zaehlreihenfolge ebenfalls in 2 ms; auf wirklich
+gemischter Eingabe braucht Python 30 ms und Rust 18 ms, das Ergebnis dreht sich also um. Der
+Workload misst einen Unterschied darin, was eine Map ueber Reihenfolge zusichert, nicht einen
+Geschwindigkeitsunterschied.
 
 Varg und C# werden als gebaute Binaries gemessen, Python und Node ueber ihren Interpreter, weil
 diese Sprachen so benutzt werden. Die Bauzeit steht getrennt in

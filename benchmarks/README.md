@@ -43,10 +43,21 @@ Build time is recorded separately. It is a cost of the toolchain, not of the pro
 | `wordfreq/` | Map insertion keyed by strings, hashing |
 | `token_compare/` | Source size for equivalent agent programs — not timed |
 
-`wordfreq` is here because Varg loses it. A map keyed by strings copies the key on every new
-entry and hashes with SipHash; closing that needs move analysis, which has not been done. A suite
-that contains only the workloads a language wins is advertising, and a reader has no way to tell
-one from the other without a case that goes the other way.
+`wordfreq` is here because Varg loses it, and a suite containing only the workloads a language
+wins is advertising. What it actually measures is worth stating, because the obvious reading is
+wrong. Timed in phases on this machine:
+
+| Phase | Varg / Rust | Python |
+|-------|------------:|-------:|
+| Counting loop | 26 ms | 25 ms |
+| Copying the keys out | 6 ms | — |
+| Sorting them | 18 ms | 2 ms |
+
+The counting loop is a tie, so hashing and map lookups are not the gap. Python's `dict` preserves
+insertion order, so `sorted()` gets the keys in counting order — long ascending runs that Timsort
+merges almost for free. Rust's `HashMap` yields hash order, which is effectively shuffled. Rust
+sorts the same keys in counting order in 2 ms too, and on genuinely shuffled input Python takes
+30 ms against Rust's 18 ms. The difference is what the two maps guarantee about ordering.
 
 ## What the numbers are not
 
