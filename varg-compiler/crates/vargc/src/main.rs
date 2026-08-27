@@ -445,6 +445,44 @@ const FEATURE_MAP: &[(&str, &str)] = &[
     ("__varg_llm_vision",          "llm"),
 ];
 
+/// Pair each line of the generated Rust with the Varg line it came from.
+///
+/// The codegen writes `// <file>:<n>` before each statement, where <n> counts statements — not
+/// lines: the AST carries no source positions. It also writes `// @varg-ctx <file> :: <what>`
+/// at the top of each body.
+/// at the top of each body. Both survive formatting, which is why this runs afterwards.
+fn append_line_map(main_rs_path: &Path) {
+    let Ok(src) = fs::read_to_string(main_rs_path) else { return };
+    let mut context = String::new();
+    let mut entries: Vec<String> = Vec::new();
+    for (idx, line) in src.lines().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("// @varg-ctx ") {
+            context = rest.split(" :: ").nth(1).unwrap_or("").to_string();
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("// ") else { continue };
+        let Some((file, number)) = rest.rsplit_once(':') else { continue };
+        if !file.ends_with(".varg") || number.parse::<u32>().is_err() {
+            continue;
+        }
+        // The marker sits above the statement it describes, so the code it covers starts on the
+        // next line.
+        entries.push(format!(
+            "    ({}, {:?}, {}, {:?}),",
+            idx as u32 + 2,
+            file,
+            number,
+            context
+        ));
+    }
+    let table = format!(
+        "\nstatic __VARG_LINE_MAP: &[(u32, &str, u32, &str)] = &[\n{}\n];\n",
+        entries.join("\n")
+    );
+    let _ = fs::write(main_rs_path, format!("{}{}", src, table));
+}
+
 fn detect_runtime_features(rust_src: &str) -> String {
     let mut features: Vec<&str> = vec![];
     for (pattern, feature) in FEATURE_MAP {
@@ -1502,6 +1540,9 @@ fn compile_varg_file(input_path: &str, run_immediately: bool, debug_mode: bool, 
     }
     final_rust_source.push_str("    let _varg_args: Vec<String> = std::env::args().collect();\n");
     final_rust_source.push_str("    varg_runtime::__varg_install_panic_hook();\n");
+    // The table itself is appended after the file is formatted, when the line numbers are final.
+    final_rust_source
+        .push_str("    varg_runtime::__varg_register_line_map(__VARG_LINE_MAP);\n");
 
     // Find the entry agent and its default method. Prefer an agent that actually exposes an
     // entry point (@[CliCommand], or a 0-arg Run/Main) over merely the first agent declared —
@@ -2077,6 +2118,15 @@ serde_json = "1.0"
         .args(["--edition", "2021"])
         .arg(main_rs_path.to_str().unwrap())
         .status();
+
+    // A failure now says where it happened, in the author's own file.
+    //
+    // It used to report only what went wrong — "index out of bounds: the len is 3 but the index
+    // is 99" — with no file, no line and no function, which is the one thing every other language
+    // gives you here. The markers the codegen already writes carry that; read back after
+    // formatting, when the line numbers are final, they become a table the panic hook consults.
+    // Appended at the end so nothing above it shifts, and costing nothing at runtime.
+    append_line_map(&main_rs_path);
 
     // Resolve effective target triple: CLI flag wins, then env var fallback.
     let effective_triple: Option<String> = wasm_target.map(|t| t.to_string())

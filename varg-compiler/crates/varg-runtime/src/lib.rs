@@ -57,6 +57,16 @@ fn __varg_is_catching() -> bool {
 
 pub fn __varg_install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        // Where it happened, in the author's own file.
+        //
+        // A failure used to report only what went wrong — "index out of bounds: the len is 3 but
+        // the index is 99" — with no file, no line and no function, which is the one thing every
+        // other language gives you here. The line map is built from the generated Rust after it
+        // is formatted, so it costs nothing at runtime: no counter to keep, no statement to
+        // instrument.
+        let origin = info
+            .location()
+            .and_then(|l| __varg_source_location(l.file(), l.line()));
         let msg: String = if let Some(s) = info.payload().downcast_ref::<&str>() {
             s.to_string()
         } else if let Some(s) = info.payload().downcast_ref::<String>() {
@@ -72,7 +82,10 @@ pub fn __varg_install_panic_hook() {
         if __varg_is_catching() {
             return;
         }
-        eprintln!("\x1b[1;31mRuntime error:\x1b[0m {}", clean);
+        match origin {
+            Some(where_) => eprintln!("\x1b[1;31mRuntime error:\x1b[0m {}\n  in {}", clean, where_),
+            None => eprintln!("\x1b[1;31mRuntime error:\x1b[0m {}", clean),
+        }
         // Exit only when the *main* thread failed. A spawned agent runs on its own thread,
         // and exiting here took the whole process down over one bad message — the
         // dispatcher's catch_unwind never got a chance, so an agent could not be marked
@@ -83,6 +96,82 @@ pub fn __varg_install_panic_hook() {
             std::process::exit(1);
         }
     }));
+}
+
+/// Lines of the generated Rust paired with the Varg they came from, newest entry last.
+///
+/// Registered by the program itself at startup; empty for anything not built by `vargc`.
+static __VARG_LINES: std::sync::OnceLock<&'static [(u32, &'static str, u32, &'static str)]> =
+    std::sync::OnceLock::new();
+
+/// Called once at startup by a generated program.
+pub fn __varg_register_line_map(map: &'static [(u32, &'static str, u32, &'static str)]) {
+    let _ = __VARG_LINES.set(map);
+}
+
+/// Translate a position in the generated Rust back to the Varg line it came from.
+///
+/// Only for the generated file itself: a panic raised inside the runtime knows its own source,
+/// not the program's, and guessing there would name a line that has nothing to do with it.
+pub fn __varg_source_location(file: &str, line: u32) -> Option<String> {
+    if !file.replace('\\', "/").ends_with("src/main.rs") {
+        return None;
+    }
+    let map = __VARG_LINES.get()?;
+    let idx = match map.binary_search_by_key(&line, |e| e.0) {
+        Ok(i) => i,
+        Err(0) => return None,
+        Err(i) => i - 1,
+    };
+    let (_, varg_file, statement, context) = map[idx];
+    // The count is of statements, not lines: the AST carries no source positions, so a line
+    // number here would be a guess. Which statement of which construct is exact, and a number
+    // that means what it says beats one that reads like a line and is not.
+    Some(if context.is_empty() {
+        format!("{}, statement {}", varg_file, statement)
+    } else {
+        format!("{}, {} (statement {})", varg_file, context, statement)
+    })
+}
+
+#[cfg(test)]
+mod source_location_tests {
+    use super::*;
+
+    static MAP: &[(u32, &str, u32, &str)] = &[
+        (66, "boom.varg", 1, "fn pick"),
+        (75, "boom.varg", 2, "agent Main.Run"),
+        (81, "boom.varg", 5, "agent Main.Run"),
+    ];
+
+    #[test]
+    fn a_position_maps_to_the_statement_that_covers_it() {
+        __varg_register_line_map(MAP);
+        // Between two entries: the one that started before it.
+        assert_eq!(
+            __varg_source_location("src/main.rs", 78).as_deref(),
+            Some("boom.varg, agent Main.Run (statement 2)")
+        );
+        // Exactly on an entry.
+        assert_eq!(
+            __varg_source_location("src/main.rs", 66).as_deref(),
+            Some("boom.varg, fn pick (statement 1)")
+        );
+    }
+
+    #[test]
+    fn a_position_before_the_first_entry_maps_to_nothing() {
+        __varg_register_line_map(MAP);
+        assert_eq!(__varg_source_location("src/main.rs", 5), None);
+    }
+
+    #[test]
+    fn a_failure_inside_the_runtime_is_not_attributed_to_the_program() {
+        // A panic raised in the runtime knows its own source, not the program's. Guessing there
+        // would name a construct that has nothing to do with it.
+        __varg_register_line_map(MAP);
+        assert_eq!(__varg_source_location("crates/varg-runtime/src/vector.rs", 78), None);
+    }
 }
 
 /// `parse_int(s)` / `parse_float(s)`. These are fallible: the previous lowering was
