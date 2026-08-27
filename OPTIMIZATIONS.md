@@ -1340,6 +1340,65 @@ und dafür ist der Gewinn zu klein. Steht bewusst offen.
 
 ---
 
+## Was andere Sprachen konnten und Varg nicht (Stufe 30)
+
+Aus der Gegenüberstellung mit C#, Python und TypeScript. Jeder Punkt wurde geschrieben und dem
+Compiler vorgelegt; sechs wurden abgelehnt. Alle sechs sind jetzt zu und laufen als Golden-Programm
+(`language_reach`, 20 Prüfungen).
+
+### Funktionen waren keine Werte
+
+`TypeNode::Func` lag im AST, der Codegen erzeugte längst `Box<dyn Fn(..) -> ..>` dafür — **an
+beides kam niemand heran**. Eine Lambda ließ sich ausschließlich dort hinschreiben, wo sie
+aufgerufen wurde: nicht speichern, nicht weiterreichen, nicht zurückgeben. Es fehlte nur die
+Schreibweise. Dazu drei Folgesachen: der Rückgabetyp einer Lambda wurde als `Void` genommen (ein
+Funktionstyp konnte also nie passen), ein Feld mit Funktion ging an die Methodenauflösung und kam
+als „unbekannte Methode" zurück, und eine zurückgegebene Closure verlor ihre Captures.
+
+### Zwei Konstruktionen prüften durch und kompilierten nicht
+
+**Operatoren auf eigenen Typen**: `a + b` auf einem Struct wurde vom Typechecker akzeptiert und
+scheiterte dann an rustc mit „cannot add `V` to `V`". Jetzt erzeugt `add`/`sub`/`mul`/`div`/`rem`
+das passende `std::ops`-Impl, das an die eine inherente Definition weiterreicht; die Operanden
+werden kopiert statt verbraucht. Ein Typ **ohne** die Methode wird jetzt namentlich abgelehnt.
+
+### Drei Dinge, die es schlicht nicht gab
+
+- **`?.`** — mit Map-Zugriff, JSON-Accessoren, `find`, `first` und `last` allesamt Nullable war
+  das ständige Auflösen nur zum Hineinsehen reine Zeremonie. Das Ergebnis bleibt Nullable.
+- **`impl string` / `impl int`** — ein eingebauter Typ wird mit einem Schlüsselwort geschrieben,
+  nicht mit einem Bezeichner, weshalb die Syntax nie parste. Vokabular musste als freie Funktion
+  geschrieben werden und las sich rückwärts.
+- **`T...`** — im **Typ** kodiert, nicht als Flag an der Deklaration: eine Parameterliste wird an
+  hunderten Stellen gebaut, eine Enum-Variante muss nur dort behandelt werden, wo ein Typ
+  erschöpfend gematcht wird. Drei Stellen statt dreihundert.
+
+### Ein Fehler sagte nicht, wo er passiert ist
+
+`Runtime error: index out of bounds` — ohne Datei, ohne Konstrukt, ohne irgendetwas zum Auffinden.
+Das ist das eine, was jede Vergleichssprache hier liefert. Die Marker, die der Codegen ohnehin
+schreibt, werden **nach** dem Formatieren zurückgelesen und als statische Tabelle angehängt: nichts
+wird instrumentiert, nichts kostet etwas, bis wirklich etwas schiefgeht.
+
+Gezählt werden **Anweisungen, keine Zeilen**, und das steht so in der Meldung. Der AST führt keine
+Quellpositionen; eine Zahl, die wie eine Zeile aussieht und keine ist, wäre schlechter als keine.
+
+### Bewusst offen
+
+- **Echte Zeilennummern** brauchen Spans durch Lexer, Parser und AST. `Block` wird an über 300
+  Stellen als Literal gebaut — eine mechanische Massenänderung, deren Fehlermodus eine *falsche*
+  Zeile ist. Eigenes Stück Arbeit, nicht nebenbei.
+- **Vererbung** bleibt draußen: Varg hat Contracts und Komposition, und die Zielgruppe (Agenten)
+  gewinnt durch eine Basisklassen-Hierarchie nichts, was ein Contract nicht besser löst.
+- **Typisiertes `catch (T e)`** ergibt ohne Ausnahme-Hierarchie nichts — `throw` trägt einen
+  String. Ein `catch (string e)` wäre Zierde ohne Filterwirkung.
+- **Generatoren / `yield`** brauchen Zustandsautomaten im Codegen. Groß, und Iterator-Ketten
+  decken den Alltag ab.
+- **Reflection** bleibt draußen: die Sprache kompiliert nach Rust und hat keine Laufzeit-Metadaten,
+  und OCAP zur Compile-Zeit lebt davon, dass zur Laufzeit nichts umgangen werden kann.
+
+---
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests

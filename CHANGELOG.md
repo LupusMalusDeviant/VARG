@@ -6,6 +6,64 @@ Varg uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.1.0] — 2026-08-27
+
+Six things every language Varg is measured against could do and Varg could not. Each was found by
+writing it and watching the compiler refuse, and each is covered by a golden program that runs.
+
+### Added — functions are values
+
+A function had no type, so a lambda could only ever be written at the point it was called: never
+stored, passed on, or handed back. `(int, string) => bool` now names one, and `() => string` names
+one that takes nothing. A lambda's return type is inferred from its body rather than taken as
+`Void`; a function-typed field is called through its owner; a returned closure carries its
+captures. A struct holding a function cannot derive `Debug`, `Clone` or serde — a function is none
+of those — so `Debug` is written out and shows the function as what it is.
+
+### Added — optional chaining
+
+`a?.b` and `a?.m(args)` reach through a value that may not be there; if there is nothing, the
+result is nothing. With map reads, the JSON accessors, `find`, `first` and `last` all nullable,
+resolving one just to look inside it was constant ceremony. The result stays optional. On a plain
+value it is refused: it would say nothing, and accepting it would hide a wrong assumption.
+
+### Added — operators on your own types
+
+`add`, `sub`, `mul`, `div` and `rem` on a type make the matching operator work. `a + b` used to
+type-check and then fail in rustc with "cannot add `V` to `V`" — accepted by the front end,
+refused by the host language. The operands are copied rather than consumed, so a value survives
+being added. A type without the method is refused by name, which is also how one learns the
+operator can be had.
+
+### Added — methods on builtin types
+
+`impl string`, `impl int`, `impl float` and `impl bool` give a builtin type methods of its own, so
+domain vocabulary reads forwards: `title.slugify()` rather than `slugify(title)`. Rust cannot add
+an inherent method to `String` or `i64`, so each block becomes a trait and an impl of it.
+
+### Added — variadic parameters
+
+A trailing `T...` collects however many arguments follow, including none. Inside the body it is an
+array of `T`.
+
+### Changed — a failure says where it happened
+
+A runtime failure reported only what went wrong — "index out of bounds: the len is 3 but the index
+is 99" — with no file, no construct and nothing to locate it by:
+
+```
+Runtime error: index out of bounds: the len is 3 but the index is 99
+  in boom.varg, fn pick (statement 1)
+```
+
+The table is built from markers in the generated Rust after formatting and appended as static
+data, so nothing is instrumented and nothing costs anything until something fails. It counts
+statements, not lines, and says so: the AST carries no source positions, and a number that reads
+like a line and is not would be worse than none.
+
+A panic raised inside the runtime is not attributed to the program — it knows its own source, not
+the caller's.
+
 ## [2.0.0] — 2026-08-27
 
 ### Changed — breaking
