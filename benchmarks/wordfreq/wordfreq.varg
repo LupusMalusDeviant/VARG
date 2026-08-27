@@ -1,0 +1,28 @@
+// Word frequency over 200,000 words, all distinct: build text, split, count, sort the keys.
+// Allocation- and hash-heavy, which is where Varg is slowest ~ it is here because a benchmark
+// suite that only contains what a language wins is advertising.
+fn build(int n) -> string {
+    var parts = [];
+    var i = 0;
+    while i < n {
+        parts.push("item-" + i.to_string());
+        i = i + 1;
+    }
+    return parts.join(" ");
+}
+
+agent Main {
+    public void Run() {
+        var text = build(200000);
+        var start = time_millis();
+        var counts = {"seed": 0};
+        foreach (w in text.split(" ")) {
+            counts[w] = (counts[w] or 0) + 1;
+        }
+        var keys = counts.keys();
+        keys.sort();
+        var elapsed = time_millis() - start;
+        print $"distinct = {keys.len()}";
+        print $"Time: {elapsed}ms";
+    }
+}

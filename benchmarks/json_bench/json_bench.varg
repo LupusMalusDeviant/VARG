@@ -1,0 +1,27 @@
+/// Parse and re-serialise. `json_parse` is fallible, so the work sits in a function that can
+/// propagate with `?` — the shape `golden/progs/json_get.varg` uses. The benchmark predates
+/// `json_parse` becoming fallible and had not built since; the runner recorded a null for it.
+fn round_trip(string doc) -> string {
+    var parsed = json_parse(doc)?
+    return json_stringify(parsed)
+}
+
+fn main() {
+    var start = time_millis()
+
+    var items = "["
+    var i = 0
+    while i < 1000 {
+        if i > 0 items = items + ","
+        var active = i % 3 == 0 ? "false" : "true"
+        items = items + $"\{\"id\":{i},\"name\":\"item_{i}\",\"value\":{i * 17},\"active\":{active}\}"
+        i += 1
+    }
+    items = items + "]"
+
+    var output = round_trip(items) or "[]"
+
+    var elapsed = time_millis() - start
+    print $"JSON length: {output.len()}"
+    print $"Time: {elapsed}ms"
+}

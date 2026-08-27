@@ -1,0 +1,12 @@
+fn fib(int n) -> int {
+    if n <= 1 return n
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    var start = time_millis()
+    var result = fib(35)
+    var elapsed = time_millis() - start
+    print $"fib(35) = {result}"
+    print $"Time: {elapsed}ms"
+}

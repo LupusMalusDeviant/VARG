@@ -101,30 +101,33 @@ vargc run weather.varg
 
 ## Performance
 
-Varg compiles to native Rust binaries — no interpreter, no garbage collector. Measured in-process
-against .NET 10, Node 24 and Python 3.14 on the same machine:
+Varg compiles to native Rust binaries — no interpreter, no garbage collector. Every figure below
+comes from [`benchmarks/`](benchmarks/), which is checked in: sources in four languages, the
+runner, and every one of the 30 samples per measurement. Run it yourself with
+`python benchmarks/run_all.py`.
+
+Time the programs measured around their own work, median of 30 runs on one machine
+(Windows 11, .NET 10, Node 24, Python 3.14):
 
 | Workload | Varg | C# | TypeScript | Python |
 |----------|-----:|---:|-----------:|-------:|
-| fib(32), recursive | **4 ms** | 12 ms | 13 ms | 164 ms |
-| 1M integers: fill, sum, sort | **15 ms** | 132 ms | 217 ms | 140 ms |
-| 200k strings built and joined | **7 ms** | 11 ms | 12 ms | 17 ms |
-| 500k records filtered and aggregated | **1 ms** | 4 ms | 7 ms | 17 ms |
-| Word frequency, 200k distinct keys | 18 ms | **12 ms** | 28 ms | 26 ms |
+| fib(35), recursive | **16 ms** | 53 ms | 53 ms | 700 ms |
+| 100k list: build, filter, map, sum | **1 ms** | 12 ms | 4 ms | 9 ms |
+| 1000-record JSON: build, parse, re-serialise | 1 ms | 21 ms | **<1 ms** | 2 ms |
+| Word frequency, 200k distinct keys | 35 ms | 64 ms | 36 ms | **27 ms** |
 
-Four of five, and the one it loses is understood: a key is copied for each new entry, and Rust's
-default hasher is slower on strings than .NET's. Removing that copy needs a move analysis across
-block boundaries, where a wrong answer emits wrong code, so it stands.
+Faster than C# on all four. It loses word frequency to Python, and that is understood: a key is
+copied for each new entry, and Rust's default hasher is slower on strings than either. Removing
+the copy needs a move analysis across block boundaries, where a wrong answer emits wrong code, so
+it stands.
+
+Varg and C# are timed as their built binaries; Python and Node through their interpreter, which
+is how those languages are used. Build time is reported separately in
+[`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md) — it is a cost of the toolchain, not of
+the program. These are microbenchmarks on one machine: the ratios are the part worth reading.
 
 An MCP server written in Varg answers its first request in **5 ms**, against 27—29 ms for a bare
 Node or Python script with no SDK loaded — and it ships as one binary with no runtime to install.
-
------------|-----:|-------:|---:|-----------:|
-| Fibonacci(35) | **15ms** | 695ms | 53ms | 53ms |
-| Data Pipeline | **1ms** | 5ms | 15ms | 5ms |
-| JSON Processing | **1ms** | 1ms | 35ms | 1ms |
-
-**46x faster than Python** on pure compute. Token efficiency is **1.16x vs Python** (near parity for LLM code generation).
 
 ---
 

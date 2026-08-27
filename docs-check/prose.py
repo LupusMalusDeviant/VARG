@@ -16,6 +16,7 @@ the counts that used to sit in the README's table were either measured and pinne
 """
 
 import io
+import json
 import os
 import re
 import subprocess
@@ -154,11 +155,74 @@ def check_unrun_table(root, unrunnable):
 _ALL_MENTIONED = set()
 
 
+# The order of the rows in the README performance tables, against the benchmark names in
+# results.json. A table row that moves without this moving is caught as a mismatch, which is the
+# point: the numbers are not allowed to drift away from the run that produced them.
+_PERF_ROWS = ("fib", "data", "json_bench", "wordfreq")
+_PERF_COLUMNS = ("Varg", "C#", "TypeScript", "Python")
+
+
+def _stated(cell):
+    """The number a table cell claims, or None if it claims nothing."""
+    cell = cell.replace("*", "").strip()
+    if cell.startswith("<1"):
+        return 0.0
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*ms$", cell)
+    return float(m.group(1)) if m else None
+
+
+def check_benchmark_table(root, docs):
+    """Every performance figure in the READMEs has to be one the checked-in suite produced.
+
+    The README used to carry two performance tables that disagreed with each other, and the
+    headline one was measured from sources that no longer existed anywhere in the repository —
+    nobody could have rerun it. Numbers in a README are claims like any other.
+    """
+    measured_path = os.path.join(root, "benchmarks", "results.json")
+    if not os.path.exists(measured_path):
+        return ["benchmarks/results.json is missing, so no performance claim can be checked"]
+    summary = json.load(io.open(measured_path, encoding="utf-8")).get("summary", {})
+
+    out = []
+    for doc in docs:
+        path = os.path.join(root, doc)
+        if not os.path.exists(path):
+            continue
+        rows = [
+            line for line in io.open(path, encoding="utf-8", errors="replace").read().split(chr(10))
+            if line.startswith("|") and " ms" in line
+        ]
+        if not rows:
+            continue
+        if len(rows) != len(_PERF_ROWS):
+            out.append("%s has %d performance rows, the suite measures %d"
+                       % (doc, len(rows), len(_PERF_ROWS)))
+            continue
+        for bench, line in zip(_PERF_ROWS, rows):
+            cells = [c for c in line.split("|")[1:] if c.strip()]
+            for lang, cell in zip(_PERF_COLUMNS, cells[1:]):
+                claimed = _stated(cell)
+                if claimed is None:
+                    out.append("%s: %s/%s states %r, which is not a time"
+                               % (doc, bench, lang, cell.strip()))
+                    continue
+                actual = summary.get(bench, {}).get(lang, {}).get("self_ms")
+                if actual is None:
+                    out.append("%s claims a time for %s/%s, which the suite did not measure"
+                               % (doc, bench, lang))
+                elif abs(float(actual) - claimed) > 0.5:
+                    out.append("%s says %s/%s is %gms; the last run measured %gms"
+                               % (doc, bench, lang, claimed, float(actual)))
+    return out
+
+
 def prose_matches_the_code(root, vargc, code_docs=(), unrunnable=None, all_builtins=()):
     global _ALL_MENTIONED
     _ALL_MENTIONED = set(all_builtins)
     docs = PROSE_DOCS + tuple(code_docs)
-    problems = check_version(root, docs) + check_commands(root, docs, vargc) + check_paths(root, docs)
+    problems = (check_version(root, docs) + check_commands(root, docs, vargc)
+                + check_paths(root, docs)
+                + check_benchmark_table(root, ("README.md", "README_DE.md")))
     if unrunnable is not None:
         problems += check_unrun_table(root, unrunnable)
     if problems:
@@ -169,5 +233,5 @@ def prose_matches_the_code(root, vargc, code_docs=(), unrunnable=None, all_built
         print("")
         print("Fix the documentation. These are all claims with one mechanical answer.")
         return 1
-    print("prose: versions, commands and paths match the code")
+    print("prose: versions, commands, paths and performance figures match the code")
     return 0

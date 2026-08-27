@@ -1317,6 +1317,22 @@ impl RustGenerator {
         }
     }
 
+    /// Whether an integer expression leaves its width to Rust's literal fallback.
+    ///
+    /// A literal, or arithmetic over literals, carries no width of its own: Rust picks `i32`.
+    /// Anything reaching a variable, a call or a field takes the width from there and must not
+    /// be annotated, or the annotation would fight the expression instead of pinning it.
+    fn width_unpinned(expr: &Expression) -> bool {
+        match expr {
+            Expression::Int(_) => true,
+            Expression::UnaryOp { operand, .. } => Self::width_unpinned(operand),
+            Expression::BinaryOp { left, right, .. } => {
+                Self::width_unpinned(left) && Self::width_unpinned(right)
+            }
+            _ => false,
+        }
+    }
+
     /// The expression a block evaluates to, if it ends in one.
     fn block_tail_expr(block: &Block) -> Option<&Expression> {
         match block.statements.last() {
@@ -1689,7 +1705,28 @@ impl RustGenerator {
                         Some(TypeNode::Array(elem_ty)) => {
                             format!(": Vec<{}>", self.gen_type(elem_ty))
                         },
-                        _ => String::new(),
+                        // Rust falls back to `i32` for an integer literal nothing else pins down,
+                        // so `var i = 0` produced a 32-bit variable in a language whose `int` is
+                        // documented, and generated elsewhere, as `i64`. It wrapped in silence:
+                        // the collections benchmark summed to 704932704, which is the true answer
+                        // modulo 2^32. `int c = 2000000000` was no better — a declared type was
+                        // not carried onto the binding either. Only values built out of literals
+                        // need this; anything else takes its width from the expression.
+                        _ => {
+                            let resolved = ty.clone().or_else(|| self.resolve_type(value));
+                            match resolved {
+                                Some(TypeNode::Int) if Self::width_unpinned(value) => {
+                                    ": i64".to_string()
+                                }
+                                Some(TypeNode::Array(e)) | Some(TypeNode::List(e))
+                                    if matches!(*e, TypeNode::Int)
+                                        && matches!(value, Expression::ArrayLiteral(_)) =>
+                                {
+                                    ": Vec<i64>".to_string()
+                                }
+                                _ => String::new(),
+                            }
+                        }
                     };
                     out.push_str(&format!("{}let mut {}{} = {};\n", indent, esc_ident(name), type_annotation, val_str));
                     // Wave 48: @[Trace] — log variable creation
@@ -5652,7 +5689,9 @@ mod tests {
         };
         let mut gen = RustGenerator::new();
         let code = gen.generate(&program);
-        assert!(code.contains("let mut i = 0;"));
+        // `: i64` is the point: without it Rust types the binding from the literal and picks
+        // i32, in a language whose `int` is i64.
+        assert!(code.contains("let mut i: i64 = 0;"));
         assert!(code.contains("while i < 10 {"));
         assert!(code.contains("i += 1;"));
     }
@@ -10685,7 +10724,7 @@ mod tests {
         let program = make_agent_with_annotation("Trace", stmts);
         let code = RustGenerator::new().generate(&program);
         assert!(code.contains("let x"), "should emit let x: {code}");
-        assert!(code.contains("let mut x = 42"), "should emit variable: {code}");
+        assert!(code.contains("let mut x: i64 = 42"), "should emit variable: {code}");
         // trace log should mention the variable name
         let _trace_x = code.contains("let x\"") || code.contains("let x'") || code.contains("let x)");
         // At minimum the TRACE eprintln for let must appear after the let statement

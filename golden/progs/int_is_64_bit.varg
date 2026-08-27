@@ -1,0 +1,33 @@
+agent I {
+    // `int` maps to `i64`, which REFERENCE.md states and the type table implements. Local
+    // bindings were emitted without an annotation, so Rust applied its own fallback for an
+    // unconstrained integer literal and made them `i32` — including when the type was written
+    // out. rustc's const-eval lint caught it where both operands were constants; through a loop
+    // it wrapped in silence. The collections benchmark summed to 704932704, which is the correct
+    // answer modulo 2^32, and reported it as the result.
+    public void Run() {
+        var a = 2000000000;
+        print $"var  = {a + a}";
+
+        int c = 2000000000;
+        print $"int  = {c + c}";
+
+        var big = 5000000000;
+        print $"lit  = {big}";
+
+        var total = 0;
+        var i = 0;
+        while i < 100000 {
+            total += i * 2;
+            i += 1;
+        }
+        print $"loop = {total}";
+
+        var xs = [2000000000, 2000000000];
+        var s = 0;
+        foreach (x in xs) {
+            s += x;
+        }
+        print $"list = {s}";
+    }
+}

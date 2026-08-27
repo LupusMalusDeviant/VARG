@@ -77,9 +77,24 @@ examples/*.rs
 /scratch/
 /release-staging/
 /bench-csharp/
-# benchmarks/ is local scratch — except the committed agent-scaffolding harness.
-/benchmarks/*
-!/benchmarks/agent/
+# benchmarks/ is the committed comparison suite: sources in four languages, the runner,
+# and the recorded results. Only build output stays out, so that a reader can rerun it and
+# compare against what is checked in. It used to be ignored wholesale, which left the
+# performance table in the README standing on numbers nobody else could reproduce.
+/benchmarks/**/bin/
+/benchmarks/**/obj/
+/benchmarks/**/node_modules/
+/benchmarks/**/.vargc_cache/
+/benchmarks/**/*.exe
+/benchmarks/**/*.pdb
+# A hand-maintained page repeating the measured figures, with no generator and nothing
+# checking it. BENCHMARKS.md is written by run_all.py and is the copy that stays true.
+/benchmarks/benchmarks.html
+# vargc emits the generated Rust beside the source; it is output, not a source file.
+/benchmarks/**/*.rs
+# Nothing in the runner reads token_compare/, so nothing keeps it honest or even builds it.
+# An unrun file that looks like part of a suite is how a suite starts to lie.
+/benchmarks/token_compare/
 /varg-web-ide/
 /varg-compiler/benchmarks/
 
@@ -103,3 +118,7 @@ tools/**/.vargc_cache/
 #  writes the executable into the current directory
 /tutor.exe
 /tutor
+
+# Python bytecode, never a source file.
+__pycache__/
+*.pyc

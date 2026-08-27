@@ -96,21 +96,31 @@ vargc run weather.varg
 
 ## Leistung
 
-Varg kompiliert zu nativen Rust-Binaries — kein Interpreter, kein Garbage Collector. Im Prozess
-gemessen gegen .NET 10, Node 24 und Python 3.14 auf derselben Maschine:
+Varg kompiliert zu nativen Rust-Binaries — kein Interpreter, kein Garbage Collector. Alle Zahlen
+unten stammen aus [`benchmarks/`](benchmarks/), das eingecheckt ist: Quellen in vier Sprachen,
+der Runner und jede einzelne der 30 Messungen pro Wert. Selbst nachfahren mit
+`python benchmarks/run_all.py`.
+
+Von den Programmen um die eigene Arbeit gemessene Zeit, Median aus 30 Laeufen auf einer Maschine
+(Windows 11, .NET 10, Node 24, Python 3.14):
 
 | Workload | Varg | C# | TypeScript | Python |
 |----------|-----:|---:|-----------:|-------:|
-| fib(32), rekursiv | **4 ms** | 12 ms | 13 ms | 164 ms |
-| 1 Mio. Ints: fuellen, summieren, sortieren | **15 ms** | 132 ms | 217 ms | 140 ms |
-| 200k Strings bauen und verbinden | **7 ms** | 11 ms | 12 ms | 17 ms |
-| 500k Records filtern und aggregieren | **1 ms** | 4 ms | 7 ms | 17 ms |
-| Wortfrequenz, 200k eigene Schluessel | 18 ms | **12 ms** | 28 ms | 26 ms |
+| fib(35), rekursiv | **16 ms** | 53 ms | 53 ms | 700 ms |
+| 100k-Liste: bauen, filtern, mappen, summieren | **1 ms** | 12 ms | 4 ms | 9 ms |
+| JSON mit 1000 Records: bauen, parsen, neu serialisieren | 1 ms | 21 ms | **<1 ms** | 2 ms |
+| Wortfrequenz, 200k eigene Schluessel | 35 ms | 64 ms | 36 ms | **27 ms** |
 
-Vier von fuenf, und der eine Rueckstand ist verstanden: pro neuem Eintrag wird ein Schluessel
-kopiert, und Rusts Standard-Hash ist bei Strings langsamer als der von .NET. Die Kopie
-wegzulassen braeuchte eine Move-Analyse ueber Blockgrenzen, wo eine falsche Antwort falschen
-Code erzeugt — deshalb bleibt sie.
+Schneller als C# in allen vier. Die Wortfrequenz verliert es gegen Python, und der Rueckstand ist
+verstanden: pro neuem Eintrag wird ein Schluessel kopiert, und Rusts Standard-Hash ist bei
+Strings langsamer als der von beiden. Die Kopie wegzulassen braeuchte eine Move-Analyse ueber
+Blockgrenzen, wo eine falsche Antwort falschen Code erzeugt — deshalb bleibt sie.
+
+Varg und C# werden als gebaute Binaries gemessen, Python und Node ueber ihren Interpreter, weil
+diese Sprachen so benutzt werden. Die Bauzeit steht getrennt in
+[`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md) — sie ist ein Preis der Werkzeugkette,
+nicht des Programms. Es sind Mikro-Benchmarks auf einer Maschine: lesenswert sind die
+Verhaeltnisse.
 
 Ein in Varg geschriebener MCP-Server beantwortet seine erste Anfrage in **5 ms**, gegen 27—29 ms
 fuer ein nacktes Node- oder Python-Skript ohne geladenes SDK — und er wird als eine Binary
