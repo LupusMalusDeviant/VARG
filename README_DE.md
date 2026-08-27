@@ -19,7 +19,7 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 
 | Metrik | Wert |
 |--------|------|
-| Version | **1.0.0** |
+| Version | **2.0.0** |
 | Testsuite | 1.126 Tests, 0 Fehler, 0 Warnungen |
 | Crates | 10 spezialisierte Compiler-Crates |
 | Token-Typen | 119 Lexer-Tokens |
@@ -236,8 +236,8 @@ Alternativ kann das vorkompilierte Binary manuell heruntergeladen werden:
 
 1. Gehe zur [Releases](../../releases)-Seite.
 2. Lade herunter:
-   - Linux:   `varg-v1.0.0-linux-x64.tar.gz`
-   - Windows: `varg-v1.0.0-windows-x64.zip`
+   - Linux:   `varg-v2.0.0-linux-x64.tar.gz`
+   - Windows: `varg-v2.0.0-windows-x64.zip`
 3. Entpacke `vargc` (Linux) bzw. `vargc.exe` (Windows) und lege die Datei irgendwo in deinen System-`PATH` ab.
 4. Fertig! Los geht's.
 ---
@@ -374,7 +374,8 @@ Project X/
 ## Status
 
 Varg wird aktiv entwickelt. Der Compiler ist funktionsfaehig und erzeugt lauffaehige native Binaries.
-**Aktuelles Release: v1.0.0** -- 47 Entwicklungswellen abgeschlossen, 1.126 Tests bestanden, null Warnungen.
+**Aktuelles Release: v2.0.0** -- 1.248 Tests bestanden, 30 Golden-Programme, die bauen und
+laufen, 84 Ablehnungsproben, und jedes dokumentierte Builtin wird ausgefuehrt.
 
 Die Sprache eignet sich fuer den Bau von echten Agenten, CLI-Tools, API-Clients, Web-Servern,
 Knowledge-Graph-gestuetzten RAG-Systemen, Multi-Agent-Orchestration-Pipelines und REPL-getriebenen

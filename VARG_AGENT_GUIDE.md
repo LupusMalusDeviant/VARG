@@ -1436,8 +1436,8 @@ var slice = arr.substring(1, 3);  // for string arrays
 ### Maps
 ```csharp
 var m = {"key": "value", "n": 42};
-var v   = m["key"];
-var safe = m["key"] or "default";     // or fallback
+var v   = m["key"];                    // string? — a key may not be there
+var safe = m["key"] or "default";     // resolve it with a fallback
 m["new"] = "val";                      // insert/update
 var keys = m.keys();
 var vals = m.values();

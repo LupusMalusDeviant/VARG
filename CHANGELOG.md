@@ -6,7 +6,95 @@ Varg uses [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.0.0] — 2026-08-27
+
+### Changed — breaking
+
+- **Reading a map is nullable.** `m[key]` is `T?` instead of `T`. It used to hand back the value
+  type and unwrap at runtime, so a key that is simply not there took the program down with
+  `called Option::unwrap() on a None value` — a raw Rust panic for an ordinary outcome. C#
+  throws in the same situation; carrying the absence in the type is what makes this safer rather
+  than merely equivalent. Resolve it with `or`, or test it with `== null`.
+  **Indexing a list is unchanged**: a position out of range is a mistake, a missing key is not.
+- **An unresolved optional cannot be passed to a builtin.** `parse_int(m["k"])` used to go
+  through the front end and fail in rustc against generated code. Arithmetic on an optional was
+  already refused; this closes the same hole on call arguments. Rendering one stays legal —
+  interpolation and concatenation both show the value or `null`.
+
+Migration: add `or <fallback>` where a map read fed a plain value. The compiler names every site.
+
+### Added — the WebAssembly target actually works
+
+- `vargc build --target wasm32-wasip1` produces a `.wasm` module. It never could before, for any
+  program: the generated manifest declared `[lib] crate-type = ["cdylib"]` while only
+  `src/main.rs` was written, so cargo refused it outright. A WASI module is a command, which a bin
+  crate already produces.
+- Behind that sat a second one. `rusqlite` was an unconditional dependency — despite a comment
+  in the manifest claiming `wasm-safe` excluded it — so `libsqlite3-sys` tried to build its
+  bundled C for wasm32. It is now behind a `sqlite` feature that the graph, the vector store,
+  agent memory and RAG pull in when a program uses them, so nothing silently loses persistence.
+- A missing rustup target is now named along with the command that adds it, instead of surfacing
+  as a cargo error against generated code.
+- CI builds a module and checks its magic bytes.
+
+### Changed — performance
+
+Measured against C# (.NET 10), TypeScript/Node 24 and Python 3.14 over five workloads, timed
+in-process. Four changes, each at a point where work was done and thrown away:
+
+- **A map write goes through `get_mut`.** It was always `insert(key.clone(), value)` — one
+  string allocation per write even when the entry already existed, which for counting is the
+  entire cost.
+- **`foreach` over `split`/`chars` iterates lazily** instead of building a complete list first.
+- **Concatenation no longer allocates its operands.** `"item-" + n.to_string()` became
+  `format!("{}{}", "item-".to_string(), n.to_string())`; both are already `Display`. A literal
+  operand goes into the format string, and two literals are joined at compile time.
+- **Generated programs use mimalloc** (about 130 KB of binary, not on wasm32). C# puts
+  short-lived objects in a GC nursery by bumping a pointer, which the platform allocators here
+  cannot match.
+
+fib(32) 4 ms against C#'s 12; a million-integer fill/sum/sort 15 ms against 132; 200k strings
+built and joined 7 ms against 11; 500k records filtered and aggregated 1 ms against 4. Word
+frequency over 200k distinct keys is still 18 ms against 12: one key copy per new entry plus
+SipHash against .NET's faster string hash. Removing that copy needs a move analysis across block
+boundaries, where a wrong answer emits wrong code, so it stays.
+
+### Fixed — a program laid out across directories
+
+Writing a 206-line system across `domain/`, `store/`, `agents/` and `api/` found six defects, all
+in the constructions a program needs to grow past one file:
+
+- **Imports resolved only against the importing file's own directory**, so every directory was an
+  island: `store/` could not see `domain/`. The entry file's directory is now tried as well.
+- **A parameter lost to a field of the same name, silently.** A bare name in an agent method
+  became `self.<name>` whenever the agent had such a field, whatever else was in scope —
+  `greet(string name)` returned the field and dropped the argument. It compiled, ran, and gave
+  the wrong answer.
+- **A DI constructor whose parameter was named after its field vanished from the output** without
+  a word, and the call site then failed against a Rust item nobody wrote. Such a constructor may
+  now also do work that does not touch `self`; what still cannot be lowered is refused by name.
+- **An agent implementing a contract and using `?` could not compile at all.** The body was
+  emitted a second time under the trait's signature, putting `?` in a method returning `()`. The
+  trait impl now delegates to the inherent method.
+- **An injected dependency was cloned**, but an agent behind a contract has no `Clone`, so no DI
+  call site passing a variable compiled. Injecting hands the dependency over, so it moves.
+- **`return` counted through neither `unsafe` nor an exhaustive match.** Every method working
+  behind a capability was reported as missing a return, as was any function over an enum written
+  with one arm per variant. Codegen had the same gap, asked of the generated text — after an
+  `unsafe` block the last line is `}`, so an `Ok(())` was appended after a value.
+
+### Fixed — an error in a module pointed at the entry file
+
+The modules of a program are merged into one AST that records nothing about where each item came
+from, so an error about something a module declares was reported against the entry file's first
+line — naming neither the module nor the line. `vargc` now keeps every file it loaded with its
+text and asks each of them. An error mentioning no name at all falls back to the item it was
+found in, and only when the entry file does not itself declare that item.
+
+### Fixed — the compiler and the REPL announced different versions
+
+Both banners wrote the version out by hand, and they drifted: the REPL said v0.12.0 while the
+compiler said v1.0.0. Both read it from the crate now.
 
 ### Changed — breaking
 

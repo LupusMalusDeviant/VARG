@@ -653,7 +653,9 @@ fn run_cli() {
 }
 
 fn print_usage() {
-    println!("Varg Compiler (vargc) v1.0.0");
+    // From the crate, not written out here: the two banners drifted apart the moment one was
+    // updated and the other was not — the REPL announced v0.12.0 while this line said v1.0.0.
+    println!("Varg Compiler (vargc) v{}", env!("CARGO_PKG_VERSION"));
     println!("Usage:");
     println!("  vargc check <file.varg>                       Parse + typecheck only (fast, no build)");
     println!("  vargc build [--target <triple>] <file.varg>   Build to a native (or WASM) executable");
@@ -683,7 +685,10 @@ fn print_usage() {
 fn run_repl() {
     use std::io::{self, Write, BufRead};
 
-    println!("Varg REPL v0.12.0  (type :quit to exit, :help for commands)");
+    println!(
+        "Varg REPL v{}  (type :quit to exit, :help for commands)",
+        env!("CARGO_PKG_VERSION")
+    );
     println!();
 
     let stdin = io::stdin();
