@@ -67,3 +67,8 @@ polars      = { version = "0.46", features = ["lazy", "csv", "parquet", "strings
 duckdb      = { version = "1.1",  features = ["bundled"],     optional = true }
 tantivy     = { version = "0.22",                             optional = true }
 instant-distance = { version = "0.6", optional = true }
+
+[dev-dependencies]
+# Only to inflate a rendered PDF's content stream in a test: the checks on that path were
+# `len() > 100` and `size > 100`, which a document with no text at all would pass.
+flate2 = "1"

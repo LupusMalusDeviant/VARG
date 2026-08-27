@@ -197,6 +197,106 @@ pub fn __varg_pdf_to_base64(doc: &PdfDocHandle) -> String {
 mod tests {
     use super::*;
 
+    /// A rendered document has to contain the text that went into it.
+    ///
+    /// Nothing checked this. The golden program asserts that the base64 is longer than 100
+    /// characters and the saved file bigger than 100 bytes; a renderer that emitted blank pages
+    /// would pass both, and so would one that lost every heading. printpdf writes page content as
+    /// a Flate-compressed stream of hex strings, so the text can be recovered and looked for.
+    #[test]
+    fn rendered_pdf_contains_the_text_it_was_given() {
+        use flate2::read::ZlibDecoder;
+        use std::io::Read;
+
+        let doc = __varg_pdf_create("Report Title");
+        __varg_pdf_add_section(&doc, "First Section", "Body text alpha bravo.");
+        __varg_pdf_add_text(&doc, "A paragraph, delta echo.");
+        let bytes = {
+            let d = doc.lock().unwrap_or_else(|e| e.into_inner());
+            render_pdf(&d)
+        };
+
+        assert!(bytes.starts_with(b"%PDF-"), "not a PDF at all");
+        let page_markers = bytes
+            .windows(10)
+            .filter(|w| w == b"/Type /Pag" || w == b"/Type/Page")
+            .count();
+        assert!(page_markers >= 1, "no page object in the output");
+
+        // Every stream in the file, inflated where it inflates, concatenated.
+        let mut recovered = Vec::new();
+        let mut at = 0usize;
+        while let Some(s) = find(&bytes[at..], b"stream") {
+            let body_start = at + s + b"stream".len();
+            let body_start = skip_eol(&bytes, body_start);
+            let Some(e) = find(&bytes[body_start..], b"endstream") else { break };
+            let body = &bytes[body_start..body_start + e];
+            let mut out = Vec::new();
+            // Keep what came out even when the decoder stops early, and the raw bytes
+            // only when nothing came out at all: an uncompressed stream is still content.
+            let _ = ZlibDecoder::new(body).read_to_end(&mut out);
+            if out.is_empty() {
+                recovered.extend_from_slice(body);
+            } else {
+                recovered.extend_from_slice(&out);
+            }
+            at = body_start + e + b"endstream".len();
+        }
+        let text = hex_strings(&recovered);
+        for want in ["First Section", "Body text alpha bravo.", "A paragraph, delta echo."] {
+            assert!(
+                text.contains(want),
+                "{:?} is missing from the rendered page; recovered: {:?}",
+                want,
+                text
+            );
+        }
+    }
+
+    fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    fn skip_eol(b: &[u8], mut i: usize) -> usize {
+        if b.get(i) == Some(&b'\r') {
+            i += 1;
+        }
+        if b.get(i) == Some(&b'\n') {
+            i += 1;
+        }
+        i
+    }
+
+    /// The `<48656C6C6F>` operands of the text operators, decoded.
+    fn hex_strings(content: &[u8]) -> String {
+        let mut out = String::new();
+        let mut i = 0;
+        while i < content.len() {
+            if content[i] == b'<' {
+                if let Some(end) = find(&content[i..], b">") {
+                    let hex = &content[i + 1..i + end];
+                    let mut byte = 0u8;
+                    let mut half = false;
+                    for c in hex {
+                        let Some(v) = (*c as char).to_digit(16) else { continue };
+                        if half {
+                            out.push((byte << 4 | v as u8) as char);
+                            half = false;
+                        } else {
+                            byte = v as u8;
+                            half = true;
+                        }
+                    }
+                    out.push(' ');
+                    i += end + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
     #[test]
     fn test_pdf_create() {
         let doc = __varg_pdf_create("Test Document");

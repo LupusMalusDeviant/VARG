@@ -4903,6 +4903,7 @@ dependencies = [
  "base64",
  "dirs",
  "duckdb",
+ "flate2",
  "futures",
  "instant-distance",
  "ndarray",
