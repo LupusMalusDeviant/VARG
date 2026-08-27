@@ -1976,6 +1976,18 @@ fn {handler_name}(body: String) -> String {{
     // For WASM we also skip tokio (it doesn't compile to wasm32).
     let tokio_dep_str = if is_wasm { "" } else { tokio_dep };
 
+    // A program allocates constantly — every string it builds, every key it stores — and on the
+    // system allocator that is where its time goes: building 200k short strings took 13 ms
+    // against C#'s 6, and a 200k-key word count 26 ms against 11. C# allocates short-lived
+    // objects by bumping a pointer into a GC nursery, which the platform allocators here cannot
+    // match. mimalloc closes that gap (6 ms and 14 ms) for about 130 KB of binary. Not on wasm32:
+    // it builds C, and the WASI sandbox brings its own allocator.
+    let mimalloc_dep = if is_wasm {
+        ""
+    } else {
+        "mimalloc = { version = \"0.1\", default-features = false }\n"
+    };
+
     // No `[lib]` section for WASM.
     //
     // It used to declare `crate-type = ["cdylib"]` while only `src/main.rs` was ever written, so
@@ -2025,7 +2037,7 @@ varg-os-types = {{ path = "{}" }}
 varg-runtime  = {{ path = "{}"{} }}
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
-{}{}{}{}"#, varg_name,
+{}{}{}{}{}"#, varg_name,
         lib_section,
         varg_os_types_path.display().to_string().replace("\\", "/"),
         varg_runtime_path.display().to_string().replace("\\", "/"),
@@ -2033,6 +2045,7 @@ serde_json = "1.0"
         tokio_dep_str,
         chrono_dep,
         rand_dep,
+        mimalloc_dep,
         extra_deps);
 
     let cargo_toml_path = cache_dir.join("Cargo.toml");
@@ -2046,7 +2059,12 @@ serde_json = "1.0"
     let main_rs_path = src_dir.join("main.rs");
     // Plan 44: Prepend #![allow(...)] to suppress common Rust warnings
     let allow_header = "#![allow(unused_variables, unused_mut, dead_code, unused_imports, unreachable_code, unused_assignments)]\n\n";
-    let formatted_source = format!("{}{}", allow_header, final_rust_source);
+    let allocator = if is_wasm {
+        ""
+    } else {
+        "#[global_allocator]\nstatic __VARG_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;\n\n"
+    };
+    let formatted_source = format!("{}{}{}", allow_header, allocator, final_rust_source);
     fs::write(&main_rs_path, &formatted_source).unwrap();
 
     // Plan 44: Run rustfmt on generated code for clean output

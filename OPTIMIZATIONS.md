@@ -1279,6 +1279,67 @@ Ablehnungsproben, drei Doku-Tore, und alle 19 echten Programme bauen zu nativen 
 
 ---
 
+## Sicherheit und Tempo gegen C# (Stufe 29)
+
+Gemessen statt behauptet: fünf Workloads, jeweils in Varg, C# (.NET 10), TypeScript/Node 24 und
+Python 3.14, im Prozess gestoppt.
+
+### Zuerst drei Defekte, die beim Messen auffielen
+
+**Ein fehlender Map-Schlüssel nahm das Programm mit.** `m["nope"]` gab den Werttyp zurück und
+packte zur Laufzeit aus — `called Option::unwrap() on a None value`, eine rohe Rust-Panik für
+etwas so Gewöhnliches wie einen nicht vorhandenen Schlüssel. C# wirft hier ebenfalls; die Absenz
+im **Typ** zu führen ist das, was daraus *sicherer* statt bloß *gleichwertig* macht. Ein Map-Zugriff
+ist jetzt `T?`. Ein Listenindex bleibt einfach: eine Position außerhalb der Grenzen ist ein Fehler,
+ein fehlender Schlüssel nicht.
+
+Damit ging auch `counts[w] or 0`, das vorher durchprüfte und dann in rustc scheiterte
+(`unwrap_or_else` auf einem Integer). Und beim Durchziehen fiel dieselbe Lücke ein Stück weiter
+auf: **`parse_int(m["k"])` wurde nicht abgelehnt** — Arithmetik auf einem Nullable schon, ein
+Builtin-Argument nicht. Jetzt beides.
+
+**`vargc build --target wasm32-wasip1` konnte nie funktionieren**, für kein Programm, obwohl der
+Befehl in `vargc --help` steht. Das erzeugte Manifest deklarierte `[lib] crate-type = ["cdylib"]`,
+geschrieben wurde nur `src/main.rs` — cargo lehnte es rundheraus ab. Ein WASI-Modul ist ein
+Kommando, was eine bin-Crate ohnehin erzeugt. Dahinter saß ein zweiter: **rusqlite war unbedingte
+Abhängigkeit**, obwohl der Kommentar im Manifest behauptete, `wasm-safe` schließe es aus — also
+versuchte libsqlite3-sys, sein gebündeltes C für wasm32 zu bauen. Jetzt hinter einem `sqlite`-
+Feature, das Graph, Vector-Store, Memory und RAG anfordern, damit nichts still seine Persistenz
+verliert. Die CI baut ein Modul und prüft die Magic Bytes.
+
+### Dann das Tempo
+
+Vier Änderungen am Codegen, jede an einer Stelle, wo Arbeit verrichtet und sofort weggeworfen wurde:
+
+1. **Map-Schreibzugriff über `get_mut`.** Es war immer `insert(key.clone(), v)` — eine
+   String-Allokation pro Schreibvorgang, auch wenn der Eintrag schon da war. Für das Häufigste,
+   was man mit einer Map tut (zählen), war das der ganze Aufwand.
+2. **`foreach` iteriert faul.** `split`/`chars` bauten erst eine vollständige `Vec<String>`,
+   obwohl die Schleife jedes Element genau einmal ansieht.
+3. **Verkettung allokiert ihre Operanden nicht mehr.** `"item-" + n.to_string()` erzeugte
+   `format!("{}{}", "item-".to_string(), n.to_string())` — zwei Wegwerf-Strings pro Verkettung.
+   Beide sind bereits `Display`; ein Literal wandert außerdem in die Formatzeichenkette.
+4. **mimalloc als Allokator.** C# legt kurzlebige Objekte per Zeigerinkrement in einer
+   GC-Nursery ab; die Systemallokatoren hier können das nicht. 200k kurze Strings zu bauen kostete
+   13 ms gegen C#s 6 — mit mimalloc 6. Kostet ~130 KB Binärgröße. Nicht für wasm32.
+
+### Ergebnis
+
+| Workload | Varg | C# | Node | Python |
+|---|---|---|---|---|
+| fib(32) | **4 ms** | 13 | 13 | 162 |
+| 1 Mio. Ints: füllen, summieren, sortieren | **15 ms** | 137 | 201 | 129 |
+| 200k Strings bauen + join | **6 ms** | 6–19 | 12 | 16 |
+| Wortfrequenz, 200k eigene Schlüssel | 15 ms | **11** | 27 | 24 |
+| 500k Records: filtern, aggregieren | **1 ms** | 5 | 7 | 17 |
+
+Vier von fünf gewonnen, beim Array **9×**. Der eine Rückstand ist gemessen erklärbar: pro *neuem*
+Schlüssel eine Kopie (5 ms) plus SipHash gegen .NETs schnelleren String-Hash. Die Kopie wegzulassen
+bräuchte eine Move-Analyse über Blockgrenzen; eine falsche Antwort dort erzeugt **falschen Code**,
+und dafür ist der Gewinn zu klein. Steht bewusst offen.
+
+---
+
 ## Priorität 0 — Vertrauen absichern (Voraussetzung für alles Weitere)
 
 ### 0.1 Golden-Output-Tests statt nur „kompiliert"-Tests

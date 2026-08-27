@@ -1605,9 +1605,21 @@ impl RustGenerator {
                     let is_map = matches!(index, Expression::String(_))
                         || if let Expression::Identifier(name) = target { self.map_vars.contains(name) } else { false };
                     if is_map {
-                        // Map insert — compute value first to avoid borrow conflict
+                        // Map write — compute the value first to avoid a borrow conflict, then
+                        // write into the existing slot if the key is already there.
+                        //
+                        // It was always `insert(key.clone(), v)`, which clones the key on every
+                        // write even when the entry exists. For the commonest thing anyone does
+                        // with a map — counting — that is one string allocation per item, and it
+                        // dominated the runtime: a word-frequency pass over 200k words spent
+                        // 17 ms where C# took 10 and hand-written Rust 2. Writing through
+                        // `get_mut` allocates only for a key that is genuinely new.
                         let val_str = self.gen_expression(value);
-                        out.push_str(&format!("{}{{ let __v = {}; {}.insert({}.clone(), __v); }}\n", indent, val_str, self.gen_expression(target), idx_str));
+                        let map = self.gen_expression(target);
+                        out.push_str(&format!(
+                            "{}{{ let __v = {}; match {}.get_mut(&{}) {{ Some(__slot) => *__slot = __v, None => {{ {}.insert({}.clone(), __v); }} }} }}\n",
+                            indent, val_str, map, idx_str, map, idx_str
+                        ));
                     } else {
                         // Array index assign. Parenthesize index to keep `arr[len - 1]`
                         // from being parsed as `len - (1 as usize)`.
@@ -1716,6 +1728,24 @@ impl RustGenerator {
                 },
                 Statement::Foreach { item_name, value_name, collection, body } => {
                     let coll_code = self.gen_expression(collection);
+                    // `foreach` walks the items once, so a builtin that produces a fresh list
+                    // does not need to finish building it first. `split` and `chars` end in
+                    // `.collect::<Vec<String>>()`; dropping that leaves the same iterator without
+                    // the intermediate list. Only for a value made right here — a named list has
+                    // to stay a list. The suffix is one this generator just wrote, and if it is
+                    // not there nothing changes.
+                    let coll_code = match collection {
+                        Expression::MethodCall { method_name, .. }
+                            if matches!(method_name.as_str(), "split" | "chars")
+                                && !self.user_impl_methods.contains(method_name.as_str()) =>
+                        {
+                            coll_code
+                                .strip_suffix(".collect::<Vec<String>>()")
+                                .map(|lazy| lazy.to_string())
+                                .unwrap_or(coll_code)
+                        }
+                        _ => coll_code,
+                    };
                     // Can't move out of self-fields behind &mut self — clone them
                     let coll_code = self.clone_self_field_if_needed(&coll_code);
                     // `for x in coll` moves the collection. If the program uses it again after the
@@ -2552,6 +2582,28 @@ impl RustGenerator {
                         // host language for an ordinary Varg line. Route those through __varg_fmt,
                         // which renders the value or `null`.
                         let fmt_side = |g: &mut Self, e: &Expression| -> String {
+                            // An operand of `format!` needs no String of its own. A literal was
+                            // rendered as `"x".to_string()` and an explicit `n.to_string()` was
+                            // kept, so `"item-" + n.to_string()` allocated twice per
+                            // concatenation and threw both away immediately — building 200k such
+                            // strings took 25 ms against C#'s 6. Both are already `Display`.
+                            match e {
+                                Expression::String(lit) => return format!("{:?}", lit),
+                                Expression::MethodCall { method_name, caller, args }
+                                    if method_name == "to_string"
+                                        && args.is_empty()
+                                        && matches!(
+                                            g.resolve_type(caller),
+                                            Some(TypeNode::Int)
+                                                | Some(TypeNode::Float)
+                                                | Some(TypeNode::Bool)
+                                                | Some(TypeNode::String)
+                                        ) =>
+                                {
+                                    return g.gen_expression(caller);
+                                }
+                                _ => {}
+                            }
                             let src = g.gen_expression(e);
                             if matches!(g.resolve_type(e), Some(TypeNode::Nullable(_))) {
                                 format!("({}).__varg_fmt()", src)
@@ -2559,9 +2611,29 @@ impl RustGenerator {
                                 src
                             }
                         };
-                        let l = fmt_side(self, left);
-                        let r = fmt_side(self, right);
-                        return format!("format!(\"{{}}{{}}\", {}, {})", l, r);
+                        // A literal belongs in the format string, not in the argument list:
+                        // `format!("item-{}", n)` has one thing to render where
+                        // `format!("{}{}", "item-", n)` has two.
+                        let lit_text = |e: &Expression| match e {
+                            Expression::String(v) => Some(v.replace('{', "{{").replace('}', "}}")),
+                            _ => None,
+                        };
+                        return match (lit_text(left), lit_text(right)) {
+                            (Some(a), Some(b)) => format!("{:?}.to_string()", format!("{}{}", a, b)),
+                            (Some(a), None) => {
+                                let r = fmt_side(self, right);
+                                format!("format!({:?}, {})", format!("{}{{}}", a), r)
+                            }
+                            (None, Some(b)) => {
+                                let l = fmt_side(self, left);
+                                format!("format!({:?}, {})", format!("{{}}{}", b), l)
+                            }
+                            (None, None) => {
+                                let l = fmt_side(self, left);
+                                let r = fmt_side(self, right);
+                                format!("format!(\"{{}}{{}}\", {}, {})", l, r)
+                            }
+                        };
                     }
                 }
 
@@ -2901,7 +2973,14 @@ impl RustGenerator {
                 } else if method_name == "sort" {
                     format!("{}.sort()", self.gen_receiver(caller))
                 } else if method_name == "join" {
-                    format!("{}.join(&{})", self.gen_receiver(caller), arg_strs[0])
+                    // `join` takes a `&str`; the separator was given a String of its own first.
+                    format!(
+                        "{}.join({})",
+                        self.gen_receiver(caller),
+                        arg_strs[0]
+                            .strip_suffix(".to_string()")
+                            .unwrap_or(&format!("&{}", arg_strs[0]))
+                    )
                 } else if method_name == "min" {
                     // min(a, b) standalone OR a.min(b) method form
                     let (a, b) = if args.len() >= 2 { (arg_ops[0].clone(), arg_strs[1].clone()) }
@@ -5576,9 +5655,8 @@ mod tests {
             right: Box::new(Expression::String("world".to_string())),
         };
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("format!"));
-        assert!(code.contains("hello "));
-        assert!(code.contains("world"));
+        // Two literals are joined here rather than at runtime: there is nothing to format.
+        assert_eq!(code, "\"hello world\".to_string()");
     }
 
     #[test]

@@ -2144,6 +2144,27 @@ impl TypeChecker {
                         _ => {}
                     }
                 }
+                // An unresolved optional is not a value yet, and handing one to a builtin was
+                // not caught: arithmetic on a nullable was refused, but `parse_int(m["k"])` went
+                // through the front end and failed in rustc against generated code. Only
+                // builtins: a user function may take a nullable on purpose, and a lambda
+                // argument has no type to compare. Rendering one stays legal — interpolation and
+                // concatenation both show the value or `null`.
+                if !self.known_functions.contains_key(method_name)
+                    && self.method_signatures.values().all(|m| !m.contains_key(method_name))
+                {
+                    for arg in args.iter() {
+                        if matches!(arg, Expression::Lambda { .. }) {
+                            continue;
+                        }
+                        if let Ok(TypeNode::Nullable(_)) = self.infer_expression_type(arg) {
+                            return Err(TypeError::TypeMismatch {
+                                expected: "a plain value — supply a fallback with `or`".to_string(),
+                                found: format!("argument of `{}`", method_name),
+                            });
+                        }
+                    }
+                }
                 // T3: receiver-typed dispatch. String/collection methods are meaningless on a
                 // scalar (`n.len()`, `x.to_upper()` where n/x are numbers) — catch that here
                 // instead of leaking an opaque rustc error. Deliberately conservative: fire ONLY
@@ -11708,6 +11729,23 @@ mod tests {
                 }
             }
             "#,
+        );
+    }
+
+    #[test]
+    fn a_nullable_cannot_be_passed_where_a_plain_value_is_wanted() {
+        // Arithmetic on a nullable was refused, but handing one to a builtin was not: the value
+        // went through the front end and failed in rustc against generated code.
+        assert_rejected(
+            r#"
+            agent Main {
+                public void Run() {
+                    var m = {"a": "1"};
+                    print $"{parse_int(m["b"]) or 0}";
+                }
+            }
+            "#,
+            "supply a fallback with",
         );
     }
 

@@ -1,0 +1,9 @@
+// @probe reject: supply a fallback with
+// Arithmetic on a nullable was refused, but handing one to a builtin was not: the value went
+// through the front end and failed in rustc against generated code the author never wrote.
+agent Main {
+    public void Run() {
+        var m = {"a": "1"};
+        print $"{parse_int(m["b"]) or 0}";
+    }
+}
