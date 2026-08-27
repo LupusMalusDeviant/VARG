@@ -139,9 +139,9 @@ jobs:
         working-directory: .
         run: |
           rustup target add wasm32-wasip1
-          cd "$(mktemp -d)"
-          printf 'agent Main { public void Run() { print "hi from wasm"; } }
-' > hello.varg
+          work="$(mktemp -d)"
+          echo 'agent Main { public void Run() { print "hi from wasm"; } }' > "$work/hello.varg"
+          cd "$work"
           "$GITHUB_WORKSPACE/varg-compiler/target/release/vargc" build --target wasm32-wasip1 hello.varg
           test -s hello.wasm
-          head -c 4 hello.wasm | od -c | grep -q 'a   s   m'
+          test "$(head -c 4 hello.wasm | tail -c 3)" = asm
