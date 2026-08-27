@@ -1042,6 +1042,33 @@ Respond in JSON format.
 
 ---
 
+## Methods on Builtin Types
+
+`impl` works on `string`, `int`, `float` and `bool` as well as on your own types, so domain
+vocabulary reads forwards — `title.slugify()` rather than `slugify(title)`. Inside the block,
+`self` is the value.
+
+```csharp
+impl string {
+    public fn shout() -> string { return self.to_upper() + "!"; }
+    public fn repeated(int n) -> string { return self.repeat(n); }
+}
+
+impl int {
+    public fn doubled() -> int { return self * 2; }
+}
+
+agent Main {
+    public void Run() {
+        print "hi".shout();          // HI!
+        print "ab".repeated(2);      // abab
+        print $"{21.doubled()}";     // 42
+    }
+}
+```
+
+---
+
 ## Optional Chaining
 
 `?.` reaches through a value that may not be there. If there is nothing, the result is nothing —

@@ -975,6 +975,41 @@ impl RustGenerator {
                         ));
                     }
                 }
+                // Methods on a builtin type. Rust cannot add an inherent method to `String` or
+                // `i64`, so they become a trait and an impl of it — in scope for the whole
+                // generated file, which is where the calls are.
+                let builtin_target = match type_name.as_str() {
+                    "string" => Some("String"),
+                    "int" => Some("i64"),
+                    "float" => Some("f64"),
+                    "bool" => Some("bool"),
+                    _ => None,
+                };
+                if let Some(rust_ty) = builtin_target {
+                    let trait_name = format!("__VargExt_{}", type_name);
+                    let mut decls = String::new();
+                    let mut impls = String::new();
+                    for method in methods {
+                        // `&self`, not `&mut self`: a value being read through an added method
+                        // is not being changed, and a literal receiver cannot be borrowed mutably.
+                        let sig = self
+                            .gen_method_signature(method, true)
+                            .replacen("fn ", "fn ", 1)
+                            .replace("&mut self", "&self");
+                        decls.push_str(&format!("    {};\n", sig));
+                        impls.push_str(&format!("    {} {{\n", sig));
+                        self.set_context(format!("impl {}.{}", type_name, method.name));
+                        if let Some(body) = &method.body {
+                            self.open_param_scope(&method.args);
+                            impls.push_str(&self.gen_block(body, 2));
+                        }
+                        impls.push_str("    }\n");
+                    }
+                    return format!(
+                        "trait {t} {{\n{d}}}\nimpl {t} for {r} {{\n{i}}}\n",
+                        t = trait_name, d = decls, r = rust_ty, i = impls
+                    );
+                }
                 let tp = if type_params.is_empty() { "".to_string() } else { format!("<{}>", type_params.join(", ")) };
                 // impl<A, B> Pair<A, B> { ... } — repeat type params on the struct name
                 let type_with_params = if type_params.is_empty() { type_name.clone() } else { format!("{}{}", type_name, tp) };

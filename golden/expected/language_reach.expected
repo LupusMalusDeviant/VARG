@@ -11,3 +11,6 @@ OK   operator_add
 OK   operator_sub
 OK   operator_mul
 OK   operands_survive
+OK   method_on_a_literal
+OK   method_on_a_variable
+OK   method_on_a_number

@@ -728,7 +728,16 @@ impl Parser {
                     }
                     self.consume(Token::GreaterThan)?;
                 }
-                let type_name = self.parse_identifier()?;
+                // A builtin type is spelled with a keyword, not an identifier, so `impl string`
+                // did not parse and domain vocabulary had to be written as free functions —
+                // `slugify(title)` read backwards against `title.slugify()`.
+                let type_name = match self.peek() {
+                    Some(Token::TypeString) => { self.advance(); "string".to_string() }
+                    Some(Token::TypeInt) => { self.advance(); "int".to_string() }
+                    Some(Token::TypeFloat) => { self.advance(); "float".to_string() }
+                    Some(Token::TypeBool) => { self.advance(); "bool".to_string() }
+                    _ => self.parse_identifier()?,
+                };
                 // Optional generic type args after type name: impl TypeName<T> or impl<A> Pair<A>
                 if self.peek() == Some(&Token::LessThan) {
                     self.advance();

@@ -1155,8 +1155,12 @@ impl TypeChecker {
             },
             // Wave 13: impl blocks for structs
             Item::Impl { type_name, type_params: _, methods } => {
-                // Validate that the struct exists
-                if !self.struct_fields.contains_key(type_name) {
+                // Validate that the struct exists — or that it is a builtin type being given
+                // methods of its own.
+                const EXTENSIBLE_BUILTINS: &[&str] = &["string", "int", "float", "bool"];
+                if !EXTENSIBLE_BUILTINS.contains(&type_name.as_str())
+                    && !self.struct_fields.contains_key(type_name)
+                {
                     return Err(TypeError::IllegalOsCall {
                         reason: format!("impl for unknown type `{}`", type_name),
                     });
@@ -2255,8 +2259,17 @@ impl TypeChecker {
                     "to_upper", "to_lower", "trim", "trim_start", "trim_end", "ltrim", "rtrim",
                     "chars", "reverse", "is_empty", "keys", "values", "pop", "first", "last",
                 ];
-                let caller_is_synthetic_self =
-                    matches!(&**caller, Expression::Identifier(n) if n == "self");
+                // Inside `impl string { ... }` and its siblings, `self` IS the value, so a
+                // receiver builtin written on it is the ordinary form, not the free one. Without
+                // this, giving `string` a method that used any string builtin was refused with
+                // "write `value.to_upper()`" — which is exactly what had been written.
+                let extending_a_builtin = self
+                    .current_agent_name
+                    .as_deref()
+                    .map(|n| matches!(n, "string" | "int" | "float" | "bool"))
+                    .unwrap_or(false);
+                let caller_is_synthetic_self = !extending_a_builtin
+                    && matches!(&**caller, Expression::Identifier(n) if n == "self");
                 if RECEIVER_METHODS.contains(&method_name)
                     || NUMERIC_RECEIVER_METHODS.contains(&method_name)
                 {
@@ -2311,6 +2324,32 @@ impl TypeChecker {
                                 self.infer_expression_type(arg)?;
                             }
                             return Ok(*ret);
+                        }
+                    }
+                }
+                // A method the program itself put on a builtin type. Looked up before the
+                // receiver check below, which otherwise reports it as unknown on a scalar.
+                if !caller_is_synthetic_self {
+                    if let Ok(ct) = self.infer_expression_type(caller) {
+                        let builtin_name = match ct {
+                            TypeNode::String => Some("string"),
+                            TypeNode::Int => Some("int"),
+                            TypeNode::Float => Some("float"),
+                            TypeNode::Bool => Some("bool"),
+                            _ => None,
+                        };
+                        if let Some(owner) = builtin_name {
+                            if let Some(sig) = self
+                                .method_signatures
+                                .get(owner)
+                                .and_then(|m| m.get(method_name.as_ref() as &str))
+                                .cloned()
+                            {
+                                for arg in args.iter() {
+                                    self.infer_expression_type(arg)?;
+                                }
+                                return Ok(sig.return_ty.unwrap_or(TypeNode::Void));
+                            }
                         }
                     }
                 }
@@ -12002,6 +12041,32 @@ mod tests {
             }
             "#,
             "add",
+        );
+    }
+
+    #[test]
+    fn a_builtin_type_can_be_given_a_method() {
+        // `impl` only accepted a struct, so domain vocabulary had to be written as free
+        // functions and read backwards: `slugify(title)` rather than `title.slugify()`.
+        assert_accepted(
+            r#"
+            impl string {
+                public fn shout() -> string { return self.to_upper() + "!"; }
+                public fn repeated(int n) -> string { return self.repeat(n); }
+            }
+
+            impl int {
+                public fn doubled() -> int { return self * 2; }
+            }
+
+            agent Main {
+                public void Run() {
+                    print "hi".shout();
+                    print "ab".repeated(2);
+                    print $"{21.doubled()}";
+                }
+            }
+            "#,
         );
     }
 
