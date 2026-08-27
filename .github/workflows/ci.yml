@@ -117,7 +117,7 @@ jobs:
             varg-progs-${{ runner.os }}-
       - name: Build vargc (release)
         run: cargo build -p vargc --release --locked
-      - name: Documentation compiles and covers the builtins
+      - name: Documentation compiles, covers the builtins, and its prose holds
         # Four rounds found the same defect: a signature in REFERENCE.md or VARG_AGENT_GUIDE.md
         # that the compiler rejects. Nothing caught it because nothing fed the docs to the
         # compiler. Cheap (check only), so it runs before the builds.

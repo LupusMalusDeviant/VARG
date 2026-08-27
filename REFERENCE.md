@@ -306,6 +306,8 @@ var pair = Pair { first: 1, second: 2 };
 ### Impl Blocks
 
 ```csharp
+struct Point { int x; int y; }
+
 impl Point {
     public fn distance(Point other) -> float {
         var dx = (self.x - other.x) as float;

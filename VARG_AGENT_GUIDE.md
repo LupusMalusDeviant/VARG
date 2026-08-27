@@ -1,6 +1,6 @@
 # Varg: AI Agent Developer Guide (Parser-Verified)
 
-You are an AI assistant writing code in **Varg** — a compiled, statically typed language for autonomous AI agents. Varg transpiles to Rust for native performance with C#-like syntax. This guide is generated directly from the parser source (`varg-parser/src/lib.rs`) and supersedes all previous documentation. Every rule here is verified against the actual parser grammar.
+You are an AI assistant writing code in **Varg** — a compiled, statically typed language for autonomous AI agents. Varg transpiles to Rust for native performance with C#-like syntax. This guide is generated directly from the parser source (`varg-compiler/crates/varg-parser/src/lib.rs`) and supersedes all previous documentation. Every rule here is verified against the actual parser grammar.
 
 ---
 
@@ -524,7 +524,10 @@ agent Counter {
 
     // Async method
     public async string Fetch(string url) {
-        return fetch(url, "GET") or "";
+        unsafe {
+            var net = NetworkAccess {};
+            return fetch(url, "GET") or "";
+        }
     }
 
     // Entry point
@@ -641,6 +644,10 @@ contract IFetcher {
 
 ### Implementing a Contract
 ```csharp
+contract IDatabase {
+    string query(string sql);
+}
+
 // Colon syntax (preferred)
 agent SqliteDb : IDatabase {
     string db_path;
@@ -650,8 +657,10 @@ agent SqliteDb : IDatabase {
     }
 
     public string query(string sql) {
-        var db = db_open(self.db_path);
-        var rows = db_query(db, sql, []);
+        unsafe {
+            var access = DbAccess {};
+            var db = db_open(self.db_path)?;
+            var rows = db_query(db, sql, []) or [];
         return json_stringify(rows);
     }
 
@@ -684,6 +693,19 @@ agent MultiImpl : IDatabase, ILogger {
 ### Dependency Injection
 Contract-typed fields compile to `Box<dyn Trait>`:
 ```csharp
+contract IDatabase { string query(string sql); }
+contract ILogger   { void info(string message); }
+
+agent SqliteDb implements IDatabase {
+    string path;
+    public SqliteDb(string path) { self.path = path; }
+    public string query(string sql) { return "[]"; }
+}
+
+agent ConsoleLogger implements ILogger {
+    public void info(string message) { print message; }
+}
+
 agent MyService {
     IDatabase db;     // DI field — must be contract type
     ILogger log;
@@ -711,6 +733,14 @@ agent MyService {
 }
 
 // Testing: inject mock
+agent MockDb implements IDatabase {
+    public string query(string sql) { return "mock"; }
+}
+
+agent MockLogger implements ILogger {
+    public void info(string message) { }
+}
+
 agent MyServiceTest {
     @[Test]
     public void test_get_data() {
@@ -861,11 +891,16 @@ impl Circle {
     }
 
     pub async fn fetch_data(string url) -> string {
-        return fetch(url, "GET") or "";
+        unsafe {
+            var net = NetworkAccess {};
+            return fetch(url, "GET") or "";
+        }
     }
 }
 
 // Generic impl
+struct Pair<T> { T first; T second; }
+
 impl<T> Pair<T> {
     fn first() -> T { return self.first; }
     fn second() -> T { return self.second; }
@@ -949,9 +984,12 @@ event_on(bus, "joined", (data) => {
 Makes the enclosing function return `Result<T, string>`:
 ```csharp
 fn readConfig(string path) -> Result<string, string> {
-    var text = fs_read(path)?;       // propagates Err upward
-    var data = json_parse(text)?;
-    return Ok(data);
+    unsafe {
+        var files = FileAccess {};
+        var text = fs_read(path)?;             // propagates Err upward
+        var name = json_get(text, "name") or "unnamed";   // reads raw JSON, no parse hop
+        return Ok(name);
+    }
 }
 ```
 
@@ -1029,7 +1067,7 @@ All system interactions require a **capability token** passed as a parameter.
 | `FileAccess` | `fs_read`, `fs_write`, `fs_append`, `fs_read_lines`, `fs_read_dir`, `create_dir`, `delete_file` |
 | `NetworkAccess` | `fetch`, `http_request`, `fetch_stream` |
 | `DbAccess` | `db_open`, `db_execute`, `db_query`, `duckdb_*` |
-| `LlmAccess` | `llm_chat`, `llm_complete`, `llm_vision`, `llm_structured`, `llm_embed_batch` |
+| `LlmAccess` | `llm_chat`, `llm_infer`, `llm_vision`, `llm_structured`, `llm_embed_batch` |
 | `SystemAccess` | `exec`, `exec_status`, `mcp_connect` |
 
 ### Rules
@@ -1041,11 +1079,12 @@ All system interactions require a **capability token** passed as a parameter.
 agent FileProcessor {
     // Demand the capability as a parameter
     public string ReadFile(string path, FileAccess files) {
-        return fs_read(path, files) or "not found";
+        // The token is in scope; it is never an argument to the builtin.
+        return fs_read(path) or "not found";
     }
 
     public void WriteReport(string path, string data, FileAccess files) {
-        fs_write(path, data, files);
+        fs_write(path, data) or false;
     }
 
     public void Run() {
@@ -1202,7 +1241,7 @@ fn nativeOnly() -> void { ... }
 agent WeatherAgent {
     /// Calls the OpenWeatherMap API.
     public async string GetForecast(string city, NetworkAccess net) {
-        // ...
+        return fetch($"https://api.example.com/weather?q={city}", "GET") or "{}";
     }
 }
 ```
@@ -1391,6 +1430,8 @@ Response: `http_response(status_code, body_string)`
 ```csharp
 agent DbApp {
     public void Run() {
+      unsafe {
+        var access = DbAccess {};
         var db = db_open(":memory:");          // in-memory
         // var db = db_open("app.db");         // file
 
@@ -1644,11 +1685,14 @@ select {
 ```csharp
 agent WsClient {
     public void Run() {
-        var ws = ws_connect("ws://localhost:8080/ws");
-        ws_send(ws, "hello");
-        var msg = ws_receive(ws);    // blocking
-        print msg;
-        ws_close(ws);
+        unsafe {
+            var net = NetworkAccess {};
+            var ws = ws_connect("ws://localhost:8080/ws")?;
+            ws_send(ws, "hello")?;
+            var msg = ws_receive(ws)?;   // blocking
+            print msg;
+            ws_close(ws)?;
+        }
     }
 }
 ```
@@ -1662,12 +1706,12 @@ agent McpApp {
     public void Run() {
         unsafe {
             var sys = SystemAccess {};
-            var conn = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-everything"], sys);
-            var tools = mcp_list_tools(conn);
+            var conn = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-everything"])?;
+            var tools = mcp_list_tools(conn)?;
             print tools;
-            var result = mcp_call_tool(conn, "echo", {"message": "hello"});
+            var result = mcp_call_tool(conn, "echo", {"message": "hello"})?;
             print result;
-            mcp_disconnect(conn);
+            mcp_disconnect(conn)?;
         }
     }
 }
@@ -1703,33 +1747,38 @@ agent AiAgent {
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user",   "content": prompt}
         ];
-        return llm_chat("gpt-4o", messages, llm);
+        // The token is in scope; it is never an argument to the builtin.
+        return llm_chat("gpt-4o", messages) or "";
     }
 
     // Complete (single-turn)
     public string Complete(string prompt, LlmAccess llm) {
-        return llm_complete("claude-3-haiku", prompt, llm);
+        return llm_infer(prompt, "claude-3-haiku") or "";
     }
 
     // Vision
     public string Describe(string imagePath, FileAccess files, LlmAccess llm) {
-        var img = image_load(imagePath, files);
+        var img = image_load(imagePath)?;
         var b64 = image_to_base64(img);
         var fmt = image_format(img);
-        return llm_vision("Describe this image.", b64, fmt, llm);
+        return llm_vision("Describe this image.", b64, fmt) or "";
     }
 
     // Structured output (generic call syntax)
     public WeatherReport GetWeather(string city, LlmAccess llm) {
         var p = $"Return weather for {city} as JSON: city, temperature, condition.";
-        return llm_structured<WeatherReport>("", "", p, llm);
+        return llm_structured<WeatherReport>("", "", p)?;
     }
 
     // Streaming (callback per chunk)
     public void Stream(string prompt, LlmAccess llm) {
-        llm_stream("gpt-4o", [{"role": "user", "content": prompt}], (chunk) => {
+        // `llm_stream(prompt, model)` hands back a stream; read chunks from it as they come.
+        var stream = llm_stream(prompt, "gpt-4o")?;
+        var chunk = sse_read(stream) or "";
+        while chunk != "" {
             print chunk;
-        }, llm);
+            chunk = sse_read(stream) or "";
+        }
     }
 
     public void Run() {
@@ -1751,15 +1800,13 @@ Provider/model defaults from env: `VARG_LLM_PROVIDER`, `VARG_LLM_MODEL`.
 ```csharp
 agent VectorApp {
     public void Run() {
-        var store = vector_store_open("my_store");
+        var store = vector_store_open("my_store")?;
 
-        // Embed text (requires LLM API — use embed_local for no-API-key)
-        var emb = embed("This is my document text");
-        // OR: local embedding (384-dim, no network)
+        // Embed text (requires an LLM API key) — or embed_local, which needs no network.
         var emb = embed_local("This is my document text");
 
         // Upsert
-        vector_store_upsert(store, "doc1", emb, {"source": "manual"});
+        vector_store_upsert(store, "doc1", emb, {"source": "manual"})?;
 
         // Search
         var query_emb = embed_local("search query");
@@ -2103,6 +2150,18 @@ var status = workflow_status(wf);
 ## 43. Test Framework
 
 ```csharp
+contract IDatabase { string query(string sql); }
+
+agent MockDb implements IDatabase {
+    public string query(string sql) { return "mock"; }
+}
+
+agent MyService {
+    IDatabase db;
+    public MyService(IDatabase db) { self.db = db; }
+    public string GetData(string key) { return self.db.query(key); }
+}
+
 agent MyTests {
     @[BeforeEach]
     public void setup() {

@@ -37,9 +37,12 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from prose import prose_matches_the_code
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-DOCS = ("REFERENCE.md", "VARG_AGENT_GUIDE.md")
+DOCS = ("REFERENCE.md", "VARG_AGENT_GUIDE.md", "README.md", "README_DE.md")
 
 VARGC = os.path.abspath(os.environ.get("VARGC") or os.path.join(
     ROOT, "varg-compiler", "target", "release", "vargc.exe"))
@@ -135,6 +138,34 @@ def arity_behind_placeholders(body, tag):
     return None
 
 
+# Module names that stand for the reader's own. They cannot resolve, and inventing files for them
+# would document a layout nobody has.
+ILLUSTRATIVE_MODULES = ("math", "utils", "contracts", "helper")
+
+# Blocks that show what the compiler refuses. The documentation would be wrong in the other
+# direction if these ever compiled, so each is keyed by the message it must produce, and an entry
+# nobody hits is reported — a rejection that stopped happening is exactly what this guards.
+SHOWN_AS_REJECTED = {
+    "agent spawn cycle detected": "the section is about cycle detection; the program is the example of one",
+}
+REJECTIONS_SEEN = set()
+
+
+def is_illustrative_import(err):
+    for name in ILLUSTRATIVE_MODULES:
+        if "Imported module '%s' not found" % name in err:
+            return name
+    return None
+
+
+def shown_as_rejected(err):
+    for fragment in SHOWN_AS_REJECTED:
+        if fragment in err:
+            REJECTIONS_SEEN.add(fragment)
+            return fragment
+    return None
+
+
 def allowed_for(err):
     for name, reason in ALLOWED.items():
         if "`%s`" % name in err:
@@ -161,7 +192,18 @@ def main():
                     ok = True
                     break
                 m = re.search(r"error: (.+)", txt)
-                err = m.group(1).strip() if m else txt.strip().split("\n")[0]
+                this = m.group(1).strip() if m else txt.strip().split("\n")[0]
+                # Keep the last verdict that is not a parse error.
+                #
+                # Each wrapping is a better guess than the one before: as-is, then inside a
+                # method, then inside `unsafe`. A parse error under a wrapping only means the
+                # wrapping was wrong for this block, so it is skipped — and skipping it is what
+                # was missing: a complete program with a real mistake also fails to parse under
+                # the method wrapping, and that parse error overwrote the real one and got the
+                # block excused as a fragment. The README's headline example rode through
+                # exactly that way, and did not compile for three releases.
+                if classify(this) != "FRAGMENT" or not err:
+                    err = this
             kind = "" if ok else classify(err)
             if kind == "PLACEHOLDER":
                 hidden = arity_behind_placeholders(body, "b_%s_%d" % (doc[:3].lower(), n))
@@ -170,7 +212,7 @@ def main():
             rows.append((doc, line, ok, kind, err))
             if kind == "REAL":
                 name, _ = allowed_for(err)
-                if not name:
+                if not name and not is_illustrative_import(err) and not shown_as_rejected(err):
                     unexpected.append((doc, line, err))
 
     total = len(rows)
@@ -185,6 +227,19 @@ def main():
             if kind:
                 print("   %-20s :%-5d %-11s %s" % (doc[:20], line, kind, err[:80]))
 
+    # A rejection nobody triggered means the documentation shows something as refused that
+    # the compiler now accepts — wrong in the other direction, and invisible without this.
+    stale = [f for f in SHOWN_AS_REJECTED if f not in REJECTIONS_SEEN]
+    if stale:
+        print("")
+        print("--- documented as rejected, but nothing was rejected ---")
+        for f in stale:
+            print("   %s" % f)
+            print("      %s" % SHOWN_AS_REJECTED[f])
+        print("")
+        print("The compiler accepts it now. Fix the documentation or drop the entry.")
+        return 1
+
     if unexpected:
         print("\n--- documented code that does not compile ---")
         for doc, line, err in unexpected:
@@ -193,7 +248,8 @@ def main():
         print("\nFix the documentation, or add the helper name to ALLOWED with its reason.")
         return 1
 
-    return coverage()
+    rc = coverage()
+    return rc or prose_matches_the_code(ROOT, VARGC, DOCS)
 
 
 # ── Second gate: is every builtin mentioned at all? ──────────────────────────
