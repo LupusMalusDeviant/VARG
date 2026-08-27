@@ -904,6 +904,14 @@ fn run_cli() {
         return;
     }
 
+    // Every tool has one, and this had none: `vargc --version` answered "Unknown command" and
+    // exited 1. A release script or a package manager asking what it just installed got a
+    // failure and a usage screen.
+    if command == "version" || command == "--version" || command == "-V" {
+        println!("vargc {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     // Start from something that runs, rather than from an empty file.
     if command == "new" {
         cmd_new(&args[2..]);
@@ -1059,6 +1067,7 @@ fn print_usage() {
     // updated and the other was not — the REPL announced v0.12.0 while this line said v1.0.0.
     println!("Varg Compiler (vargc) v{}", env!("CARGO_PKG_VERSION"));
     println!("Usage:");
+    println!("  vargc version                                 Print the version and exit");
     println!("  vargc new <kind> <name>                       Start from a program that runs");
     println!("                                                  kinds: mcp-server, agent, cli");
     println!("  vargc mcp list <file.varg>                    Tools this program exposes");

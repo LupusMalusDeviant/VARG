@@ -30,14 +30,17 @@ jobs:
           - os: ubuntu-latest
             name: linux-x64
             exe: vargc
+            ext: ""
             archive: tar.gz
           - os: macos-latest
             name: macos-arm64
             exe: vargc
+            ext: ""
             archive: tar.gz
           - os: windows-latest
             name: windows-x64
             exe: vargc.exe
+            ext: ".exe"
             archive: zip
     steps:
       - uses: actions/checkout@v5
@@ -55,7 +58,7 @@ jobs:
         shell: bash
         run: |
           V="$PWD/varg-compiler/target/release/${{ matrix.exe }}"
-          "$V" | head -1
+          "$V" --version
           work="$(mktemp -d)"
           cd "$work"
           "$V" new mcp-server smoke
@@ -64,6 +67,18 @@ jobs:
           "$V" check tool.varg | grep -q "no type errors"
           echo 'agent Main { public void Run() { print "built on ${{ matrix.name }}"; } }' > hello.varg
           "$V" run hello.varg | grep -q "built on ${{ matrix.name }}"
+
+      - name: Build the tutor, and ask it something
+        # Shipped as a binary, not only as source. `vargc` needs cargo to compile anything; a Varg
+        # program that is already built needs nothing at all — which is the whole argument for
+        # writing an MCP server in this language, and it is worth handing someone rather than
+        # describing. Building it here also proves on every platform that a Varg program compiles
+        # and answers there.
+        shell: bash
+        run: |
+          V="$PWD/varg-compiler/target/release/${{ matrix.exe }}"
+          "$V" build tools/varg-tutor/tutor.varg
+          VARG_HOME="$PWD" VARGC="$V" "$V" mcp list tools/varg-tutor/tutor.varg | grep -q "check(source"
 
       - name: Package
         shell: bash
@@ -76,9 +91,13 @@ jobs:
           cp README.md CHANGELOG.md REFERENCE.md VARG_AGENT_GUIDE.md LICENSE "$stage/"
           # Only the Varg. `examples/` also holds the Rust each one transpiles to, which is
           # build output, not something anyone downloads a release to read.
-          mkdir -p "$stage/examples" "$stage/tools/varg-tutor"
+          mkdir -p "$stage/examples" "$stage/tools/varg-tutor" "$stage/golden/progs"
           cp examples/*.varg "$stage/examples/"
           cp tools/varg-tutor/tutor.varg tools/varg-tutor/README.md "$stage/tools/varg-tutor/"
+          # The tutor, already built: it runs without cargo, unlike vargc itself.
+          cp "tutor${{ matrix.ext }}" "$stage/tools/varg-tutor/"
+          # What its `example` tool answers from: programs CI builds and runs.
+          cp golden/progs/*.varg "$stage/golden/progs/"
           if [ "${{ matrix.archive }}" = "zip" ]; then
             7z a -tzip "${stage}.zip" "$stage" >/dev/null
             echo "asset=${stage}.zip" >> "$GITHUB_ENV"
