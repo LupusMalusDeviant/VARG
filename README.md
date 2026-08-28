@@ -29,7 +29,7 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 | Rejection probes | 88 programs that must be refused, each naming the message |
 | Builtins | 407 documented, 366 executed by a golden program — [the 33 that are not, and why](REFERENCE.md#what-ci-proves-and-what-it-does-not) |
 | Crates | 10 compiler crates |
-| Runtime modules | 40 |
+| Runtime modules | 39 |
 | Security | 5 OCAP capability types |
 | Lexer tokens | 124 |
 | AST | 21 statement kinds, 33 expression kinds |
@@ -111,10 +111,10 @@ Time the programs measured around their own work, median of 30 runs on one machi
 
 | Workload | Varg | C# | TypeScript | Python |
 |----------|-----:|---:|-----------:|-------:|
-| fib(35), recursive | **16 ms** | 53 ms | 53 ms | 695.5 ms |
-| 100k list: build, filter, map, sum | **1 ms** | 11 ms | 4 ms | 9 ms |
+| fib(35), recursive | **16 ms** | 53 ms | 53 ms | 720 ms |
+| 100k list: build, filter, map, sum | **1 ms** | 12 ms | 4 ms | 9 ms |
 | 1000-record JSON: build, parse, re-serialise | 1 ms | 21 ms | **<1 ms** | 2 ms |
-| Word frequency, 200k distinct keys | **15 ms** | 64 ms | 36 ms | 27 ms |
+| Word frequency, 200k distinct keys | **15 ms** | 58 ms | 36 ms | 27 ms |
 
 Fastest of the four on all four workloads. Word frequency used to be the one Varg lost, and
 finding out why changed the language rather than the benchmark.
@@ -390,14 +390,17 @@ See the [`examples/`](examples/) directory:
 
 ## Runtime Modules
 
-Varg has 40 runtime modules; the principal ones are below, backed by the libraries named. Two
-things in the runtime are
-not, and claiming "no stubs" while they exist was what an external audit asked to see removed:
+Varg has 39 runtime modules; the principal ones are below, backed by the libraries named. One is
+not backed by a library, and claiming "no stubs" while it exists was what an external audit asked
+to see removed:
 
-- `query "..."` lowers to a key-value store in a JSON file, with a note in the source about
-  becoming a real database one day. It appears in no documentation and in no program here.
 - `http_sse_route` collects every event and sends them in one response. That is what
   [the reference](REFERENCE.md) says it does; `sse_open` / `sse_send` are the streaming path.
+
+A second one, `query "..."`, has been withdrawn: it lowered to a key-value store in a JSON file
+that understood SET and GET, and answered every other string — including anything shaped like
+SQL — with the entire store instead of an error. `db_open` / `db_execute` / `db_query` are the
+real path, behind the same capability.
 
 | Module | Backend | Description |
 |--------|---------|-------------|

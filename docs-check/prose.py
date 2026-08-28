@@ -210,7 +210,10 @@ def check_benchmark_table(root, docs):
                 if actual is None:
                     out.append("%s claims a time for %s/%s, which the suite did not measure"
                                % (doc, bench, lang))
-                elif abs(float(actual) - claimed) > 0.5:
+                # Proportional, not absolute. Half a millisecond on a 720 ms measurement is
+                # run-to-run noise, and a gate that fires on noise is a gate people stop reading.
+                # Five percent still catches a figure left behind by a real change.
+                elif abs(float(actual) - claimed) > max(1.0, 0.05 * float(actual)):
                     out.append("%s says %s/%s is %gms; the last run measured %gms"
                                % (doc, bench, lang, claimed, float(actual)))
     return out

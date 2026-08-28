@@ -25,7 +25,7 @@ Varg Source (.varg) --> vargc --> Rust Source --> cargo build --> Native Binary
 | Ablehnungsproben | 88 Programme, die abgelehnt werden muessen, je mit erwarteter Meldung |
 | Builtins | 407 dokumentiert, 366 von einem Golden-Programm ausgefuehrt — [die 33 anderen, mit Grund](REFERENCE.md#what-ci-proves-and-what-it-does-not) |
 | Crates | 10 Compiler-Crates |
-| Runtime-Module | 40 |
+| Runtime-Module | 39 |
 | Sicherheit | 5 OCAP-Capability-Typen |
 | Lexer-Token | 124 |
 | AST | 21 Anweisungsarten, 33 Ausdrucksarten |
@@ -106,10 +106,10 @@ Von den Programmen um die eigene Arbeit gemessene Zeit, Median aus 30 Laeufen au
 
 | Workload | Varg | C# | TypeScript | Python |
 |----------|-----:|---:|-----------:|-------:|
-| fib(35), rekursiv | **16 ms** | 53 ms | 53 ms | 695.5 ms |
-| 100k-Liste: bauen, filtern, mappen, summieren | **1 ms** | 11 ms | 4 ms | 9 ms |
+| fib(35), rekursiv | **16 ms** | 53 ms | 53 ms | 720 ms |
+| 100k-Liste: bauen, filtern, mappen, summieren | **1 ms** | 12 ms | 4 ms | 9 ms |
 | JSON mit 1000 Records: bauen, parsen, neu serialisieren | 1 ms | 21 ms | **<1 ms** | 2 ms |
-| Wortfrequenz, 200k eigene Schluessel | **15 ms** | 64 ms | 36 ms | 27 ms |
+| Wortfrequenz, 200k eigene Schluessel | **15 ms** | 58 ms | 36 ms | 27 ms |
 
 Der schnellste der vier in allen vier Workloads. Die Wortfrequenz war der eine, den Varg verlor,
 und herauszufinden warum hat die Sprache geaendert, nicht den Benchmark.

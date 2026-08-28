@@ -4504,8 +4504,12 @@ impl RustGenerator {
                 format!("|{}| {}", param_strs.join(", "), body_str)
             },
             Expression::Query(q) => {
-                // Native embedded DB call
-                format!("__varg_query({:?})", q.raw_query)
+                // The typechecker refuses this by name. `emit-rs` skips the typechecker on
+                // purpose, so the generated Rust has to say the same thing rather than call a
+                // runtime function that no longer exists.
+                let _ = q;
+                "compile_error!(\"`query \\\"...\\\"` has been withdrawn — use db_open / db_execute / db_query\")"
+                    .to_string()
             },
             // Wave 6: retry(N) { body } fallback { fallback_body }
             Expression::Retry { max_attempts, body, fallback } => {
@@ -5926,14 +5930,17 @@ mod tests {
     }
 
     #[test]
-    fn test_codegen_query_expression() {
+    fn query_expression_generates_a_refusal() {
+        // `query "..."` is withdrawn. The typechecker refuses it by name, but `emit-rs` skips the
+        // typechecker on purpose, so the generated Rust has to say so too rather than call a
+        // runtime function that no longer exists.
         let mut gen = RustGenerator::new();
         let expr = Expression::Query(SurrealQueryNode {
             raw_query: "SELECT * FROM users WHERE age > 18".to_string(),
         });
         let code = gen.gen_expression(&expr);
-        assert!(code.contains("__varg_query("));
-        assert!(code.contains("SELECT * FROM users WHERE age > 18"));
+        assert!(code.contains("compile_error!"), "should refuse, got: {code}");
+        assert!(code.contains("db_open"), "should name the replacement, got: {code}");
     }
 
     #[test]

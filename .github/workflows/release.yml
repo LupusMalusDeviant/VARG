@@ -232,6 +232,69 @@ jobs:
             ${{ env.asset }}.sha256
           if-no-files-found: error
 
+  fresh-machine:
+    # The acceptance criterion behind P0-01: install on a machine that has never seen this
+    # repository, and build a program on it. `release/smoke.sh` runs on the build machine, which
+    # has the checkout, a warm cargo registry and every toolchain the build needed — and P0-01 was
+    # precisely a dependency that happened to be lying around. Here nothing is: a bare Debian
+    # image, curl, a linker, rustup, and the archive.
+    name: A bare machine can install it and build
+    needs: build
+    runs-on: ubuntu-latest
+    container: debian:bookworm-slim
+    steps:
+      - name: What a user would already have, and nothing more
+        run: |
+          set -eux
+          apt-get update -qq
+          apt-get install -y --no-install-recommends ca-certificates curl tar gzip gcc libc6-dev
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: varg-linux-x64
+          path: /dl
+
+      - name: Install, and check what was installed
+        run: |
+          set -eux
+          . "$HOME/.cargo/env"
+          # The checksum first: the installer verifies it, so the test standing in for the
+          # installer has to as well. Checked where the files are, because the .sha256 names the
+          # archive without a path.
+          cd /dl && sha256sum -c ./*.sha256
+          cd /opt
+          tar xzf /dl/*.tar.gz
+          mv varg-v*-linux-x64 varg
+          echo "/opt/varg" >> "$GITHUB_PATH"
+
+      - name: The six commands, in an empty directory
+        run: |
+          set -eux
+          . "$HOME/.cargo/env"
+          export PATH="/opt/varg:$PATH"
+          mkdir -p /work && cd /work
+          vargc --version
+          vargc new agent hello
+          vargc check hello.varg
+          # No warnings from the generated Rust: a user should never have to read one.
+          out="$(vargc build hello.varg 2>&1)"
+          echo "$out"
+          if echo "$out" | grep -q "^warning:"; then
+            echo "the generated program built with warnings"
+            exit 1
+          fi
+          ./hello
+
+      - name: The built program runs with Varg and Rust removed
+        run: |
+          set -eux
+          cp /work/hello /tmp/hello
+          rm -rf /opt/varg "$HOME/.cargo" "$HOME/.rustup"
+          /tmp/hello
+          echo "  a native binary, and nothing left to install"
+
   release:
     name: Draft the release
     needs: build

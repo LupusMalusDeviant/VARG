@@ -196,7 +196,8 @@ pub fn __varg_parse_float(s: &str) -> Result<f64, String> {
 pub use indexmap::IndexMap;
 
 pub mod json;          // JSON accessors accepting a parsed value or a raw JSON string
-pub mod db;            // legacy stub
+// `pub mod db` held `__varg_query`, the store behind the withdrawn `query "..."`
+// statement. The real database path is `db_sqlite`.
 pub mod regex_utils;   // Regex builtins: regex_match, regex_find_all, regex_replace
 pub use regex_utils::*;
 pub mod graph;         // Wave 20: Knowledge Graph
@@ -240,7 +241,6 @@ pub mod localembed;    // Wave 40: Pure-Rust local embeddings (no API key needed
 #[cfg(feature = "fts")]       pub mod fts;       // Wave 41: Full-text search (tantivy)
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
-pub use db::*;
 pub use graph::*;
 pub use memory::*;
 pub use trace::*;

@@ -1,0 +1,14 @@
+// @probe reject: `query` is gone
+// `query "..."` lowered to a key-value store in a JSON file that understood exactly two commands,
+// SET and GET. Every other string — including anything shaped like SQL — returned the *entire
+// store* rather than an error: `query "SELECT * FROM nothing"` answered with every key it held,
+// secrets included. A failed write reported `{"status": "ok"}`, because the write's result was
+// discarded under a comment explaining that the serialisation cannot fail.
+agent Main {
+    public void Run() {
+        unsafe {
+            var db = DbAccess {};
+            print query "SELECT * FROM users";
+        }
+    }
+}

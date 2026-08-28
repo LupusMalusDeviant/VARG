@@ -4326,9 +4326,22 @@ impl TypeChecker {
                 Ok(TypeNode::Func(param_types, Box::new(ret)))
             },
             Expression::Query(_) => {
-                self.check_ocap(&CapabilityType::DbAccess, "query")?;
-                // Memory queries return JSON Strings
-                Ok(TypeNode::String)
+                // Withdrawn. It lowered to a key-value store in a JSON file that understood two
+                // commands, SET and GET. Anything else — including anything shaped like SQL —
+                // returned the *entire store* instead of an error, so
+                // `query "SELECT * FROM nothing"` answered with every key it held. A failed write
+                // reported `{"status": "ok"}`.
+                Err(TypeError::RetiredBuiltin {
+                    method_name: "query".to_string(),
+                    replacement: "db_open / db_execute / db_query".to_string(),
+                    why: "lowered to a key-value store in a JSON file that understood only SET \
+                          and GET; every other string, including anything shaped like SQL, \
+                          returned the whole store rather than an error, and a failed write \
+                          reported success"
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                })
             },
             // Wave 6: retry returns whatever the body's last expression returns
             Expression::Retry { max_attempts, body, fallback } => {
@@ -5090,8 +5103,10 @@ mod tests {
     }
 
     #[test]
-    fn test_ocap_query_violation() {
-        // Attempting to run a query without `unsafe` should fail!
+    fn test_ocap_db_operation_without_unsafe_is_refused() {
+        // A database operation outside `unsafe` and without a token must be refused. This used
+        // to be built on the `query "..."` statement, which has since been withdrawn; the
+        // subject was always OCAP, not that statement.
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
@@ -5111,7 +5126,11 @@ mod tests {
                     args: vec![],
                     return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
-                            Statement::Expr(Expression::Query(SurrealQueryNode { raw_query: "SELECT secret FROM users".to_string() }))
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "db_open".to_string(),
+                                args: vec![Expression::String("app.db".to_string())],
+                            })
                         ]
                     })
                 }]
@@ -5127,8 +5146,8 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_unsafe_query() {
-        // Same logic but wrapped in `unsafe { }`
+    fn test_ocap_db_operation_inside_unsafe_is_allowed() {
+        // The same operation inside `unsafe { }`, where the token may be constructed.
         let program = Program {
             no_std: false, docs: std::collections::HashMap::new(),
             items: vec![Item::Agent(AgentDef {
@@ -5150,7 +5169,11 @@ mod tests {
                     body: Some(Block { statements: vec![
                             Statement::UnsafeBlock(Block {
                                 statements: vec![
-                                    Statement::Expr(Expression::Query(SurrealQueryNode { raw_query: "SELECT * FROM public".to_string() }))
+                                    Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "db_open".to_string(),
+                                args: vec![Expression::String("app.db".to_string())],
+                            })
                                 ]
                             })
                         ]
@@ -6088,9 +6111,13 @@ mod tests {
                     type_params: vec![],
                     constraints: vec![],
                     args: vec![FieldDecl { name: "db".to_string(), ty: TypeNode::Capability(CapabilityType::DbAccess), default_value: None }],
-                    return_ty: Some(TypeNode::String),
+                    return_ty: Some(TypeNode::Void),
                     body: Some(Block { statements: vec![
-                            Statement::Return(Some(Expression::Query(SurrealQueryNode { raw_query: "SELECT * FROM users".to_string() })))
+                            Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "db_open".to_string(),
+                                args: vec![Expression::String("app.db".to_string())],
+                            })
                         ]
                     })
                 }]
@@ -6951,9 +6978,11 @@ mod tests {
                             method_name: "fs_read".to_string(),
                             args: vec![Expression::String("path".to_string())],
                         }),
-                        Statement::Expr(Expression::Query(SurrealQueryNode {
-                            raw_query: "SELECT * FROM users".to_string(),
-                        })),
+                        Statement::Expr(Expression::MethodCall {
+                                caller: Box::new(Expression::Identifier("self".to_string())),
+                                method_name: "db_open".to_string(),
+                                args: vec![Expression::String("app.db".to_string())],
+                            }),
                     ]}),
                 }],
             })],

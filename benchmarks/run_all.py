@@ -52,6 +52,15 @@ def artifact(directory, stem):
     raise SystemExit("no binary for %s in %s — did the build really succeed?" % (stem, directory))
 
 
+def _dotnet_artifact_bytes(proj_dir, stem):
+    """The apphost plus its assembly: what a `dotnet build` leaves behind to be run."""
+    total = 0
+    for pattern in ("bin/Release/*/" + stem + ".exe", "bin/Release/*/" + stem + ".dll"):
+        for f in proj_dir.glob(pattern):
+            total += file_size(f)
+    return total or None
+
+
 def dotnet_artifact(proj_dir, stem):
     """A command that runs the compiled C#, preferring the apphost over the SDK launcher.
 
@@ -97,11 +106,28 @@ def measure_exec(cmd, cwd=None, runs=RUNS):
                 except ValueError:
                     pass
     # Keep everything, then report the middle of it.
+    #
+    # Cold and warm are told apart because they answer different questions. The first run pays
+    # for a cold file cache and, on Windows, for whatever the loader has not seen before; every
+    # run after it is what a user in a loop experiences. Reporting only the median of all of them
+    # blends the two and describes neither.
+    cold = wall_times[0] if wall_times else None
+    warm = wall_times[1:] if len(wall_times) > 1 else wall_times
+    # Start-up: the wall clock around the process, minus the time the program measured around its
+    # own work. Process creation, dynamic linking, runtime initialisation — the cost of *reaching*
+    # the first line, which is where an interpreter and a native binary differ most.
+    startup = None
+    if self_times and warm:
+        startup = round(statistics.median(warm) - statistics.median(self_times), 1)
     raw["%s/%s" % (_current["bench"], _current["lang"])] = {
         "wall_ms": [round(x, 1) for x in wall_times],
         "self_ms": self_times,
         "wall": describe(wall_times),
         "self": describe(self_times),
+        "cold_ms": round(cold, 1) if cold is not None else None,
+        "warm": describe(warm),
+        "startup_ms": startup,
+        "artifact_bytes": _current.get("artifact_bytes"),
     }
     wall = statistics.median(wall_times)
     self_t = statistics.median(self_times) if self_times else None
@@ -181,6 +207,10 @@ for bench in benchmarks:
         print(f"  [Varg] Running {name} (x{RUNS}) ...")
         _current.update(bench=name, lang="Varg")
         varg_exe = artifact(VARG_CWD, name)
+        # What actually has to be shipped. An interpreted language distributes source and needs
+        # its runtime present; a native binary is the whole of it, and the two are not comparable
+        # by file size alone — which is why this is recorded per language rather than compared.
+        _current["artifact_bytes"] = file_size(varg_exe)
         wall, self_t = measure_exec(quoted(varg_exe), cwd=VARG_CWD)
         if wall is not None:
             results[name]["Varg"]["exec_ms"] = round(wall)
@@ -196,6 +226,8 @@ for bench in benchmarks:
     py_src = bdir / f"{name}.py"
     results[name]["Python"]["build_ms"] = 0  # interpreted
     _current.update(bench=name, lang="Python")
+    # Source only: the interpreter is a prerequisite, not part of what is distributed.
+    _current["artifact_bytes"] = file_size(py_src)
     wall, self_t = measure_exec(f'python "{py_src}"', cwd=bdir)
     if wall is not None:
         results[name]["Python"]["exec_ms"] = round(wall)
@@ -240,6 +272,7 @@ for bench in benchmarks:
         print(f"  [C#] Running {name} (x{RUNS}) ...")
         _current.update(bench=name, lang="C#")
         cs_exe = dotnet_artifact(cs_proj_dir, name + "_cs")
+        _current["artifact_bytes"] = _dotnet_artifact_bytes(cs_proj_dir, name + "_cs")
         wall, self_t = measure_exec(cs_exe, cwd=cs_proj_dir)
         if wall is not None:
             results[name]["C#"]["exec_ms"] = round(wall)
@@ -255,6 +288,7 @@ for bench in benchmarks:
     ts_src = bdir / f"{name}.ts"
     results[name]["TypeScript"]["build_ms"] = 0  # JIT
     _current.update(bench=name, lang="TypeScript")
+    _current["artifact_bytes"] = file_size(ts_src)
     wall, self_t = measure_exec(f'node --experimental-strip-types "{ts_src}"', cwd=bdir)
     if wall is not None:
         results[name]["TypeScript"]["exec_ms"] = round(wall)
@@ -360,6 +394,35 @@ for bench in benchmarks:
         row += f" {d['p95']:.0f}ms |" if d else " - |"
     report += row + "\n"
 
+    # The first run on its own: a cold file cache, and on Windows whatever the loader has not
+    # seen before. Blending it into the median describes neither it nor the steady state.
+    row = "| Wall time, cold (1st run) |"
+    for lang in ["Varg", "Python", "C#", "TypeScript"]:
+        d = raw.get(f"{name}/{lang}", {}).get("cold_ms")
+        row += f" {d:.0f}ms |" if d else " - |"
+    report += row + "\n"
+
+    # Wall minus the program's own measurement: process creation, dynamic linking, runtime init.
+    row = "| Start-up |"
+    for lang in ["Varg", "Python", "C#", "TypeScript"]:
+        d = raw.get(f"{name}/{lang}", {}).get("startup_ms")
+        row += f" {d:.0f}ms |" if d is not None else " - |"
+    report += row + "\n"
+
+    # What has to be distributed. Not comparable across the four — a native binary is the whole
+    # of it, a script needs its interpreter present — so it is recorded, not ranked.
+    row = "| Artifact |"
+    for lang in ["Varg", "Python", "C#", "TypeScript"]:
+        b = raw.get(f"{name}/{lang}", {}).get("artifact_bytes")
+        # A 268-byte script is not "0 KB". Below a kilobyte, say bytes.
+        if not b:
+            row += " - |"
+        elif b < 1024:
+            row += f" {b} B |"
+        else:
+            row += f" {b/1024:.0f} KB |"
+    report += row + "\n"
+
     # What the program measured around its own work.
     row = "| **Computation time** |"
     for lang in ["Varg", "Python", "C#", "TypeScript"]:
@@ -424,6 +487,7 @@ report += "- Varg compiles to a native binary, so its computation time sits with
 report += "- `wordfreq` is here because Varg loses it: a map keyed by strings copies the key on every new entry, and the hash is SipHash. A suite holding only what a language wins is advertising.\n"
 report += "- Build time is a full Rust compilation. It is a cost of the toolchain, not of the program, and is listed on its own line for that reason.\n"
 report += "- Token counts are an estimate at four characters per token, not a tokeniser run.\n"
+report += "- `results.json` also holds, per workload and language: the first run on its own (cold), the runs after it (warm), start-up time as wall minus the program's own measurement, and the size of what has to be distributed. A native binary and a script are not comparable by size, which is why they are recorded rather than ranked.\n"
 report += "- Python and Node are timed through their interpreter, which is how they are used. Varg and C# are timed as their built artifacts, so nothing here includes a compiler or an SDK launcher.\n"
 
 report = report.replace("{date}", time.strftime("%Y-%m-%d"))
