@@ -174,15 +174,20 @@ jobs:
           cp golden/progs/*.varg "$stage/golden/progs/"
           if [ "${{ matrix.archive }}" = "zip" ]; then
             7z a -tzip "${stage}.zip" "$stage" >/dev/null
-            echo "asset=${stage}.zip" >> "$GITHUB_ENV"
+            asset="${stage}.zip"
           else
             tar czf "${stage}.tar.gz" "$stage"
-            echo "asset=${stage}.tar.gz" >> "$GITHUB_ENV"
+            asset="${stage}.tar.gz"
           fi
           # A checksum beside each archive, so an installer or the self-updater can tell whether
           # what it downloaded is what was built. Nothing published one before, and neither the
           # installer nor `vargc upgrade` checked anything.
-          asset="$(ls "${stage}".{zip,tar.gz} 2>/dev/null | head -1)"
+          # The branch above knows which archive it made. Asking `ls` for both and taking the
+          # first looked tidier and killed the step: `ls a.zip a.tar.gz` with one of them absent
+          # exits 2, and under `set -e -o pipefail` that ends the job — silently, because the
+          # error went to /dev/null. Packaging had been broken on all three platforms since this
+          # line was written, and nothing ran the release workflow to find out.
+          echo "asset=${asset}" >> "$GITHUB_ENV"
           if command -v sha256sum >/dev/null; then
             sha256sum "$asset" | awk '{print $1}' > "${asset}.sha256"
           else
