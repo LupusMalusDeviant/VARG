@@ -188,10 +188,15 @@ jobs:
           # error went to /dev/null. Packaging had been broken on all three platforms since this
           # line was written, and nothing ran the release workflow to find out.
           echo "asset=${asset}" >> "$GITHUB_ENV"
+          # The standard two-field format, `<hash>  <filename>`. It used to be the hash alone,
+          # which `sha256sum -c` refuses with "no properly formatted checksum lines found" — so
+          # the file published for people to verify with could not be used by the tool they would
+          # reach for. Our own readers (both installers, `vargc upgrade`) take the first
+          # whitespace-separated token, so they are unaffected.
           if command -v sha256sum >/dev/null; then
-            sha256sum "$asset" | awk '{print $1}' > "${asset}.sha256"
+            sha256sum "$asset" > "${asset}.sha256"
           else
-            shasum -a 256 "$asset" | awk '{print $1}' > "${asset}.sha256"
+            shasum -a 256 "$asset" > "${asset}.sha256"
           fi
           cat "${asset}.sha256"
           ls -la "$stage".*
