@@ -34,7 +34,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Not `ubuntu-latest`. That image's glibc is 2.39, and a binary linked against it
+          # refuses to start on anything older — Debian 12, Ubuntu 22.04 LTS and RHEL 9 all have
+          # less. The bare-machine job found it: `vargc --version` on Debian bookworm answered
+          # "version `GLIBC_2.39' not found". Building on the older image lowers the floor to
+          # 2.35, which those three clear. glibc is backward compatible, not forward.
+          - os: ubuntu-22.04
             name: linux-x64
             exe: vargc
             ext: ""
