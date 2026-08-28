@@ -1399,6 +1399,52 @@ Quellpositionen; eine Zahl, die wie eine Zeile aussieht und keine ist, wäre sch
 
 ---
 
+## Externes Audit (Stand 2026-08-27)
+
+Ein externes Audit hat zwölf Findings und einen Satz verbindlicher Akzeptanzkriterien geliefert.
+Beides wurde bisher nur im Gespräch verfolgt — genau so veraltet eine Liste. Hier steht, was
+erledigt ist und woran man es sieht.
+
+### Findings
+
+| | Stand |
+|---|---|
+| **P0-01** Release baut keine Programme | erledigt — `find_runtime_crates` sucht statt zu raten, das Archiv liefert `crates/` mit |
+| **P0-02** Release-CI übersieht den Packaging-Fehler | erledigt — `release/smoke.sh` läuft *nach* dem Packen, dazu der Job `fresh-machine` in einem nackten Container |
+| **P0-03** `vargc upgrade` installiert Archive als Binary | erledigt — entpackt, prüft SHA-256, rollt zurück |
+| **P0-04** Supply Chain | teilweise — `.sha256` veröffentlicht und von beiden Installern *und* dem Updater geprüft, Build-Provenance und CycloneDX-SBOM im Archiv. **Offen: Signatur** (Binary und Tag) — braucht ein Zertifikat |
+| **P0-05** Dependency-Advisories | erledigt — von 9 auf 0 mit einer begründeten Ausnahme (`rkyv`, nie kompiliert), `security/advisories.sh` prüft den Grund |
+| **P0-06** Registry nicht nutzbar | erledigt — es gibt keine, `vargc search`/`install` sagen das, `registry_search` zurückgezogen |
+| **P1-01** Rust-Warnungen beim Nutzer | erledigt — CI-Job, und `fresh-machine` prüft es am ausgelieferten Archiv |
+| **P1-02** `--help` mit Exitcode 1 | erledigt |
+| **P1-03** Tooling kein Produkt | teilweise — `varg-lsp` im Release, VSIX gebaut, Repo-URL korrigiert. **Offen: Debugger, Profiler, Source-Level-Coverage** |
+| **P1-04** Widersprüchliche Metriken | erledigt — sieben Doku-Gates, darunter Modulzahl und Dependency-Versionen |
+| **P1-05** Performance nicht belegt | erledigt — eingecheckte Suite mit gleicher Aufgabe, Hardware, Versionen, Flags, 30 Läufen, kalt/warm, Startzeit, Artefaktgröße, Rohdaten |
+| **P1-06** „Local Embeddings" nicht semantisch | erledigt — steht so im Guide |
+
+### Akzeptanzkriterien
+
+| Kriterium | Stand |
+|---|---|
+| Release-Installation | erfüllt — `fresh-machine` fährt die sechs Befehle in einem Debian-Image ohne Checkout, prüft auf Warnungen und lässt die Binary laufen, nachdem Varg und Rust gelöscht wurden |
+| Self-Upgrade | teilweise — Hash, Entpacken und Rollback sind da und einzeln getestet. **Offen: Signaturprüfung** (es gibt keine Signatur) und ein Durchlauf gegen ein echtes Release |
+| Registry | nicht anwendbar — es gibt keine Registry, und die Claims sind entfernt. Das war der andere Zweig des Audit-Punkts |
+| OCAP/Sandbox | **offen** — neun Angriffsklassen gefordert, keine wird durchgesetzt. Varg hat ein Compile-Zeit-Gate, und das steht so in der Doku. Der größte Abstand zwischen Anspruch und Stand |
+| Benchmarking | erfüllt bis auf RAM und CPU — die sind plattformabhängig zu messen und stehen aus |
+
+### Roadmap P1–P4 des Audits
+
+Unangetastet: typannotierte IR, Debugger, Profiler, exakte Source-Spans, MCP-Conformance-Suite,
+Resources und Prompts, Cancellation-Budgets, Agenten-Eval-Framework, deterministische Replays,
+Sandbox für generierte Tools, sowie P3 (OIDC/mTLS, OpenTelemetry, Migrationen, Chaos-Tests) und
+P4 (lokale Embedding-Modelle, Reranking, Arrow/Parquet, GPU).
+
+Das „Definition of Done" des Audits verlangt ein vollständiges Vergleichsprojekt: dieselbe reale
+Agentenanwendung in Varg, C#, Python, TypeScript und Go, gemessen an Entwicklungszeit, Codemenge,
+Latenz, Kosten, Stabilität und Diagnosefähigkeit. Das gibt es nicht.
+
+---
+
 ## Stand des Backlogs (nachgeprüft am 2026-08-27)
 
 Alles unterhalb dieser Zeile war eine Prioritätenliste aus der Zeit vor Stufe 22. Sie wurde am
@@ -1423,6 +1469,7 @@ README mit falscher Testzahl, nur dass für eine Roadmap kein Gate existiert.
 | **2 MCP-Wall-Clock-Timeout** | Leser-Thread + Deadline, `VARG_MCP_TIMEOUT_SECS` (Standard 30 s) |
 | **3.2 `vargc check`** | existiert |
 | **3.3 LSP-Ausbau** | Hover, Completion, Go-to-Definition, Diagnostics, Symbole |
+| **`query "..."` zurückgezogen** | lowerte auf einen JSON-Datei-Speicher, der SET und GET verstand und jede andere Zeichenkette mit dem *ganzen* Inhalt beantwortete |
 | **Aufräumen** | Versionschaos, falsche Builtin-Signaturen, `__varg_*` im Guide |
 
 ### Offen
